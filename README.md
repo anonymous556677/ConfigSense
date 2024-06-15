@@ -1,6 +1,6 @@
 # ConfigSense
 
-This is the replication package for the paper "ConfigSense: Leveraging LLMs for the Efficient Identification of Performance-Sensitive Configurations in Software Systems", including the dataset, evaluation result, and the source code.
+This is the replication package for the paper "ConfigSense: Utilizting LLMs for the Efficient Identification of Performance-Sensitive Configurations in Software Systems", including the dataset, evaluation result, and the source code.
 
 In the data folder, there is the relevant data in paper, including such as baseline for seven systems, call graph information, XML code analysis result, configuration-relate code, system.
 
