@@ -1,0 +1,429 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/h2database/h2/src/main/org/h2/mvstore/FileStore.java"><comment type="block">/*
+ * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Initial Developer: H2 Group
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>channels</name><operator>.</operator><name>FileChannel</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>channels</name><operator>.</operator><name>FileLock</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>channels</name><operator>.</operator><name>OverlappingFileLockException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicLong</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>cache</name><operator>.</operator><name>FilePathCache</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>store</name><operator>.</operator><name>fs</name><operator>.</operator><name>FilePath</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>store</name><operator>.</operator><name>fs</name><operator>.</operator><name>encrypt</name><operator>.</operator><name>FileEncrypt</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>store</name><operator>.</operator><name>fs</name><operator>.</operator><name>encrypt</name><operator>.</operator><name>FilePathEncrypt</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * The default storage mechanism of the MVStore. This implementation persists
+ * data to a file. The file store is responsible to persist data and for free
+ * space management.
+ */</comment>
+<class><specifier>public</specifier> class <name>FileStore</name> <block>{
+
+    <comment type="block" format="javadoc">/**
+     * The number of read operations.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>AtomicLong</name></type> <name>readCount</name> <init>= <expr><operator>new</operator> <call><name>AtomicLong</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The number of read bytes.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>AtomicLong</name></type> <name>readBytes</name> <init>= <expr><operator>new</operator> <call><name>AtomicLong</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The number of write operations.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>AtomicLong</name></type> <name>writeCount</name> <init>= <expr><operator>new</operator> <call><name>AtomicLong</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The number of written bytes.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>AtomicLong</name></type> <name>writeBytes</name> <init>= <expr><operator>new</operator> <call><name>AtomicLong</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The free spaces between the chunks. The first block to use is block 2
+     * (the first two blocks are the store header).
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>FreeSpaceBitSet</name></type> <name>freeSpace</name> <init>=
+            <expr><operator>new</operator> <call><name>FreeSpaceBitSet</name><argument_list>(<argument><expr><literal type="number">2</literal></expr></argument>, <argument><expr><name><name>MVStore</name><operator>.</operator><name>BLOCK_SIZE</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The file name.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>String</name></type> <name>fileName</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Whether this store is read-only.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>readOnly</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The file size (cached).
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>long</name></type> <name>fileSize</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The file.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>FileChannel</name></type> <name>file</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The encrypted file (if encryption is used).
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>FileChannel</name></type> <name>encryptedFile</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The file lock.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>FileLock</name></type> <name>fileLock</name></decl>;</decl_stmt>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>fileName</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Read from the file.
+     *
+     * @param pos the write position
+     * @param len the number of bytes to read
+     * @return the byte buffer
+     */</comment>
+    <function><type><specifier>public</specifier> <name>ByteBuffer</name></type> <name>readFully</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>pos</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>len</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>dst</name> <init>= <expr><call><name><name>ByteBuffer</name><operator>.</operator><name>allocate</name></name><argument_list>(<argument><expr><name>len</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>DataUtils</name><operator>.</operator><name>readFully</name></name><argument_list>(<argument><expr><name>file</name></expr></argument>, <argument><expr><name>pos</name></expr></argument>, <argument><expr><name>dst</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>readCount</name><operator>.</operator><name>incrementAndGet</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>readBytes</name><operator>.</operator><name>addAndGet</name></name><argument_list>(<argument><expr><name>len</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>dst</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Write to the file.
+     *
+     * @param pos the write position
+     * @param src the source buffer
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>writeFully</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>pos</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>src</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>len</name> <init>= <expr><call><name><name>src</name><operator>.</operator><name>remaining</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name>fileSize</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>fileSize</name></expr></argument>, <argument><expr><name>pos</name> <operator>+</operator> <name>len</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>DataUtils</name><operator>.</operator><name>writeFully</name></name><argument_list>(<argument><expr><name>file</name></expr></argument>, <argument><expr><name>pos</name></expr></argument>, <argument><expr><name>src</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>writeCount</name><operator>.</operator><name>incrementAndGet</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>writeBytes</name><operator>.</operator><name>addAndGet</name></name><argument_list>(<argument><expr><name>len</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Try to open the file.
+     *
+     * @param fileName the file name
+     * @param readOnly whether the file should only be opened in read-only mode,
+     *            even if the file is writable
+     * @param encryptionKey the encryption key, or null if encryption is not
+     *            used
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>open</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>fileName</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>readOnly</name></decl></parameter>, <parameter><decl><type><name><name>char</name><index>[]</index></name></type> <name>encryptionKey</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>file</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <comment type="line">// ensure the Cache file system is registered</comment>
+        <expr_stmt><expr><call><name><name>FilePathCache</name><operator>.</operator><name>INSTANCE</name><operator>.</operator><name>getScheme</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>fileName</name></name> <operator>=</operator> <name>fileName</name></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>FilePath</name></type> <name>f</name> <init>= <expr><call><name><name>FilePath</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>fileName</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>FilePath</name></type> <name>parent</name> <init>= <expr><call><name><name>f</name><operator>.</operator><name>getParent</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>parent</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>parent</name><operator>.</operator><name>exists</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DataUtils</name><operator>.</operator><name>newIllegalArgumentException</name></name><argument_list>(
+                    <argument><expr><literal type="string">"Directory does not exist: {0}"</literal></expr></argument>, <argument><expr><name>parent</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>f</name><operator>.</operator><name>exists</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>f</name><operator>.</operator><name>canWrite</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>readOnly</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>readOnly</name></name> <operator>=</operator> <name>readOnly</name></expr>;</expr_stmt>
+        <try>try <block>{<block_content>
+            <expr_stmt><expr><name>file</name> <operator>=</operator> <call><name><name>f</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><ternary><condition><expr><name>readOnly</name></expr> ?</condition><then> <expr><literal type="string">"r"</literal></expr> </then><else>: <expr><literal type="string">"rw"</literal></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>encryptionKey</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <decl_stmt><decl><type><name><name>byte</name><index>[]</index></name></type> <name>key</name> <init>= <expr><call><name><name>FilePathEncrypt</name><operator>.</operator><name>getPasswordBytes</name></name><argument_list>(<argument><expr><name>encryptionKey</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><name>encryptedFile</name> <operator>=</operator> <name>file</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name>file</name> <operator>=</operator> <operator>new</operator> <call><name>FileEncrypt</name><argument_list>(<argument><expr><name>fileName</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>file</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <try>try <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>readOnly</name></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>fileLock</name> <operator>=</operator> <call><name><name>file</name><operator>.</operator><name>tryLock</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if> <else>else <block>{<block_content>
+                    <expr_stmt><expr><name>fileLock</name> <operator>=</operator> <call><name><name>file</name><operator>.</operator><name>tryLock</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>OverlappingFileLockException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+                <throw>throw <expr><call><name><name>DataUtils</name><operator>.</operator><name>newMVStoreException</name></name><argument_list>(
+                        <argument><expr><name><name>DataUtils</name><operator>.</operator><name>ERROR_FILE_LOCKED</name></name></expr></argument>,
+                        <argument><expr><literal type="string">"The file is locked: {0}"</literal></expr></argument>, <argument><expr><name>fileName</name></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+            <if_stmt><if>if <condition>(<expr><name>fileLock</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <try>try <block>{<block_content> <expr_stmt><expr><call><name>close</name><argument_list>()</argument_list></call></expr>;</expr_stmt> </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>ignore</name></decl></parameter>)</parameter_list> <block>{<block_content/>}</block></catch></try>
+                <throw>throw <expr><call><name><name>DataUtils</name><operator>.</operator><name>newMVStoreException</name></name><argument_list>(
+                        <argument><expr><name><name>DataUtils</name><operator>.</operator><name>ERROR_FILE_LOCKED</name></name></expr></argument>,
+                        <argument><expr><literal type="string">"The file is locked: {0}"</literal></expr></argument>, <argument><expr><name>fileName</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>fileSize</name> <operator>=</operator> <call><name><name>file</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <try>try <block>{<block_content> <expr_stmt><expr><call><name>close</name><argument_list>()</argument_list></call></expr>;</expr_stmt> </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>ignore</name></decl></parameter>)</parameter_list> <block>{<block_content/>}</block></catch></try>
+            <throw>throw <expr><call><name><name>DataUtils</name><operator>.</operator><name>newMVStoreException</name></name><argument_list>(
+                    <argument><expr><name><name>DataUtils</name><operator>.</operator><name>ERROR_READING_FAILED</name></name></expr></argument>,
+                    <argument><expr><literal type="string">"Could not open file {0}"</literal></expr></argument>, <argument><expr><name>fileName</name></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Close this store.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <try>try <block>{<block_content>
+            <if_stmt><if>if<condition>(<expr><name>file</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>file</name><operator>.</operator><name>isOpen</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>fileLock</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>fileLock</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>file</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DataUtils</name><operator>.</operator><name>newMVStoreException</name></name><argument_list>(
+                    <argument><expr><name><name>DataUtils</name><operator>.</operator><name>ERROR_WRITING_FAILED</name></name></expr></argument>,
+                    <argument><expr><literal type="string">"Closing failed for file {0}"</literal></expr></argument>, <argument><expr><name>fileName</name></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch> <finally>finally <block>{<block_content>
+            <expr_stmt><expr><name>fileLock</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><name>file</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        </block_content>}</block></finally></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Flush all changes.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>sync</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>file</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <try>try <block>{<block_content>
+                <expr_stmt><expr><call><name><name>file</name><operator>.</operator><name>force</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+                <throw>throw <expr><call><name><name>DataUtils</name><operator>.</operator><name>newMVStoreException</name></name><argument_list>(
+                        <argument><expr><name><name>DataUtils</name><operator>.</operator><name>ERROR_WRITING_FAILED</name></name></expr></argument>,
+                        <argument><expr><literal type="string">"Could not sync file {0}"</literal></expr></argument>, <argument><expr><name>fileName</name></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the file size.
+     *
+     * @return the file size
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>size</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>fileSize</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Truncate the file.
+     *
+     * @param size the new file size
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>truncate</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>size</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>attemptCount</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition> <block>{<block_content>
+            <try>try <block>{<block_content>
+                <expr_stmt><expr><call><name><name>writeCount</name><operator>.</operator><name>incrementAndGet</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>file</name><operator>.</operator><name>truncate</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>fileSize</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>fileSize</name></expr></argument>, <argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return;</return>
+            </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><operator>++</operator><name>attemptCount</name> <operator>==</operator> <literal type="number">10</literal></expr>)</condition> <block>{<block_content>
+                    <throw>throw <expr><call><name><name>DataUtils</name><operator>.</operator><name>newMVStoreException</name></name><argument_list>(
+                            <argument><expr><name><name>DataUtils</name><operator>.</operator><name>ERROR_WRITING_FAILED</name></name></expr></argument>,
+                            <argument><expr><literal type="string">"Could not truncate file {0} to size {1}"</literal></expr></argument>,
+                            <argument><expr><name>fileName</name></expr></argument>, <argument><expr><name>size</name></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>System</name><operator>.</operator><name>gc</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>Thread</name><operator>.</operator><name>yield</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the file instance in use.
+     * &lt;p&gt;
+     * The application may read from the file (for example for online backup),
+     * but not write to it or truncate it.
+     *
+     * @return the file
+     */</comment>
+    <function><type><specifier>public</specifier> <name>FileChannel</name></type> <name>getFile</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>file</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the encrypted file instance, if encryption is used.
+     * &lt;p&gt;
+     * The application may read from the file (for example for online backup),
+     * but not write to it or truncate it.
+     *
+     * @return the encrypted file, or null if encryption is not used
+     */</comment>
+    <function><type><specifier>public</specifier> <name>FileChannel</name></type> <name>getEncryptedFile</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>encryptedFile</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the number of write operations since this store was opened.
+     * For file based stores, this is the number of file write operations.
+     *
+     * @return the number of write operations
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getWriteCount</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>writeCount</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the number of written bytes since this store was opened.
+     *
+     * @return the number of write operations
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getWriteBytes</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>writeBytes</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the number of read operations since this store was opened.
+     * For file based stores, this is the number of file read operations.
+     *
+     * @return the number of read operations
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getReadCount</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>readCount</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the number of read bytes since this store was opened.
+     *
+     * @return the number of write operations
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getReadBytes</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>readBytes</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isReadOnly</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>readOnly</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the default retention time for this store in milliseconds.
+     *
+     * @return the retention time
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getDefaultRetentionTime</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="number">45_000</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Mark the space as in use.
+     *
+     * @param pos the position in bytes
+     * @param length the number of bytes
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>markUsed</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>pos</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>length</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>freeSpace</name><operator>.</operator><name>markUsed</name></name><argument_list>(<argument><expr><name>pos</name></expr></argument>, <argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Allocate a number of blocks and mark them as used.
+     *
+     * @param length the number of bytes to allocate
+     * @param reservedLow start block index of the reserved area (inclusive)
+     * @param reservedHigh end block index of the reserved area (exclusive),
+     *                     special value -1 means beginning of the infinite free area
+     * @return the start position in bytes
+     */</comment>
+    <function><type><name>long</name></type> <name>allocate</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>length</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>reservedLow</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>reservedHigh</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>freeSpace</name><operator>.</operator><name>allocate</name></name><argument_list>(<argument><expr><name>length</name></expr></argument>, <argument><expr><name>reservedLow</name></expr></argument>, <argument><expr><name>reservedHigh</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Calculate starting position of the prospective allocation.
+     *
+     * @param blocks the number of blocks to allocate
+     * @param reservedLow start block index of the reserved area (inclusive)
+     * @param reservedHigh end block index of the reserved area (exclusive),
+     *                     special value -1 means beginning of the infinite free area
+     * @return the starting block index
+     */</comment>
+    <function><type><name>long</name></type> <name>predictAllocation</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>blocks</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>reservedLow</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>reservedHigh</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>freeSpace</name><operator>.</operator><name>predictAllocation</name></name><argument_list>(<argument><expr><name>blocks</name></expr></argument>, <argument><expr><name>reservedLow</name></expr></argument>, <argument><expr><name>reservedHigh</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>boolean</name></type> <name>isFragmented</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>freeSpace</name><operator>.</operator><name>isFragmented</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Mark the space as free.
+     *
+     * @param pos the position in bytes
+     * @param length the number of bytes
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>free</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>pos</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>length</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>freeSpace</name><operator>.</operator><name>free</name></name><argument_list>(<argument><expr><name>pos</name></expr></argument>, <argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getFillRate</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>freeSpace</name><operator>.</operator><name>getFillRate</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Calculates a prospective fill rate, which store would have after rewrite
+     * of sparsely populated chunk(s) and evacuation of still live data into a
+     * new chunk.
+     *
+     * @param vacatedBlocks
+     *            number of blocks vacated
+     * @return prospective fill rate (0 - 100)
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getProjectedFillRate</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>vacatedBlocks</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>freeSpace</name><operator>.</operator><name>getProjectedFillRate</name></name><argument_list>(<argument><expr><name>vacatedBlocks</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>long</name></type> <name>getFirstFree</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>freeSpace</name><operator>.</operator><name>getFirstFree</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>long</name></type> <name>getFileLengthInUse</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>freeSpace</name><operator>.</operator><name>getLastFree</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Calculates relative "priority" for chunk to be moved.
+     *
+     * @param block where chunk starts
+     * @return priority, bigger number indicate that chunk need to be moved sooner
+     */</comment>
+    <function><type><name>int</name></type> <name>getMovePriority</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>block</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>freeSpace</name><operator>.</operator><name>getMovePriority</name></name><argument_list>(<argument><expr><name>block</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>long</name></type> <name>getAfterLastBlock</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>freeSpace</name><operator>.</operator><name>getAfterLastBlock</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Mark the file as empty.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>clear</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>freeSpace</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the file name.
+     *
+     * @return the file name
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getFileName</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>fileName</name></expr>;</return>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

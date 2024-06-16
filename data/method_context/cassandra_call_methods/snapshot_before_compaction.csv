@@ -1,0 +1,995 @@
+function,option,Method,Method_short,class_name,xml_path,Method_body
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.lifecycle.LifecycleTransaction:originals(),originals,LifecycleTransaction,../data/xml/cassandra_call_methods/LifecycleTransaction.xml,"/**
+     * the set of readers guarded by this transaction _in their original instance/state_
+     * call current(SSTableReader) on any reader in this set to get the latest instance
+     */
+public Set<SSTableReader> originals()
+    {
+        return Collections.unmodifiableSet(originals);
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.ColumnFamilyStore:getCompactionStrategyManager(),getCompactionStrategyManager,ColumnFamilyStore,../data/xml/cassandra_call_methods/ColumnFamilyStore.xml,"/*
+     JMX getters and setters for the Default<T>s.
+       - get/set minCompactionThreshold
+       - get/set maxCompactionThreshold
+       - get     memsize
+       - get     memops
+       - get/set memtime
+     */
+public CompactionStrategyManager getCompactionStrategyManager()
+    {
+        return compactionStrategyManager;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(S)org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),isSnapshotBeforeCompaction,DatabaseDescriptor,../data/xml/cassandra_call_methods/DatabaseDescriptor.xml,"
+public static boolean isSnapshotBeforeCompaction()
+    {
+        return conf.snapshot_before_compaction;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.CompactionController:getFullyExpiredSSTables(),getFullyExpiredSSTables,CompactionController,../data/xml/cassandra_call_methods/CompactionController.xml,"
+public Set<SSTableReader> getFullyExpiredSSTables()
+    {
+        return getFullyExpiredSSTables(cfs, compacting, overlappingSSTables, gcBefore, ignoreOverlaps());
+    }
+
+    
+/**
+     * Finds expired sstables
+     *
+     * works something like this;
+     * 1. find ""global"" minTimestamp of overlapping sstables, compacting sstables and memtables containing any non-expired data
+     * 2. build a list of fully expired candidates
+     * 3. check if the candidates to be dropped actually can be dropped {@code (maxTimestamp < global minTimestamp)}
+     *    - if not droppable, remove from candidates
+     * 4. return candidates.
+     *
+     * @param cfStore
+     * @param compacting we take the drop-candidates from this set, it is usually the sstables included in the compaction
+     * @param overlapping the sstables that overlap the ones in compacting.
+     * @param gcBefore
+     * @param ignoreOverlaps don't check if data shadows/overlaps any data in other sstables
+     * @return
+     */
+public static Set<SSTableReader> getFullyExpiredSSTables(ColumnFamilyStore cfStore,
+                                                             Iterable<SSTableReader> compacting,
+                                                             Iterable<SSTableReader> overlapping,
+                                                             int gcBefore,
+                                                             boolean ignoreOverlaps)
+    {
+        logger.trace(""Checking droppable sstables in {}"", cfStore);
+
+        if (NEVER_PURGE_TOMBSTONES || compacting == null || cfStore.getNeverPurgeTombstones())
+            return Collections.<SSTableReader>emptySet();
+
+        if (cfStore.getCompactionStrategyManager().onlyPurgeRepairedTombstones() && !Iterables.all(compacting, SSTableReader::isRepaired))
+            return Collections.emptySet();
+
+        if (ignoreOverlaps)
+        {
+            Set<SSTableReader> fullyExpired = new HashSet<>();
+            for (SSTableReader candidate : compacting)
+            {
+                if (candidate.getSSTableMetadata().maxLocalDeletionTime < gcBefore)
+                {
+                    fullyExpired.add(candidate);
+                    logger.trace(""Dropping overlap ignored expired SSTable {} (maxLocalDeletionTime={}, gcBefore={})"",
+                                 candidate, candidate.getSSTableMetadata().maxLocalDeletionTime, gcBefore);
+                }
+            }
+            return fullyExpired;
+        }
+
+        List<SSTableReader> candidates = new ArrayList<>();
+        long minTimestamp = Long.MAX_VALUE;
+
+        for (SSTableReader sstable : overlapping)
+        {
+            // Overlapping might include fully expired sstables. What we care about here is
+            // the min timestamp of the overlapping sstables that actually contain live data.
+            if (sstable.getSSTableMetadata().maxLocalDeletionTime >= gcBefore)
+                minTimestamp = Math.min(minTimestamp, sstable.getMinTimestamp());
+        }
+
+        for (SSTableReader candidate : compacting)
+        {
+            if (candidate.getSSTableMetadata().maxLocalDeletionTime < gcBefore)
+                candidates.add(candidate);
+            else
+                minTimestamp = Math.min(minTimestamp, candidate.getMinTimestamp());
+        }
+
+        for (Memtable memtable : cfStore.getTracker().getView().getAllMemtables())
+            minTimestamp = Math.min(minTimestamp, memtable.getMinTimestamp());
+
+        // At this point, minTimestamp denotes the lowest timestamp of any relevant
+        // SSTable or Memtable that contains a constructive value. candidates contains all the
+        // candidates with no constructive values. The ones out of these that have
+        // (getMaxTimestamp() < minTimestamp) serve no purpose anymore.
+
+        Iterator<SSTableReader> iterator = candidates.iterator();
+        while (iterator.hasNext())
+        {
+            SSTableReader candidate = iterator.next();
+            if (candidate.getMaxTimestamp() >= minTimestamp)
+            {
+                iterator.remove();
+            }
+            else
+            {
+               logger.trace(""Dropping expired SSTable {} (maxLocalDeletionTime={}, gcBefore={})"",
+                        candidate, candidate.getSSTableMetadata().maxLocalDeletionTime, gcBefore);
+            }
+        }
+        return new HashSet<>(candidates);
+    }
+
+    
+
+public static Set<SSTableReader> getFullyExpiredSSTables(ColumnFamilyStore cfStore,
+                                                             Iterable<SSTableReader> compacting,
+                                                             Iterable<SSTableReader> overlapping,
+                                                             int gcBefore)
+    {
+        return getFullyExpiredSSTables(cfStore, compacting, overlapping, gcBefore, false);
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(O)org.apache.cassandra.db.compaction.CompactionTask$1:<init>(org.apache.cassandra.db.compaction.CompactionTask),<init>,CompactionTask$1,../data/xml/cassandra_call_methods/CompactionTask.xml,"
+public class CompactionTask extends AbstractCompactionTask
+{
+    protected static final Logger logger = LoggerFactory.getLogger(CompactionTask.class);
+    protected final int gcBefore;
+    protected final boolean keepOriginals;
+    protected static long totalBytesCompacted = 0;
+    private ActiveCompactionsTracker activeCompactions;
+
+    public CompactionTask(ColumnFamilyStore cfs, LifecycleTransaction txn, int gcBefore)
+    {
+        this(cfs, txn, gcBefore, false);
+    }
+
+    public CompactionTask(ColumnFamilyStore cfs, LifecycleTransaction txn, int gcBefore, boolean keepOriginals)
+    {
+        super(cfs, txn);
+        this.gcBefore = gcBefore;
+        this.keepOriginals = keepOriginals;
+    }
+
+    public static synchronized long addToTotalBytesCompacted(long bytesCompacted)
+    {
+        return totalBytesCompacted += bytesCompacted;
+    }
+
+    protected int executeInternal(ActiveCompactionsTracker activeCompactions)
+    {
+        this.activeCompactions = activeCompactions == null ? ActiveCompactionsTracker.NOOP : activeCompactions;
+        run();
+        return transaction.originals().size();
+    }
+
+    public boolean reduceScopeForLimitedSpace(Set<SSTableReader> nonExpiredSSTables, long expectedSize)
+    {
+        if (partialCompactionsAcceptable() && transaction.originals().size() > 1)
+        {
+            // Try again w/o the largest one.
+            logger.warn(""insufficient space to compact all requested files. {}MB required, {} for compaction {}"",
+                        (float) expectedSize / 1024 / 1024,
+                        StringUtils.join(transaction.originals(), "", ""),
+                        transaction.opId());
+            // Note that we have removed files that are still marked as compacting.
+            // This suboptimal but ok since the caller will unmark all the sstables at the end.
+            SSTableReader removedSSTable = cfs.getMaxSizeFile(nonExpiredSSTables);
+            transaction.cancel(removedSSTable);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * For internal use and testing only.  The rest of the system should go through the submit* methods,
+     * which are properly serialized.
+     * Caller is in charge of marking/unmarking the sstables as compacting.
+     */
+    protected void runMayThrow() throws Exception
+    {
+        // The collection of sstables passed may be empty (but not null); even if
+        // it is not empty, it may compact down to nothing if all rows are deleted.
+        assert transaction != null;
+
+        if (transaction.originals().isEmpty())
+            return;
+
+        // Note that the current compaction strategy, is not necessarily the one this task was created under.
+        // This should be harmless; see comments to CFS.maybeReloadCompactionStrategy.
+        CompactionStrategyManager strategy = cfs.getCompactionStrategyManager();
+
+        if (DatabaseDescriptor.isSnapshotBeforeCompaction())
+            cfs.snapshotWithoutFlush(System.currentTimeMillis() + ""-compact-"" + cfs.name);
+
+        try (CompactionController controller = getCompactionController(transaction.originals()))
+        {
+
+            final Set<SSTableReader> fullyExpiredSSTables = controller.getFullyExpiredSSTables();
+
+            // select SSTables to compact based on available disk space.
+            buildCompactionCandidatesForAvailableDiskSpace(fullyExpiredSSTables);
+
+            // sanity check: all sstables must belong to the same cfs
+            assert !Iterables.any(transaction.originals(), new Predicate<SSTableReader>()
+            {
+                @Override
+                public boolean apply(SSTableReader sstable)
+                {
+                    return !sstable.descriptor.cfname.equals(cfs.name);
+                }
+            });
+
+            UUID taskId = transaction.opId();
+
+            // new sstables from flush can be added during a compaction, but only the compaction can remove them,
+            // so in our single-threaded compaction world this is a valid way of determining if we're compacting
+            // all the sstables (that existed when we started)
+            StringBuilder ssTableLoggerMsg = new StringBuilder(""["");
+            for (SSTableReader sstr : transaction.originals())
+            {
+                ssTableLoggerMsg.append(String.format(""%s:level=%d, "", sstr.getFilename(), sstr.getSSTableLevel()));
+            }
+            ssTableLoggerMsg.append(""]"");
+
+            logger.info(""Compacting ({}) {}"", taskId, ssTableLoggerMsg);
+
+            RateLimiter limiter = CompactionManager.instance.getRateLimiter();
+            long start = System.nanoTime();
+            long startTime = System.currentTimeMillis();
+            long totalKeysWritten = 0;
+            long estimatedKeys = 0;
+            long inputSizeBytes;
+
+            Set<SSTableReader> actuallyCompact = Sets.difference(transaction.originals(), fullyExpiredSSTables);
+            Collection<SSTableReader> newSStables;
+
+            long[] mergedRowCounts;
+            long totalSourceCQLRows;
+
+            // SSTableScanners need to be closed before markCompactedSSTablesReplaced call as scanners contain references
+            // to both ifile and dfile and SSTR will throw deletion errors on Windows if it tries to delete before scanner is closed.
+            // See CASSANDRA-8019 and CASSANDRA-8399
+            int nowInSec = FBUtilities.nowInSeconds();
+            try (Refs<SSTableReader> refs = Refs.ref(actuallyCompact);
+                 AbstractCompactionStrategy.ScannerList scanners = strategy.getScanners(actuallyCompact);
+                 CompactionIterator ci = new CompactionIterator(compactionType, scanners.scanners, controller, nowInSec, taskId))
+            {
+                long lastCheckObsoletion = start;
+                inputSizeBytes = scanners.getTotalCompressedSize();
+                double compressionRatio = scanners.getCompressionRatio();
+                if (compressionRatio == MetadataCollector.NO_COMPRESSION_RATIO)
+                    compressionRatio = 1.0;
+
+                long lastBytesScanned = 0;
+
+                activeCompactions.beginCompaction(ci);
+                try (CompactionAwareWriter writer = getCompactionAwareWriter(cfs, getDirectories(), transaction, actuallyCompact))
+                {
+                    // Note that we need to re-check this flag after calling beginCompaction above to avoid a window
+                    // where the compaction does not exist in activeCompactions but the CSM gets paused.
+                    // We already have the sstables marked compacting here so CompactionManager#waitForCessation will
+                    // block until the below exception is thrown and the transaction is cancelled.
+                    if (!controller.cfs.getCompactionStrategyManager().isActive())
+                        throw new CompactionInterruptedException(ci.getCompactionInfo());
+                    estimatedKeys = writer.estimatedKeys();
+                    while (ci.hasNext())
+                    {
+                        if (writer.append(ci.next()))
+                            totalKeysWritten++;
+
+
+                        long bytesScanned = scanners.getTotalBytesScanned();
+
+                        //Rate limit the scanners, and account for compression
+                        CompactionManager.compactionRateLimiterAcquire(limiter, bytesScanned, lastBytesScanned, compressionRatio);
+
+                        lastBytesScanned = bytesScanned;
+
+                        if (System.nanoTime() - lastCheckObsoletion > TimeUnit.MINUTES.toNanos(1L))
+                        {
+                            controller.maybeRefreshOverlaps();
+                            lastCheckObsoletion = System.nanoTime();
+                        }
+                    }
+
+                    // point of no return
+                    newSStables = writer.finish();
+                }
+                finally
+                {
+                    activeCompactions.finishCompaction(ci);
+                    mergedRowCounts = ci.getMergedRowCounts();
+                    totalSourceCQLRows = ci.getTotalSourceCQLRows();
+                }
+            }
+
+            if (transaction.isOffline())
+                return;
+
+            // log a bunch of statistics about the result and save to system table compaction_history
+            long durationInNano = System.nanoTime() - start;
+            long dTime = TimeUnit.NANOSECONDS.toMillis(durationInNano);
+            long startsize = inputSizeBytes;
+            long endsize = SSTableReader.getTotalBytes(newSStables);
+            double ratio = (double) endsize / (double) startsize;
+
+            StringBuilder newSSTableNames = new StringBuilder();
+            for (SSTableReader reader : newSStables)
+                newSSTableNames.append(reader.descriptor.baseFilename()).append("","");
+            long totalSourceRows = 0;
+            for (int i = 0; i < mergedRowCounts.length; i++)
+                totalSourceRows += mergedRowCounts[i] * (i + 1);
+
+            String mergeSummary = updateCompactionHistory(cfs.keyspace.getName(), cfs.getTableName(), mergedRowCounts, startsize, endsize);
+
+            logger.info(String.format(""Compacted (%s) %d sstables to [%s] to level=%d.  %s to %s (~%d%% of original) in %,dms.  Read Throughput = %s, Write Throughput = %s, Row Throughput = ~%,d/s.  %,d total partitions merged to %,d.  Partition merge counts were {%s}"",
+                                       taskId,
+                                       transaction.originals().size(),
+                                       newSSTableNames.toString(),
+                                       getLevel(),
+                                       FBUtilities.prettyPrintMemory(startsize),
+                                       FBUtilities.prettyPrintMemory(endsize),
+                                       (int) (ratio * 100),
+                                       dTime,
+                                       FBUtilities.prettyPrintMemoryPerSecond(startsize, durationInNano),
+                                       FBUtilities.prettyPrintMemoryPerSecond(endsize, durationInNano),
+                                       (int) totalSourceCQLRows / (TimeUnit.NANOSECONDS.toSeconds(durationInNano) + 1),
+                                       totalSourceRows,
+                                       totalKeysWritten,
+                                       mergeSummary));
+            if (logger.isTraceEnabled())
+            {
+                logger.trace(""CF Total Bytes Compacted: {}"", FBUtilities.prettyPrintMemory(CompactionTask.addToTotalBytesCompacted(endsize)));
+                logger.trace(""Actual #keys: {}, Estimated #keys:{}, Err%: {}"", totalKeysWritten, estimatedKeys, ((double)(totalKeysWritten - estimatedKeys)/totalKeysWritten));
+            }
+            cfs.getCompactionStrategyManager().compactionLogger.compaction(startTime, transaction.originals(), System.currentTimeMillis(), newSStables);
+
+            // update the metrics
+            cfs.metric.compactionBytesWritten.inc(endsize);
+        }
+    }
+
+    @Override
+    public CompactionAwareWriter getCompactionAwareWriter(ColumnFamilyStore cfs,
+                                                          Directories directories,
+                                                          LifecycleTransaction transaction,
+                                                          Set<SSTableReader> nonExpiredSSTables)
+    {
+        return new DefaultCompactionWriter(cfs, directories, transaction, nonExpiredSSTables, keepOriginals, getLevel());
+    }
+
+    public static String updateCompactionHistory(String keyspaceName, String columnFamilyName, long[] mergedRowCounts, long startSize, long endSize)
+    {
+        StringBuilder mergeSummary = new StringBuilder(mergedRowCounts.length * 10);
+        Map<Integer, Long> mergedRows = new HashMap<>();
+        for (int i = 0; i < mergedRowCounts.length; i++)
+        {
+            long count = mergedRowCounts[i];
+            if (count == 0)
+                continue;
+
+            int rows = i + 1;
+            mergeSummary.append(String.format(""%d:%d, "", rows, count));
+            mergedRows.put(rows, count);
+        }
+        SystemKeyspace.updateCompactionHistory(keyspaceName, columnFamilyName, System.currentTimeMillis(), startSize, endSize, mergedRows);
+        return mergeSummary.toString();
+    }
+
+    protected Directories getDirectories()
+    {
+        return cfs.getDirectories();
+    }
+
+    public static long getMinRepairedAt(Set<SSTableReader> actuallyCompact)
+    {
+        long minRepairedAt= Long.MAX_VALUE;
+        for (SSTableReader sstable : actuallyCompact)
+            minRepairedAt = Math.min(minRepairedAt, sstable.getSSTableMetadata().repairedAt);
+        if (minRepairedAt == Long.MAX_VALUE)
+            return ActiveRepairService.UNREPAIRED_SSTABLE;
+        return minRepairedAt;
+    }
+
+    public static UUID getPendingRepair(Set<SSTableReader> sstables)
+    {
+        if (sstables.isEmpty())
+        {
+            return ActiveRepairService.NO_PENDING_REPAIR;
+        }
+        Set<UUID> ids = new HashSet<>();
+        for (SSTableReader sstable: sstables)
+            ids.add(sstable.getSSTableMetadata().pendingRepair);
+
+        if (ids.size() != 1)
+            throw new RuntimeException(String.format(""Attempting to compact pending repair sstables with sstables from other repair, or sstables not pending repair: %s"", ids));
+
+        return ids.iterator().next();
+    }
+
+    public static boolean getIsTransient(Set<SSTableReader> sstables)
+    {
+        if (sstables.isEmpty())
+        {
+            return false;
+        }
+
+        boolean isTransient = sstables.iterator().next().isTransient();
+
+        if (!Iterables.all(sstables, sstable -> sstable.isTransient() == isTransient))
+        {
+            throw new RuntimeException(""Attempting to compact transient sstables with non transient sstables"");
+        }
+
+        return isTransient;
+    }
+
+
+    /*
+     * Checks if we have enough disk space to execute the compaction.  Drops the largest sstable out of the Task until
+     * there's enough space (in theory) to handle the compaction.  Does not take into account space that will be taken by
+     * other compactions.
+     */
+    protected void buildCompactionCandidatesForAvailableDiskSpace(final Set<SSTableReader> fullyExpiredSSTables)
+    {
+        if(!cfs.isCompactionDiskSpaceCheckEnabled() && compactionType == OperationType.COMPACTION)
+        {
+            logger.info(""Compaction space check is disabled"");
+            return; // try to compact all SSTables
+        }
+
+        final Set<SSTableReader> nonExpiredSSTables = Sets.difference(transaction.originals(), fullyExpiredSSTables);
+        CompactionStrategyManager strategy = cfs.getCompactionStrategyManager();
+        int sstablesRemoved = 0;
+
+        while(!nonExpiredSSTables.isEmpty())
+        {
+            // Only consider write size of non expired SSTables
+            long expectedWriteSize = cfs.getExpectedCompactedFileSize(nonExpiredSSTables, compactionType);
+            long estimatedSSTables = Math.max(1, expectedWriteSize / strategy.getMaxSSTableBytes());
+
+            if(cfs.getDirectories().hasAvailableDiskSpace(estimatedSSTables, expectedWriteSize))
+                break;
+
+            if (!reduceScopeForLimitedSpace(nonExpiredSSTables, expectedWriteSize))
+            {
+                // we end up here if we can't take any more sstables out of the compaction.
+                // usually means we've run out of disk space
+
+                // but we can still compact expired SSTables
+                if(partialCompactionsAcceptable() && fullyExpiredSSTables.size() > 0 )
+                {
+                    // sanity check to make sure we compact only fully expired SSTables.
+                    assert transaction.originals().equals(fullyExpiredSSTables);
+                    break;
+                }
+
+                String msg = String.format(""Not enough space for compaction, estimated sstables = %d, expected write size = %d"", estimatedSSTables, expectedWriteSize);
+                logger.warn(msg);
+                CompactionManager.instance.incrementAborted();
+                throw new RuntimeException(msg);
+            }
+
+            sstablesRemoved++;
+            logger.warn(""Not enough space for compaction, {}MB estimated.  Reducing scope."",
+                        (float) expectedWriteSize / 1024 / 1024);
+        }
+
+        if(sstablesRemoved > 0)
+        {
+            CompactionManager.instance.incrementCompactionsReduced();
+            CompactionManager.instance.incrementSstablesDropppedFromCompactions(sstablesRemoved);
+        }
+
+    }
+
+    protected int getLevel()
+    {
+        return 0;
+    }
+
+    protected CompactionController getCompactionController(Set<SSTableReader> toCompact)
+    {
+        return new CompactionController(cfs, toCompact, gcBefore);
+    }
+
+    protected boolean partialCompactionsAcceptable()
+    {
+        return !isUserDefined;
+    }
+
+    public static long getMaxDataAge(Collection<SSTableReader> sstables)
+    {
+        long max = 0;
+        for (SSTableReader sstable : sstables)
+        {
+            if (sstable.maxDataAge > max)
+                max = sstable.maxDataAge;
+        }
+        return max;
+    }
+}
+
+
+CompactionTask.class
+
+public CompactionTask(ColumnFamilyStore cfs, LifecycleTransaction txn, int gcBefore)
+    {
+        this(cfs, txn, gcBefore, false);
+    }
+
+    
+
+public CompactionTask(ColumnFamilyStore cfs, LifecycleTransaction txn, int gcBefore, boolean keepOriginals)
+    {
+        super(cfs, txn);
+        this.gcBefore = gcBefore;
+        this.keepOriginals = keepOriginals;
+    }
+
+    
+
+CompactionTask.addToTotalBytesCompacted"
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.lifecycle.LifecycleTransaction:opId(),opId,LifecycleTransaction,../data/xml/cassandra_call_methods/LifecycleTransaction.xml,"
+public UUID opId()
+    {
+        return log.id();
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.io.sstable.format.SSTableReader:getFilename(),getFilename,SSTableReader,../data/xml/cassandra_call_methods/SSTableReader.xml,"
+public String getFilename()
+    {
+        return dfile.path();
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.io.sstable.format.SSTableReader:getSSTableLevel(),getSSTableLevel,SSTableReader,../data/xml/cassandra_call_methods/SSTableReader.xml,"
+public int getSSTableLevel()
+    {
+        return sstableMetadata.sstableLevel;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.CompactionManager:getRateLimiter(),getRateLimiter,CompactionManager,../data/xml/cassandra_call_methods/CompactionManager.xml,"/**
+     * Gets compaction rate limiter.
+     * Rate unit is bytes per sec.
+     *
+     * @return RateLimiter with rate limit set
+     */
+public RateLimiter getRateLimiter()
+    {
+        setRate(DatabaseDescriptor.getCompactionThroughputMbPerSec());
+        return compactionRateLimiter;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(S)org.apache.cassandra.utils.FBUtilities:nowInSeconds(),nowInSeconds,FBUtilities,../data/xml/cassandra_call_methods/FBUtilities.xml,"
+public static int nowInSeconds()
+    {
+        return (int) (System.currentTimeMillis() / 1000);
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.AbstractCompactionStrategy$ScannerList:getTotalCompressedSize(),getTotalCompressedSize,AbstractCompactionStrategy$ScannerList,../data/xml/cassandra_call_methods/AbstractCompactionStrategy.xml,"
+public long getTotalCompressedSize()
+        {
+            long compressedSize = 0;
+            for (int i=0, isize=scanners.size(); i<isize; i++)
+                compressedSize += scanners.get(i).getCompressedLengthInBytes();
+
+            return compressedSize;
+        }
+
+        "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.AbstractCompactionStrategy$ScannerList:getCompressionRatio(),getCompressionRatio,AbstractCompactionStrategy$ScannerList,../data/xml/cassandra_call_methods/AbstractCompactionStrategy.xml,"
+public double getCompressionRatio()
+        {
+            double compressed = 0.0;
+            double uncompressed = 0.0;
+
+            for (int i=0, isize=scanners.size(); i<isize; i++)
+            {
+                @SuppressWarnings(""resource"")
+                ISSTableScanner scanner = scanners.get(i);
+                compressed += scanner.getCompressedLengthInBytes();
+                uncompressed += scanner.getLengthInBytes();
+            }
+
+            if (compressed == uncompressed || uncompressed == 0)
+                return MetadataCollector.NO_COMPRESSION_RATIO;
+
+            return compressed / uncompressed;
+        }
+
+        "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(I)org.apache.cassandra.db.compaction.ActiveCompactionsTracker:beginCompaction(org.apache.cassandra.db.compaction.CompactionInfo$Holder),beginCompaction,ActiveCompactionsTracker,../data/xml/cassandra_call_methods/ActiveCompactionsTracker.xml,"
+public void beginCompaction(CompactionInfo.Holder ci)
+        {}
+
+        "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.CompactionTask:getDirectories(),getDirectories,CompactionTask,../data/xml/cassandra_call_methods/CompactionTask.xml,"
+protected Directories getDirectories()
+    {
+        return cfs.getDirectories();
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.CompactionStrategyManager:isActive(),isActive,CompactionStrategyManager,../data/xml/cassandra_call_methods/CompactionStrategyManager.xml,"
+public boolean isActive()
+    {
+        return isActive;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.CompactionIterator:getCompactionInfo(),getCompactionInfo,CompactionIterator,../data/xml/cassandra_call_methods/CompactionIterator.xml,"
+public CompactionInfo getCompactionInfo()
+    {
+        return new CompactionInfo(controller.cfs.metadata(),
+                                  type,
+                                  bytesRead,
+                                  totalBytes,
+                                  compactionId,
+                                  sstables);
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(O)org.apache.cassandra.db.compaction.CompactionInterruptedException:<init>(org.apache.cassandra.db.compaction.CompactionInfo),<init>,CompactionInterruptedException,../data/xml/cassandra_call_methods/CompactionInterruptedException.xml,"
+public CompactionInterruptedException(CompactionInfo info)
+    {
+        super(""Compaction interrupted: "" + info);
+    }
+}"
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.writers.CompactionAwareWriter:estimatedKeys(),estimatedKeys,CompactionAwareWriter,../data/xml/cassandra_call_methods/CompactionAwareWriter.xml,"/**
+     * estimated number of keys we should write
+     */
+public long estimatedKeys()
+    {
+        return estimatedTotalKeys;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.CompactionIterator:hasNext(),hasNext,CompactionIterator,../data/xml/cassandra_call_methods/CompactionIterator.xml,"
+public boolean hasNext()
+    {
+        return compacted.hasNext();
+    }
+
+    
+
+@Override
+        public boolean hasNext()
+        {
+            // Produce the next element. This may consume multiple elements from both inputs until we find something
+            // from dataSource that is still live. We track the currently open deletion in both sources, as well as the
+            // one we have last issued to the output. The tombOpenDeletionTime is used to filter out content; the others
+            // to decide whether or not a tombstone is superseded, and to be able to surface (the rest of) a deletion
+            // range from the input when a suppressing deletion ends.
+            while (next == null && dataNext != null)
+            {
+                int cmp = tombNext == null ? -1 : metadata.comparator.compare(dataNext, tombNext);
+                if (cmp < 0)
+                {
+                    if (dataNext.isRow())
+                        next = ((Row) dataNext).filter(cf, activeDeletionTime, false, metadata);
+                    else
+                        next = processDataMarker();
+                }
+                else if (cmp == 0)
+                {
+                    if (dataNext.isRow())
+                    {
+                        next = garbageFilterRow((Row) dataNext, (Row) tombNext);
+                    }
+                    else
+                    {
+                        tombOpenDeletionTime = updateOpenDeletionTime(tombOpenDeletionTime, tombNext);
+                        activeDeletionTime = Ordering.natural().max(partitionDeletionTime,
+                                                                    tombOpenDeletionTime);
+                        next = processDataMarker();
+                    }
+                }
+                else // (cmp > 0)
+                {
+                    if (tombNext.isRangeTombstoneMarker())
+                    {
+                        tombOpenDeletionTime = updateOpenDeletionTime(tombOpenDeletionTime, tombNext);
+                        activeDeletionTime = Ordering.natural().max(partitionDeletionTime,
+                                                                    tombOpenDeletionTime);
+                        boolean supersededBefore = openDeletionTime.isLive();
+                        boolean supersededAfter = !dataOpenDeletionTime.supersedes(activeDeletionTime);
+                        // If a range open was not issued because it was superseded and the deletion isn't superseded any more, we need to open it now.
+                        if (supersededBefore && !supersededAfter)
+                            next = new RangeTombstoneBoundMarker(((RangeTombstoneMarker) tombNext).closeBound(false).invert(), dataOpenDeletionTime);
+                        // If the deletion begins to be superseded, we don't close the range yet. This can save us a close/open pair if it ends after the superseding range.
+                    }
+                }
+
+                if (next instanceof RangeTombstoneMarker)
+                    openDeletionTime = updateOpenDeletionTime(openDeletionTime, next);
+
+                if (cmp <= 0)
+                    dataNext = advance(wrapped);
+                if (cmp >= 0)
+                    tombNext = advance(tombSource);
+            }
+            return next != null;
+        }
+
+        "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.CompactionIterator:next(),next,CompactionIterator,../data/xml/cassandra_call_methods/CompactionIterator.xml,"
+public UnfilteredRowIterator next()
+    {
+        return compacted.next();
+    }
+
+    
+
+@Override
+        public Unfiltered next()
+        {
+            if (!hasNext())
+                throw new IllegalStateException();
+
+            Unfiltered v = next;
+            next = null;
+            return v;
+        }
+
+        "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.writers.CompactionAwareWriter:append(org.apache.cassandra.db.rows.UnfilteredRowIterator),append,CompactionAwareWriter,../data/xml/cassandra_call_methods/CompactionAwareWriter.xml,"/**
+     * Writes a partition in an implementation specific way
+     * @param partition the partition to append
+     * @return true if the partition was written, false otherwise
+     */
+public final boolean append(UnfilteredRowIterator partition)
+    {
+        maybeSwitchWriter(partition.partitionKey());
+        return realAppend(partition);
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.AbstractCompactionStrategy$ScannerList:getTotalBytesScanned(),getTotalBytesScanned,AbstractCompactionStrategy$ScannerList,../data/xml/cassandra_call_methods/AbstractCompactionStrategy.xml,"
+public long getTotalBytesScanned()
+        {
+            long bytesScanned = 0L;
+            for (int i=0, isize=scanners.size(); i<isize; i++)
+                bytesScanned += scanners.get(i).getBytesScanned();
+
+            return bytesScanned;
+        }
+
+        "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,"(S)org.apache.cassandra.db.compaction.CompactionManager:compactionRateLimiterAcquire(com.google.common.util.concurrent.RateLimiter,long,long,double)",compactionRateLimiterAcquire,CompactionManager,../data/xml/cassandra_call_methods/CompactionManager.xml,"
+static void compactionRateLimiterAcquire(RateLimiter limiter, long bytesScanned, long lastBytesScanned, double compressionRatio)
+    {
+        long lengthRead = (long) ((bytesScanned - lastBytesScanned) * compressionRatio) + 1;
+        while (lengthRead >= Integer.MAX_VALUE)
+        {
+            limiter.acquire(Integer.MAX_VALUE);
+            lengthRead -= Integer.MAX_VALUE;
+        }
+        if (lengthRead > 0)
+        {
+            limiter.acquire((int) lengthRead);
+        }
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.CompactionController:maybeRefreshOverlaps(),maybeRefreshOverlaps,CompactionController,../data/xml/cassandra_call_methods/CompactionController.xml,"
+public void maybeRefreshOverlaps()
+    {
+        if (NEVER_PURGE_TOMBSTONES)
+        {
+            logger.debug(""not refreshing overlaps - running with -D{}=true"",
+                    NEVER_PURGE_TOMBSTONES_PROPERTY);
+            return;
+        }
+
+        if (ignoreOverlaps())
+        {
+            logger.debug(""not refreshing overlaps - running with ignoreOverlaps activated"");
+            return;
+        }
+
+        if (cfs.getNeverPurgeTombstones())
+        {
+            logger.debug(""not refreshing overlaps for {}.{} - neverPurgeTombstones is enabled"", cfs.keyspace.getName(), cfs.getTableName());
+            return;
+        }
+
+        for (SSTableReader reader : overlappingSSTables)
+        {
+            if (reader.isMarkedCompacted())
+            {
+                refreshOverlaps();
+                return;
+            }
+        }
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.writers.CompactionAwareWriter:finish(),finish,CompactionAwareWriter,../data/xml/cassandra_call_methods/CompactionAwareWriter.xml,"/**
+     * we are done, return the finished sstables so that the caller can mark the old ones as compacted
+     * @return all the written sstables sstables
+     */
+@Override
+    public Collection<SSTableReader> finish()
+    {
+        super.finish();
+        return sstableWriter.finished();
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.writers.CompactionAwareWriter:close(),close,CompactionAwareWriter,../data/xml/cassandra_call_methods/CompactionAwareWriter.xml,not found
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(I)org.apache.cassandra.db.compaction.ActiveCompactionsTracker:finishCompaction(org.apache.cassandra.db.compaction.CompactionInfo$Holder),finishCompaction,ActiveCompactionsTracker,../data/xml/cassandra_call_methods/ActiveCompactionsTracker.xml,"
+public void finishCompaction(CompactionInfo.Holder ci)
+        {}
+    }"
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.CompactionIterator:getMergedRowCounts(),getMergedRowCounts,CompactionIterator,../data/xml/cassandra_call_methods/CompactionIterator.xml,"
+public long[] getMergedRowCounts()
+    {
+        return mergeCounters;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.CompactionIterator:getTotalSourceCQLRows(),getTotalSourceCQLRows,CompactionIterator,../data/xml/cassandra_call_methods/CompactionIterator.xml,"
+public long getTotalSourceCQLRows()
+    {
+        return totalSourceCQLRows;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.CompactionIterator:close(),close,CompactionIterator,../data/xml/cassandra_call_methods/CompactionIterator.xml,"
+public void close()
+                    {
+                    }
+                }
+
+public void close()
+            {
+            }
+        }
+
+public void close()
+    {
+        try
+        {
+            compacted.close();
+        }
+        finally
+        {
+            activeCompactions.finishCompaction(this);
+        }
+    }
+
+    
+
+public void close()
+        {
+            super.close();
+            tombSource.close();
+        }
+
+        "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.AbstractCompactionStrategy$ScannerList:close(),close,AbstractCompactionStrategy$ScannerList,../data/xml/cassandra_call_methods/AbstractCompactionStrategy.xml,"
+public void close()
+        {
+            ISSTableScanner.closeAllAndPropagate(scanners, null);
+        }
+    }"
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.utils.concurrent.Refs:close(),close,Refs,../data/xml/cassandra_call_methods/Refs.xml,"/**
+     * See {@link Refs#release()}
+     */
+public void close()
+    {
+        release();
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.lifecycle.LifecycleTransaction:isOffline(),isOffline,LifecycleTransaction,../data/xml/cassandra_call_methods/LifecycleTransaction.xml,"
+public boolean isOffline()
+    {
+        return tracker.isDummy();
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.CompactionController:close(),close,CompactionController,../data/xml/cassandra_call_methods/CompactionController.xml,"
+public void close()
+    {
+        if (overlappingSSTables != null)
+            overlappingSSTables.release();
+
+        FileUtils.closeQuietly(openDataFiles.values());
+        openDataFiles.clear();
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.io.sstable.Descriptor:baseFilename(),baseFilename,Descriptor,../data/xml/cassandra_call_methods/Descriptor.xml,"
+public String baseFilename()
+    {
+        StringBuilder buff = new StringBuilder();
+        buff.append(directory).append(File.separatorChar);
+        appendFileName(buff);
+        return buff.toString();
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.Keyspace:getName(),getName,Keyspace,../data/xml/cassandra_call_methods/Keyspace.xml,"
+public String getName()
+    {
+        return metadata.name;
+    }
+}"
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.ColumnFamilyStore:getTableName(),getTableName,ColumnFamilyStore,../data/xml/cassandra_call_methods/ColumnFamilyStore.xml,"
+public String getTableName()
+    {
+        return name;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(M)org.apache.cassandra.db.compaction.CompactionTask:getLevel(),getLevel,CompactionTask,../data/xml/cassandra_call_methods/CompactionTask.xml,"
+protected int getLevel()
+    {
+        return 0;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(S)org.apache.cassandra.utils.FBUtilities:prettyPrintMemory(long),prettyPrintMemory,FBUtilities,../data/xml/cassandra_call_methods/FBUtilities.xml,"
+public static String prettyPrintMemory(long size)
+    {
+        return prettyPrintMemory(size, false);
+    }
+
+    
+
+public static String prettyPrintMemory(long size, boolean includeSpace)
+    {
+        if (size >= 1 << 30)
+            return String.format(""%.3f%sGiB"", size / (double) (1 << 30), includeSpace ? "" "" : """");
+        if (size >= 1 << 20)
+            return String.format(""%.3f%sMiB"", size / (double) (1 << 20), includeSpace ? "" "" : """");
+        return String.format(""%.3f%sKiB"", size / (double) (1 << 10), includeSpace ? "" "" : """");
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,"(S)org.apache.cassandra.utils.FBUtilities:prettyPrintMemoryPerSecond(long,long)",prettyPrintMemoryPerSecond,FBUtilities,../data/xml/cassandra_call_methods/FBUtilities.xml,"
+public static String prettyPrintMemoryPerSecond(long rate)
+    {
+        if (rate >= 1 << 30)
+            return String.format(""%.3fGiB/s"", rate / (double) (1 << 30));
+        if (rate >= 1 << 20)
+            return String.format(""%.3fMiB/s"", rate / (double) (1 << 20));
+        return String.format(""%.3fKiB/s"", rate / (double) (1 << 10));
+    }
+
+    
+
+public static String prettyPrintMemoryPerSecond(long bytes, long timeInNano)
+    {
+        // We can't sanely calculate a rate over 0 nanoseconds
+        if (timeInNano == 0)
+            return ""NaN  KiB/s"";
+
+        long rate = (long) (((double) bytes / timeInNano) * 1000 * 1000 * 1000);
+
+        return prettyPrintMemoryPerSecond(rate);
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:isSnapshotBeforeCompaction(),snapshot_before_compaction,(S)org.apache.cassandra.db.compaction.CompactionTask:addToTotalBytesCompacted(long),addToTotalBytesCompacted,CompactionTask,../data/xml/cassandra_call_methods/CompactionTask.xml,"
+public static synchronized long addToTotalBytesCompacted(long bytesCompacted)
+    {
+        return totalBytesCompacted += bytesCompacted;
+    }
+
+    "

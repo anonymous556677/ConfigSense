@@ -1,0 +1,434 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/io/util/SequentialWriter.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>File</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>channels</name><operator>.</operator><name>FileChannel</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>file</name><operator>.</operator><name>StandardOpenOption</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>FSReadError</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>FSWriteError</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>SyncUtil</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Transactional</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>Throwables</name><operator>.</operator><name>merge</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Adds buffering, mark, and fsyncing to OutputStream.  We always fsync on close; we may also
+ * fsync incrementally if Config.trickle_fsync is enabled.
+ */</comment>
+<class><specifier>public</specifier> class <name>SequentialWriter</name> <super_list><extends>extends <super><name>BufferedDataOutputStreamPlus</name></super></extends> <implements>implements <super><name>Transactional</name></super></implements></super_list>
+<block>{
+    <comment type="line">// absolute path to the given file</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>String</name></type> <name>filePath</name></decl>;</decl_stmt>
+
+    <comment type="line">// Offset for start of buffer relative to underlying file</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>long</name></type> <name>bufferOffset</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>FileChannel</name></type> <name>fchannel</name></decl>;</decl_stmt>
+
+    <comment type="line">//Allow derived classes to specify writing to the channel</comment>
+    <comment type="line">//directly shouldn't happen because they intercept via doFlush for things</comment>
+    <comment type="line">//like compression or checksumming</comment>
+    <comment type="line">//Another hack for this value is that it also indicates that flushing early</comment>
+    <comment type="line">//should not occur, flushes aligned with buffer size are desired</comment>
+    <comment type="line">//Unless... it's the last flush. Compression and checksum formats</comment>
+    <comment type="line">//expect block (same as buffer size) alignment for everything except the last block</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>strictFlushing</name></decl>;</decl_stmt>
+
+    <comment type="line">// whether to do trickling fsync() to avoid sudden bursts of dirty buffer flushing by kernel causing read</comment>
+    <comment type="line">// latency spikes</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>SequentialWriterOption</name></type> <name>option</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>bytesSinceTrickleFsync</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>long</name></type> <name>lastFlushOffset</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>Runnable</name></type> <name>runPostFlush</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>TransactionalProxy</name></type> <name>txnProxy</name> <init>= <expr><call><name>txnProxy</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// due to lack of multiple-inheritance, we proxy our transactional implementation</comment>
+    <class><specifier>protected</specifier> class <name>TransactionalProxy</name> <super_list><extends>extends <super><name>AbstractTransactional</name></super></extends></super_list>
+    <block>{
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>protected</specifier> <name>Throwable</name></type> <name>doPreCleanup</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// close is idempotent</comment>
+            <try>try <block>{<block_content> <expr_stmt><expr><call><name><name>channel</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt> </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list> <block>{<block_content> <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name>merge</name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>, <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt> </block_content>}</block></catch></try>
+
+            <if_stmt><if>if <condition>(<expr><name>buffer</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <try>try <block>{<block_content> <expr_stmt><expr><call><name><name>FileUtils</name><operator>.</operator><name>clean</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt> </block_content>}</block>
+                <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list> <block>{<block_content> <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name>merge</name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>, <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt> </block_content>}</block></catch></try>
+                <expr_stmt><expr><name>buffer</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <return>return <expr><name>accumulate</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>protected</specifier> <name>void</name></type> <name>doPrepare</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>syncInternal</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>protected</specifier> <name>Throwable</name></type> <name>doCommit</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>accumulate</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>protected</specifier> <name>Throwable</name></type> <name>doAbort</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>accumulate</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="line">// TODO: we should specify as a parameter if we permit an existing file or not</comment>
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>FileChannel</name></type> <name>openChannel</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>file</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>file</name><operator>.</operator><name>exists</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <return>return <expr><call><name><name>FileChannel</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><call><name><name>file</name><operator>.</operator><name>toPath</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>StandardOpenOption</name><operator>.</operator><name>READ</name></name></expr></argument>, <argument><expr><name><name>StandardOpenOption</name><operator>.</operator><name>WRITE</name></name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>FileChannel</name></type> <name>channel</name> <init>= <expr><call><name><name>FileChannel</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><call><name><name>file</name><operator>.</operator><name>toPath</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>StandardOpenOption</name><operator>.</operator><name>READ</name></name></expr></argument>, <argument><expr><name><name>StandardOpenOption</name><operator>.</operator><name>WRITE</name></name></expr></argument>, <argument><expr><name><name>StandardOpenOption</name><operator>.</operator><name>CREATE_NEW</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <try>try
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>SyncUtil</name><operator>.</operator><name>trySyncDir</name></name><argument_list>(<argument><expr><call><name><name>file</name><operator>.</operator><name>getParentFile</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block>
+                <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+                <block>{<block_content>
+                    <try>try <block>{<block_content> <expr_stmt><expr><call><name><name>channel</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt> </block_content>}</block>
+                    <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t2</name></decl></parameter>)</parameter_list> <block>{<block_content> <expr_stmt><expr><call><name><name>t</name><operator>.</operator><name>addSuppressed</name></name><argument_list>(<argument><expr><name>t2</name></expr></argument>)</argument_list></call></expr>;</expr_stmt> </block_content>}</block></catch></try>
+                </block_content>}</block></catch></try>
+                <return>return <expr><name>channel</name></expr>;</return>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create heap-based, non-compressed SequenialWriter with default buffer size(64k).
+     *
+     * @param file File to write
+     */</comment>
+    <constructor><specifier>public</specifier> <name>SequentialWriter</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>file</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+       <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>file</name></expr></argument>, <argument><expr><name><name>SequentialWriterOption</name><operator>.</operator><name>DEFAULT</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Create SequentialWriter for given file with specific writer option.
+     *
+     * @param file File to write
+     * @param option Writer option
+     */</comment>
+    <constructor><specifier>public</specifier> <name>SequentialWriter</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>file</name></decl></parameter>, <parameter><decl><type><name>SequentialWriterOption</name></type> <name>option</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>file</name></expr></argument>, <argument><expr><name>option</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Create SequentialWriter for given file with specific writer option.
+     * @param file
+     * @param option
+     * @param strictFlushing
+     */</comment>
+    <constructor><specifier>public</specifier> <name>SequentialWriter</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>file</name></decl></parameter>, <parameter><decl><type><name>SequentialWriterOption</name></type> <name>option</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>strictFlushing</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><call><name>openChannel</name><argument_list>(<argument><expr><name>file</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>option</name><operator>.</operator><name>allocateBuffer</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>strictFlushing</name></name> <operator>=</operator> <name>strictFlushing</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>fchannel</name></name> <operator>=</operator> <operator>(</operator><name>FileChannel</name><operator>)</operator><name>channel</name></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>filePath</name></name> <operator>=</operator> <call><name><name>file</name><operator>.</operator><name>getAbsolutePath</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>option</name></name> <operator>=</operator> <name>option</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>skipBytes</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>numBytes</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>flush</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>fchannel</name><operator>.</operator><name>position</name></name><argument_list>(<argument><expr><call><name><name>fchannel</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call> <operator>+</operator> <name>numBytes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>bufferOffset</name> <operator>=</operator> <call><name><name>fchannel</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Synchronize file contents with disk.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>sync</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>syncInternal</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>void</name></type> <name>syncDataOnlyInternal</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>SyncUtil</name><operator>.</operator><name>force</name></name><argument_list>(<argument><expr><name>fchannel</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>FSWriteError</name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><call><name>getPath</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <comment type="block">/*
+     * This is only safe to call before truncation or close for CompressedSequentialWriter
+     * Otherwise it will leave a non-uniform size compressed block in the middle of the file
+     * and the compressed format can't handle that.
+     */</comment>
+    <function><type><specifier>protected</specifier> <name>void</name></type> <name>syncInternal</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>doFlush</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>syncDataOnlyInternal</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>protected</specifier> <name>void</name></type> <name>doFlush</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>count</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>flushData</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>option</name><operator>.</operator><name>trickleFsync</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>bytesSinceTrickleFsync</name> <operator>+=</operator> <call><name><name>buffer</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>bytesSinceTrickleFsync</name> <operator>&gt;=</operator> <call><name><name>option</name><operator>.</operator><name>trickleFsyncByteInterval</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>syncDataOnlyInternal</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>bytesSinceTrickleFsync</name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <comment type="line">// Remember that we wrote, so we don't write it again on next flush().</comment>
+        <expr_stmt><expr><call><name>resetBuffer</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setPostFlushListener</name><parameter_list>(<parameter><decl><type><name>Runnable</name></type> <name>runPostFlush</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><name><name>this</name><operator>.</operator><name>runPostFlush</name></name> <operator>==</operator> <literal type="null">null</literal></expr>;</assert>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>runPostFlush</name></name> <operator>=</operator> <name>runPostFlush</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Override this method instead of overriding flush()
+     * @throws FSWriteError on any I/O error.
+     */</comment>
+    <function><type><specifier>protected</specifier> <name>void</name></type> <name>flushData</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>flip</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>channel</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>lastFlushOffset</name> <operator>+=</operator> <call><name><name>buffer</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>FSWriteError</name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><call><name>getPath</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+        <if_stmt><if>if <condition>(<expr><name>runPostFlush</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>runPostFlush</name><operator>.</operator><name>run</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>hasPosition</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>position</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>current</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns the current file pointer of the underlying on-disk file.
+     * Note that since write works by buffering data, the value of this will increase by buffer
+     * size and not every write to the writer will modify this value.
+     * Furthermore, for compressed files, this value refers to compressed data, while the
+     * writer getFilePointer() refers to uncompressedFile
+     *
+     * @return the current file pointer
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getOnDiskFilePointer</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>position</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getEstimatedOnDiskBytesWritten</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>getOnDiskFilePointer</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>length</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <return>return <expr><call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><call><name>current</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>fchannel</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>FSReadError</name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><call><name>getPath</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getPath</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>filePath</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>void</name></type> <name>resetBuffer</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>bufferOffset</name> <operator>=</operator> <call><name>current</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>long</name></type> <name>current</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>bufferOffset</name> <operator>+</operator> <operator>(</operator><ternary><condition><expr><name>buffer</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="number">0</literal></expr> </then><else>: <expr><call><name><name>buffer</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr></else></ternary><operator>)</operator></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>DataPosition</name></type> <name>mark</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>BufferedFileWriterMark</name><argument_list>(<argument><expr><call><name>current</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Drops all buffered data that's past the limits of our new file mark + buffer capacity, or syncs and truncates
+     * the underlying file to the marked position
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>resetAndTruncate</name><parameter_list>(<parameter><decl><type><name>DataPosition</name></type> <name>mark</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><name>mark</name> <operator>instanceof</operator> <name>BufferedFileWriterMark</name></expr>;</assert>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>previous</name> <init>= <expr><call><name>current</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>truncateTarget</name> <init>= <expr><operator>(</operator><operator>(</operator><name>BufferedFileWriterMark</name><operator>)</operator> <name>mark</name><operator>)</operator><operator>.</operator><name>pointer</name></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// If we're resetting to a point within our buffered data, just adjust our buffered position to drop bytes to</comment>
+        <comment type="line">// the right of the desired mark.</comment>
+        <if_stmt><if>if <condition>(<expr><name>previous</name> <operator>-</operator> <name>truncateTarget</name> <operator>&lt;=</operator> <call><name><name>buffer</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>position</name></name><argument_list>(<argument><expr><call><name><name>buffer</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call> <operator>-</operator> <operator>(</operator><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><name>previous</name> <operator>-</operator> <name>truncateTarget</name><operator>)</operator><operator>)</operator></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <comment type="line">// synchronize current buffer with disk - we don't want any data loss</comment>
+        <expr_stmt><expr><call><name>syncInternal</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// truncate file to given position</comment>
+        <expr_stmt><expr><call><name>truncate</name><argument_list>(<argument><expr><name>truncateTarget</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>fchannel</name><operator>.</operator><name>position</name></name><argument_list>(<argument><expr><name>truncateTarget</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>FSReadError</name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><call><name>getPath</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+
+        <expr_stmt><expr><name>bufferOffset</name> <operator>=</operator> <name>truncateTarget</name></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>resetBuffer</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getLastFlushOffset</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>lastFlushOffset</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>truncate</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>toSize</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>fchannel</name><operator>.</operator><name>truncate</name></name><argument_list>(<argument><expr><name>toSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>lastFlushOffset</name> <operator>=</operator> <name>toSize</name></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>FSWriteError</name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><call><name>getPath</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isOpen</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>channel</name><operator>.</operator><name>isOpen</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>final</specifier> <name>void</name></type> <name>prepareToCommit</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>txnProxy</name><operator>.</operator><name>prepareToCommit</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>final</specifier> <name>Throwable</name></type> <name>commit</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>txnProxy</name><operator>.</operator><name>commit</name></name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>final</specifier> <name>Throwable</name></type> <name>abort</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>txnProxy</name><operator>.</operator><name>abort</name></name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <specifier>final</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>option</name><operator>.</operator><name>finishOnClose</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>txnProxy</name><operator>.</operator><name>finish</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>txnProxy</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>writeDirectlyToChannel</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>buf</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>strictFlushing</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>UnsupportedOperationException</name><argument_list>()</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <comment type="line">// Don't allow writes to the underlying channel while data is buffered</comment>
+        <expr_stmt><expr><call><name>flush</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name><name>channel</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><name>buf</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>final</specifier> <name>void</name></type> <name>finish</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>txnProxy</name><operator>.</operator><name>finish</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>TransactionalProxy</name></type> <name>txnProxy</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>TransactionalProxy</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Class to hold a mark to the position of the file
+     */</comment>
+    <class><specifier>protected</specifier> <specifier>static</specifier> class <name>BufferedFileWriterMark</name> <super_list><implements>implements <super><name>DataPosition</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>pointer</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>BufferedFileWriterMark</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>pointer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>pointer</name></name> <operator>=</operator> <name>pointer</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+    }</block></class>
+}</block></class>
+</unit>

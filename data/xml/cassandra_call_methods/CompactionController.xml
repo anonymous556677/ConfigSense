@@ -1,0 +1,354 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/compaction/CompactionController.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>compaction</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>LongPredicate</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Predicates</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterables</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>RateLimiter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>Config</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>Partition</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>UnfilteredRowIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>format</name><operator>.</operator><name>SSTableReader</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>FileDataInput</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>FileUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>CompactionParams</name><operator>.</operator><name>TombstoneOption</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>AlwaysPresentFilter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>OverlapIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Refs</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>lifecycle</name><operator>.</operator><name>SSTableIntervalTree</name><operator>.</operator><name>buildIntervals</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Manage compaction options.
+ */</comment>
+<class><specifier>public</specifier> class <name>CompactionController</name> <super_list><extends>extends <super><name>AbstractCompactionController</name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>CompactionController</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>NEVER_PURGE_TOMBSTONES_PROPERTY</name> <init>= <expr><name><name>Config</name><operator>.</operator><name>PROPERTY_PREFIX</name></name> <operator>+</operator> <literal type="string">"never_purge_tombstones"</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>NEVER_PURGE_TOMBSTONES</name> <init>= <expr><call><name><name>Boolean</name><operator>.</operator><name>getBoolean</name></name><argument_list>(<argument><expr><name>NEVER_PURGE_TOMBSTONES_PROPERTY</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>compactingRepaired</name></decl>;</decl_stmt>
+    <comment type="line">// note that overlapIterator and overlappingSSTables will be null if NEVER_PURGE_TOMBSTONES is set - this is a</comment>
+    <comment type="line">// good thing so that noone starts using them and thinks that if overlappingSSTables is empty, there</comment>
+    <comment type="line">// is no overlap.</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>Refs</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>overlappingSSTables</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>OverlapIterator</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>, <argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>overlapIterator</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>compacting</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>RateLimiter</name></type> <name>limiter</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>minTimestamp</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>final</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>, <argument><name>FileDataInput</name></argument>&gt;</argument_list></name></type> <name>openDataFiles</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <constructor><specifier>protected</specifier> <name>CompactionController</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>maxValue</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>maxValue</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>public</specifier> <name>CompactionController</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>, <parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>compacting</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>gcBefore</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><name>compacting</name></expr></argument>, <argument><expr><name>gcBefore</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>,
+             <argument><expr><call><name><name>cfs</name><operator>.</operator><name>getCompactionStrategyManager</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getCompactionParams</name><argument_list>()</argument_list></call><operator>.</operator><call><name>tombstoneOption</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>public</specifier> <name>CompactionController</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>, <parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>compacting</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>gcBefore</name></decl></parameter>, <parameter><decl><type><name>RateLimiter</name></type> <name>limiter</name></decl></parameter>, <parameter><decl><type><name>TombstoneOption</name></type> <name>tombstoneOption</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><name>gcBefore</name></expr></argument>, <argument><expr><name>tombstoneOption</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>compacting</name></name> <operator>=</operator> <name>compacting</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>limiter</name></name> <operator>=</operator> <name>limiter</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name>compactingRepaired</name> <operator>=</operator> <name>compacting</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>compacting</name><operator>.</operator><name>stream</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>allMatch</name><argument_list>(<argument><expr><name>SSTableReader</name><operator>::</operator><name>isRepaired</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>minTimestamp</name></name> <operator>=</operator> <ternary><condition><expr><name>compacting</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>compacting</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>       <comment type="line">// check needed for test</comment>
+                          ?</condition><then> <expr><call><name><name>compacting</name><operator>.</operator><name>stream</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>mapToLong</name><argument_list>(<argument><expr><name>SSTableReader</name><operator>::</operator><name>getMinTimestamp</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>min</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getAsLong</name><argument_list>()</argument_list></call></expr>
+                          </then><else>: <expr><literal type="number">0</literal></expr></else></ternary></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>refreshOverlaps</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>NEVER_PURGE_TOMBSTONES</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"You are running with -Dcassandra.never_purge_tombstones=true, this is dangerous!"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>maybeRefreshOverlaps</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>NEVER_PURGE_TOMBSTONES</name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"not refreshing overlaps - running with -D{}=true"</literal></expr></argument>,
+                    <argument><expr><name>NEVER_PURGE_TOMBSTONES_PROPERTY</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name>ignoreOverlaps</name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"not refreshing overlaps - running with ignoreOverlaps activated"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>cfs</name><operator>.</operator><name>getNeverPurgeTombstones</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"not refreshing overlaps for {}.{} - neverPurgeTombstones is enabled"</literal></expr></argument>, <argument><expr><call><name><name>cfs</name><operator>.</operator><name>keyspace</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>cfs</name><operator>.</operator><name>getTableName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>reader</name> <range>: <expr><name>overlappingSSTables</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>reader</name><operator>.</operator><name>isMarkedCompacted</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>refreshOverlaps</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <return>return;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>refreshOverlaps</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>NEVER_PURGE_TOMBSTONES</name> <operator>||</operator> <call><name><name>cfs</name><operator>.</operator><name>getNeverPurgeTombstones</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name><name>this</name><operator>.</operator><name>overlappingSSTables</name></name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>close</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>compacting</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name>ignoreOverlaps</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>overlappingSSTables</name> <operator>=</operator> <call><name><name>Refs</name><operator>.</operator><name>tryRef</name></name><argument_list>(<argument><expr><name><name>Collections</name><operator>.</operator></name>&lt;<name>SSTableReader</name><operator>&gt;</operator><call><name>emptyList</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><name>overlappingSSTables</name> <operator>=</operator> <call><name><name>cfs</name><operator>.</operator><name>getAndReferenceOverlappingLiveSSTables</name></name><argument_list>(<argument><expr><name>compacting</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>overlapIterator</name></name> <operator>=</operator> <operator>new</operator> <call><name><name>OverlapIterator</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name>buildIntervals</name><argument_list>(<argument><expr><name>overlappingSSTables</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>getFullyExpiredSSTables</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>getFullyExpiredSSTables</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><name>compacting</name></expr></argument>, <argument><expr><name>overlappingSSTables</name></expr></argument>, <argument><expr><name>gcBefore</name></expr></argument>, <argument><expr><call><name>ignoreOverlaps</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Finds expired sstables
+     *
+     * works something like this;
+     * 1. find "global" minTimestamp of overlapping sstables, compacting sstables and memtables containing any non-expired data
+     * 2. build a list of fully expired candidates
+     * 3. check if the candidates to be dropped actually can be dropped {@code (maxTimestamp &lt; global minTimestamp)}
+     *    - if not droppable, remove from candidates
+     * 4. return candidates.
+     *
+     * @param cfStore
+     * @param compacting we take the drop-candidates from this set, it is usually the sstables included in the compaction
+     * @param overlapping the sstables that overlap the ones in compacting.
+     * @param gcBefore
+     * @param ignoreOverlaps don't check if data shadows/overlaps any data in other sstables
+     * @return
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>getFullyExpiredSSTables</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfStore</name></decl></parameter>,
+                                                             <parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>compacting</name></decl></parameter>,
+                                                             <parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>overlapping</name></decl></parameter>,
+                                                             <parameter><decl><type><name>int</name></type> <name>gcBefore</name></decl></parameter>,
+                                                             <parameter><decl><type><name>boolean</name></type> <name>ignoreOverlaps</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Checking droppable sstables in {}"</literal></expr></argument>, <argument><expr><name>cfStore</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>NEVER_PURGE_TOMBSTONES</name> <operator>||</operator> <name>compacting</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>cfStore</name><operator>.</operator><name>getNeverPurgeTombstones</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name><name>Collections</name><operator>.</operator></name>&lt;<name>SSTableReader</name><operator>&gt;</operator><call><name>emptySet</name><argument_list>()</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>cfStore</name><operator>.</operator><name>getCompactionStrategyManager</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>onlyPurgeRepairedTombstones</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>Iterables</name><operator>.</operator><name>all</name></name><argument_list>(<argument><expr><name>compacting</name></expr></argument>, <argument><expr><name>SSTableReader</name><operator>::</operator><name>isRepaired</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>Collections</name><operator>.</operator><name>emptySet</name></name><argument_list>()</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>ignoreOverlaps</name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>fullyExpired</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>candidate</name> <range>: <expr><name>compacting</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>candidate</name><operator>.</operator><name>getSSTableMetadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>maxLocalDeletionTime</name> <operator>&lt;</operator> <name>gcBefore</name></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>fullyExpired</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>candidate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Dropping overlap ignored expired SSTable {} (maxLocalDeletionTime={}, gcBefore={})"</literal></expr></argument>,
+                                 <argument><expr><name>candidate</name></expr></argument>, <argument><expr><call><name><name>candidate</name><operator>.</operator><name>getSSTableMetadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>maxLocalDeletionTime</name></expr></argument>, <argument><expr><name>gcBefore</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></for>
+            <return>return <expr><name>fullyExpired</name></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>candidates</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>minTimestamp</name> <init>= <expr><name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>sstable</name> <range>: <expr><name>overlapping</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <comment type="line">// Overlapping might include fully expired sstables. What we care about here is</comment>
+            <comment type="line">// the min timestamp of the overlapping sstables that actually contain live data.</comment>
+            <if_stmt><if>if <condition>(<expr><call><name><name>sstable</name><operator>.</operator><name>getSSTableMetadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>maxLocalDeletionTime</name> <operator>&gt;=</operator> <name>gcBefore</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>minTimestamp</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>minTimestamp</name></expr></argument>, <argument><expr><call><name><name>sstable</name><operator>.</operator><name>getMinTimestamp</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+
+        <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>candidate</name> <range>: <expr><name>compacting</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>candidate</name><operator>.</operator><name>getSSTableMetadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>maxLocalDeletionTime</name> <operator>&lt;</operator> <name>gcBefore</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>candidates</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>candidate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><name>minTimestamp</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>minTimestamp</name></expr></argument>, <argument><expr><call><name><name>candidate</name><operator>.</operator><name>getMinTimestamp</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        </block_content>}</block></for>
+
+        <for>for <control>(<init><decl><type><name>Memtable</name></type> <name>memtable</name> <range>: <expr><call><name><name>cfStore</name><operator>.</operator><name>getTracker</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getView</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getAllMemtables</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>minTimestamp</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>minTimestamp</name></expr></argument>, <argument><expr><call><name><name>memtable</name><operator>.</operator><name>getMinTimestamp</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+        <comment type="line">// At this point, minTimestamp denotes the lowest timestamp of any relevant</comment>
+        <comment type="line">// SSTable or Memtable that contains a constructive value. candidates contains all the</comment>
+        <comment type="line">// candidates with no constructive values. The ones out of these that have</comment>
+        <comment type="line">// (getMaxTimestamp() &lt; minTimestamp) serve no purpose anymore.</comment>
+
+        <decl_stmt><decl><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>iterator</name> <init>= <expr><call><name><name>candidates</name><operator>.</operator><name>iterator</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <while>while <condition>(<expr><call><name><name>iterator</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>SSTableReader</name></type> <name>candidate</name> <init>= <expr><call><name><name>iterator</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>candidate</name><operator>.</operator><name>getMaxTimestamp</name></name><argument_list>()</argument_list></call> <operator>&gt;=</operator> <name>minTimestamp</name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>iterator</name><operator>.</operator><name>remove</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+               <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Dropping expired SSTable {} (maxLocalDeletionTime={}, gcBefore={})"</literal></expr></argument>,
+                        <argument><expr><name>candidate</name></expr></argument>, <argument><expr><call><name><name>candidate</name><operator>.</operator><name>getSSTableMetadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>maxLocalDeletionTime</name></expr></argument>, <argument><expr><name>gcBefore</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></while>
+        <return>return <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>candidates</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>getFullyExpiredSSTables</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfStore</name></decl></parameter>,
+                                                             <parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>compacting</name></decl></parameter>,
+                                                             <parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>overlapping</name></decl></parameter>,
+                                                             <parameter><decl><type><name>int</name></type> <name>gcBefore</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>getFullyExpiredSSTables</name><argument_list>(<argument><expr><name>cfStore</name></expr></argument>, <argument><expr><name>compacting</name></expr></argument>, <argument><expr><name>overlapping</name></expr></argument>, <argument><expr><name>gcBefore</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @param key
+     * @return a predicate for whether tombstones marked for deletion at the given time for the given partition are
+     * purgeable; we calculate this by checking whether the deletion time is less than the min timestamp of all SSTables
+     * containing his partition and not participating in the compaction. This means there isn't any data in those
+     * sstables that might still need to be suppressed by a tombstone at this timestamp.
+     */</comment>
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>LongPredicate</name></type> <name>getPurgeEvaluator</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>NEVER_PURGE_TOMBSTONES</name> <operator>||</operator> <operator>!</operator><call><name>compactingRepaired</name><argument_list>()</argument_list></call> <operator>||</operator> <call><name><name>cfs</name><operator>.</operator><name>getNeverPurgeTombstones</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><lambda><parameter_list type="pseudo"><parameter><decl><name>time</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><literal type="boolean">false</literal></expr></block_content></block></lambda></expr>;</return></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>overlapIterator</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>filteredSSTables</name> <init>= <expr><call><name><name>overlapIterator</name><operator>.</operator><name>overlaps</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>Memtable</name></argument>&gt;</argument_list></name></type> <name>memtables</name> <init>= <expr><call><name><name>cfs</name><operator>.</operator><name>getTracker</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getView</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getAllMemtables</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>minTimestampSeen</name> <init>= <expr><name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>hasTimestamp</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>sstable</name><range>: <expr><name>filteredSSTables</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <comment type="line">// if we don't have bloom filter(bf_fp_chance=1.0 or filter file is missing),</comment>
+            <comment type="line">// we check index file instead.</comment>
+            <if_stmt><if>if <condition>(<expr><call><name><name>sstable</name><operator>.</operator><name>getBloomFilter</name></name><argument_list>()</argument_list></call> <operator>instanceof</operator> <name>AlwaysPresentFilter</name> <operator>&amp;&amp;</operator> <call><name><name>sstable</name><operator>.</operator><name>getPosition</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><name><name>SSTableReader</name><operator>.</operator><name>Operator</name><operator>.</operator><name>EQ</name></name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call> <operator>!=</operator> <literal type="null">null</literal>
+                <operator>||</operator> <call><name><name>sstable</name><operator>.</operator><name>getBloomFilter</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isPresent</name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>minTimestampSeen</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>minTimestampSeen</name></expr></argument>, <argument><expr><call><name><name>sstable</name><operator>.</operator><name>getMinTimestamp</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>hasTimestamp</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+
+        <for>for <control>(<init><decl><type><name>Memtable</name></type> <name>memtable</name> <range>: <expr><name>memtables</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Partition</name></type> <name>partition</name> <init>= <expr><call><name><name>memtable</name><operator>.</operator><name>getPartition</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>partition</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>minTimestampSeen</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>minTimestampSeen</name></expr></argument>, <argument><expr><call><name><name>partition</name><operator>.</operator><name>stats</name></name><argument_list>()</argument_list></call><operator>.</operator><name>minTimestamp</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>hasTimestamp</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>hasTimestamp</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><lambda><parameter_list type="pseudo"><parameter><decl><name>time</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><literal type="boolean">true</literal></expr></block_content></block></lambda></expr>;</return></block_content></block></if>
+        <else>else
+        <block>{<block_content>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>finalTimestamp</name> <init>= <expr><name>minTimestampSeen</name></expr></init></decl>;</decl_stmt>
+            <return>return <expr><lambda><parameter_list type="pseudo"><parameter><decl><name>time</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name>time</name> <operator>&lt;</operator> <name>finalTimestamp</name></expr></block_content></block></lambda></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>overlappingSSTables</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>overlappingSSTables</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>FileUtils</name><operator>.</operator><name>closeQuietly</name></name><argument_list>(<argument><expr><call><name><name>openDataFiles</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>openDataFiles</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>compactingRepaired</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>!</operator><call><name><name>cfs</name><operator>.</operator><name>getCompactionStrategyManager</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>onlyPurgeRepairedTombstones</name><argument_list>()</argument_list></call> <operator>||</operator> <name>compactingRepaired</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>boolean</name></type> <name>provideTombstoneSources</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>tombstoneOption</name> <operator>!=</operator> <name><name>TombstoneOption</name><operator>.</operator><name>NONE</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// caller must close iterators</comment>
+    <function><type><specifier>public</specifier> <name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>UnfilteredRowIterator</name></argument>&gt;</argument_list></name></type> <name>shadowSources</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>tombstoneOnly</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>provideTombstoneSources</name><argument_list>()</argument_list></call> <operator>||</operator> <operator>!</operator><call><name>compactingRepaired</name><argument_list>()</argument_list></call> <operator>||</operator> <name>NEVER_PURGE_TOMBSTONES</name> <operator>||</operator> <call><name><name>cfs</name><operator>.</operator><name>getNeverPurgeTombstones</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>overlapIterator</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name><name>Iterables</name><operator>.</operator><name>filter</name></name><argument_list>(<argument><expr><call><name><name>Iterables</name><operator>.</operator><name>transform</name></name><argument_list>(<argument><expr><call><name><name>overlapIterator</name><operator>.</operator><name>overlaps</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                    <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>reader</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name>getShadowIterator</name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>tombstoneOnly</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr></argument>,
+                                <argument><expr><call><name><name>Predicates</name><operator>.</operator><name>notNull</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation> <comment type="line">// caller to close</comment>
+    <type><specifier>private</specifier> <name>UnfilteredRowIterator</name></type> <name>getShadowIterator</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>reader</name></decl></parameter>, <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>tombstoneOnly</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>reader</name><operator>.</operator><name>isMarkedSuspect</name></name><argument_list>()</argument_list></call> <operator>||</operator>
+            <call><name><name>reader</name><operator>.</operator><name>getMaxTimestamp</name></name><argument_list>()</argument_list></call> <operator>&lt;=</operator> <name>minTimestamp</name> <operator>||</operator>
+            <name>tombstoneOnly</name> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>reader</name><operator>.</operator><name>mayHaveTombstones</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+        <decl_stmt><decl><type><name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>position</name> <init>= <expr><call><name><name>reader</name><operator>.</operator><name>getPosition</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><name><name>SSTableReader</name><operator>.</operator><name>Operator</name><operator>.</operator><name>EQ</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>position</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+        <decl_stmt><decl><type><name>FileDataInput</name></type> <name>dfile</name> <init>= <expr><call><name><name>openDataFiles</name><operator>.</operator><name>computeIfAbsent</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><name>this</name><operator>::</operator><name>openDataFile</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>reader</name><operator>.</operator><name>simpleIterator</name></name><argument_list>(<argument><expr><name>dfile</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>position</name></expr></argument>, <argument><expr><name>tombstoneOnly</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Is overlapped sstables ignored
+     *
+     * Control whether or not we are taking into account overlapping sstables when looking for fully expired sstables.
+     * In order to reduce the amount of work needed, we look for sstables that can be dropped instead of compacted.
+     * As a safeguard mechanism, for each time range of data in a sstable, we are checking globally to see if all data
+     * of this time range is fully expired before considering to drop the sstable.
+     * This strategy can retain for a long time a lot of sstables on disk (see CASSANDRA-13418) so this option
+     * control whether or not this check should be ignored.
+     *
+     * @return false by default
+     */</comment>
+    <function><type><specifier>protected</specifier> <name>boolean</name></type> <name>ignoreOverlaps</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>FileDataInput</name></type> <name>openDataFile</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>reader</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>limiter</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name><name>reader</name><operator>.</operator><name>openDataReader</name></name><argument_list>(<argument><expr><name>limiter</name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><call><name><name>reader</name><operator>.</operator><name>openDataReader</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

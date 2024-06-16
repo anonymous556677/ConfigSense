@@ -1,0 +1,503 @@
+function,option,Method,Method_short,class_name,xml_path,Method_body
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,(M)org.apache.cassandra.db.Keyspace:getReplicationStrategy(),getReplicationStrategy,Keyspace,../data/xml/cassandra_call_methods/Keyspace.xml,"
+public AbstractReplicationStrategy getReplicationStrategy()
+    {
+        return replicationStrategy;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,(M)org.apache.cassandra.db.ConsistencyLevel:validateForCas(),validateForCas,ConsistencyLevel,../data/xml/cassandra_call_methods/ConsistencyLevel.xml,"
+public void validateForCas() throws InvalidRequestException
+    {
+        if (!isSerialConsistency())
+            throw new InvalidRequestException(""Invalid consistency for conditional update. Must be one of SERIAL or LOCAL_SERIAL"");
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,(M)org.apache.cassandra.db.ConsistencyLevel:validateForCasCommit(org.apache.cassandra.locator.AbstractReplicationStrategy),validateForCasCommit,ConsistencyLevel,../data/xml/cassandra_call_methods/ConsistencyLevel.xml,"// This is the same than validateForWrite really, but we include a slightly different error message for SERIAL/LOCAL_SERIAL
+public void validateForCasCommit(AbstractReplicationStrategy replicationStrategy) throws InvalidRequestException
+    {
+        switch (this)
+        {
+            case EACH_QUORUM:
+                requireNetworkTopologyStrategy(replicationStrategy);
+                break;
+            case SERIAL:
+            case LOCAL_SERIAL:
+                throw new InvalidRequestException(this + "" is not supported as conditional update commit consistency. Use ANY if you mean \""make sure it is accepted but I don't care how many replicas commit it for non-SERIAL reads\"""");
+        }
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,"(S)org.apache.cassandra.locator.ReplicaPlans:forPaxos(org.apache.cassandra.db.Keyspace,org.apache.cassandra.db.DecoratedKey,org.apache.cassandra.db.ConsistencyLevel)",forPaxos,ReplicaPlans,../data/xml/cassandra_call_methods/ReplicaPlans.xml,"/**
+     * Construct the plan for a paxos round - NOT the write or read consistency level for either the write or comparison,
+     * but for the paxos linearisation agreement.
+     *
+     * This will select all live nodes as the candidates for the operation.  Only the required number of participants
+     */
+static ReplicaPlan.ForPaxosWrite forPaxos(Keyspace keyspace, DecoratedKey key, ConsistencyLevel consistencyForPaxos) throws UnavailableException
+    {
+        Token tk = key.getToken();
+
+        ReplicaLayout.ForTokenWrite liveAndDown = ReplicaLayout.forTokenWriteLiveAndDown(keyspace, tk);
+
+        Replicas.temporaryAssertFull(liveAndDown.all()); // TODO CASSANDRA-14547
+
+        if (consistencyForPaxos == ConsistencyLevel.LOCAL_SERIAL)
+        {
+            // TODO: we should cleanup our semantics here, as we're filtering ALL nodes to localDC which is unexpected for ReplicaPlan
+            // Restrict natural and pending to node in the local DC only
+            liveAndDown = liveAndDown.filter(InOurDcTester.replicas());
+        }
+
+        ReplicaLayout.ForTokenWrite live = liveAndDown.filter(FailureDetector.isReplicaAlive);
+
+        // TODO: this should use assureSufficientReplicas
+        int participants = liveAndDown.all().size();
+        int requiredParticipants = participants / 2 + 1; // See CASSANDRA-8346, CASSANDRA-833
+
+        EndpointsForToken contacts = live.all();
+        if (contacts.size() < requiredParticipants)
+            throw UnavailableException.create(consistencyForPaxos, requiredParticipants, contacts.size());
+
+        // We cannot allow CAS operations with 2 or more pending endpoints, see #8346.
+        // Note that we fake an impossible number of required nodes in the unavailable exception
+        // to nail home the point that it's an impossible operation no matter how many nodes are live.
+        if (liveAndDown.pending().size() > 1)
+            throw new UnavailableException(String.format(""Cannot perform LWT operation as there is more than one (%d) pending range movement"", liveAndDown.all().size()),
+                    consistencyForPaxos,
+                    participants + 1,
+                    contacts.size());
+
+        return new ReplicaPlan.ForPaxosWrite(keyspace, consistencyForPaxos, liveAndDown.pending(), liveAndDown.all(), live.all(), contacts, requiredParticipants);
+    }
+
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,(M)org.apache.cassandra.locator.ReplicaPlan$ForPaxosWrite:replicationStrategy(),replicationStrategy,ReplicaPlan$ForPaxosWrite,../data/xml/cassandra_call_methods/ReplicaPlan.xml,"
+public AbstractReplicationStrategy replicationStrategy() { return replicationStrategy; }
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,"(S)org.apache.cassandra.service.StorageProxy:beginAndRepairPaxos(long,org.apache.cassandra.db.DecoratedKey,org.apache.cassandra.schema.TableMetadata,org.apache.cassandra.locator.ReplicaPlan$ForPaxosWrite,org.apache.cassandra.db.ConsistencyLevel,org.apache.cassandra.db.ConsistencyLevel,org.apache.cassandra.metrics.CASClientRequestMetrics,org.apache.cassandra.service.ClientState)",beginAndRepairPaxos,StorageProxy,../data/xml/cassandra_call_methods/StorageProxy.xml,"/**
+     * begin a Paxos session by sending a prepare request and completing any in-progress requests seen in the replies
+     *
+     * @return the Paxos ballot promised by the replicas if no in-progress requests were seen and a quorum of
+     * nodes have seen the mostRecentCommit.  Otherwise, return null.
+     */
+private static PaxosBallotAndContention beginAndRepairPaxos(long queryStartNanoTime,
+                                                                DecoratedKey key,
+                                                                TableMetadata metadata,
+                                                                ReplicaPlan.ForPaxosWrite paxosPlan,
+                                                                ConsistencyLevel consistencyForPaxos,
+                                                                ConsistencyLevel consistencyForCommit,
+                                                                CASClientRequestMetrics casMetrics,
+                                                                ClientState state)
+    throws WriteTimeoutException, WriteFailureException
+    {
+        long timeoutNanos = DatabaseDescriptor.getCasContentionTimeout(NANOSECONDS);
+
+        PrepareCallback summary = null;
+        int contentions = 0;
+        while (System.nanoTime() - queryStartNanoTime < timeoutNanos)
+        {
+            // We want a timestamp that is guaranteed to be unique for that node (so that the ballot is globally unique), but if we've got a prepare rejected
+            // already we also want to make sure we pick a timestamp that has a chance to be promised, i.e. one that is greater that the most recently known
+            // in progress (#5667). Lastly, we don't want to use a timestamp that is older than the last one assigned by ClientState or operations may appear
+            // out-of-order (#7801).
+            long minTimestampMicrosToUse = summary == null ? Long.MIN_VALUE : 1 + UUIDGen.microsTimestamp(summary.mostRecentInProgressCommit.ballot);
+            long ballotMicros = state.getTimestampForPaxos(minTimestampMicrosToUse);
+            // Note that ballotMicros is not guaranteed to be unique if two proposal are being handled concurrently by the same coordinator. But we still
+            // need ballots to be unique for each proposal so we have to use getRandomTimeUUIDFromMicros.
+            UUID ballot = UUIDGen.getRandomTimeUUIDFromMicros(ballotMicros);
+
+            // prepare
+            try
+            {
+                Tracing.trace(""Preparing {}"", ballot);
+                Commit toPrepare = Commit.newPrepare(key, metadata, ballot);
+                summary = preparePaxos(toPrepare, paxosPlan, queryStartNanoTime);
+                if (!summary.promised)
+                {
+                    Tracing.trace(""Some replicas have already promised a higher ballot than ours; aborting"");
+                    contentions++;
+                    // sleep a random amount to give the other proposer a chance to finish
+                    Uninterruptibles.sleepUninterruptibly(ThreadLocalRandom.current().nextInt(100), MILLISECONDS);
+                    continue;
+                }
+
+                Commit inProgress = summary.mostRecentInProgressCommit;
+                Commit mostRecent = summary.mostRecentCommit;
+
+                // If we have an in-progress ballot greater than the MRC we know, then it's an in-progress round that
+                // needs to be completed, so do it.
+                // One special case we make is for update that are empty (which are proposed by serial reads and
+                // non-applying CAS). While we could handle those as any other updates, we can optimize this somewhat by
+                // neither committing those empty updates, nor replaying in-progress ones. The reasoning is this: as the
+                // update is empty, we have nothing to apply to storage in the commit phase, so the only reason to commit
+                // would be to update the MRC. However, if we skip replaying those empty updates, then we don't need to
+                // update the MRC for following updates to make progress (that is, if we didn't had the empty update skip
+                // below _but_ skipped updating the MRC on empty updates, then we'd be stuck always proposing that same
+                // empty update). And the reason skipping that replay is safe is that when an operation tries to propose
+                // an empty value, there can be only 2 cases:
+                //  1) the propose succeed, meaning a quorum of nodes accept it, in which case we are guaranteed no earlier
+                //     pending operation can ever be replayed (which is what we want to guarantee with the empty update).
+                //  2) the propose does not succeed. But then the operation proposing the empty update will not succeed
+                //     either (it will retry or ultimately timeout), and we're actually ok if earlier pending operation gets
+                //     replayed in that case.
+                // Tl;dr, it is safe to skip committing empty updates _as long as_ we also skip replying them below. And
+                // doing is more efficient, so we do so.
+                if (!inProgress.update.isEmpty() && inProgress.isAfter(mostRecent))
+                {
+                    Tracing.trace(""Finishing incomplete paxos round {}"", inProgress);
+                    casMetrics.unfinishedCommit.inc();
+                    Commit refreshedInProgress = Commit.newProposal(ballot, inProgress.update);
+                    if (proposePaxos(refreshedInProgress, paxosPlan, false, queryStartNanoTime))
+                    {
+                        commitPaxos(refreshedInProgress, consistencyForCommit, false, queryStartNanoTime);
+                    }
+                    else
+                    {
+                        Tracing.trace(""Some replicas have already promised a higher ballot than ours; aborting"");
+                        // sleep a random amount to give the other proposer a chance to finish
+                        contentions++;
+                        Uninterruptibles.sleepUninterruptibly(ThreadLocalRandom.current().nextInt(100), MILLISECONDS);
+                    }
+                    continue;
+                }
+
+                // To be able to propose our value on a new round, we need a quorum of replica to have learn the previous one. Why is explained at:
+                // https://issues.apache.org/jira/browse/CASSANDRA-5062?focusedCommentId=13619810&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel#comment-13619810)
+                // Since we waited for quorum nodes, if some of them haven't seen the last commit (which may just be a timing issue, but may also
+                // mean we lost messages), we pro-actively ""repair"" those nodes, and retry.
+                int nowInSec = Ints.checkedCast(TimeUnit.MICROSECONDS.toSeconds(ballotMicros));
+                Iterable<InetAddressAndPort> missingMRC = summary.replicasMissingMostRecentCommit(metadata, nowInSec);
+                if (Iterables.size(missingMRC) > 0)
+                {
+                    Tracing.trace(""Repairing replicas that missed the most recent commit"");
+                    sendCommit(mostRecent, missingMRC);
+                    // TODO: provided commits don't invalid the prepare we just did above (which they don't), we could just wait
+                    // for all the missingMRC to acknowledge this commit and then move on with proposing our value. But that means
+                    // adding the ability to have commitPaxos block, which is exactly CASSANDRA-5442 will do. So once we have that
+                    // latter ticket, we can pass CL.ALL to the commit above and remove the 'continue'.
+                    continue;
+                }
+
+                return new PaxosBallotAndContention(ballot, contentions);
+            }
+            catch (WriteTimeoutException e)
+            {
+                // We're still doing preparation for the paxos rounds, so we want to use the CAS (see CASSANDRA-8672)
+                throw new CasWriteTimeoutException(WriteType.CAS, e.consistency, e.received, e.blockFor, contentions);
+            }
+        }
+
+        throw new CasWriteTimeoutException(WriteType.CAS, consistencyForPaxos, 0, consistencyForPaxos.blockFor(paxosPlan.replicationStrategy()), contentions);
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,"(S)org.apache.cassandra.service.StorageProxy:recordCasContention(org.apache.cassandra.schema.TableMetadata,org.apache.cassandra.db.DecoratedKey,org.apache.cassandra.metrics.CASClientRequestMetrics,int)",recordCasContention,StorageProxy,../data/xml/cassandra_call_methods/StorageProxy.xml,"
+private static void recordCasContention(TableMetadata table,
+                                            DecoratedKey key,
+                                            CASClientRequestMetrics casMetrics,
+                                            int contentions)
+    {
+        if (contentions == 0)
+            return;
+
+        casMetrics.contention.update(contentions);
+        Keyspace.open(table.keyspace)
+                .getColumnFamilyStore(table.name)
+                .metric
+                .topCasPartitionContention
+                .addSample(key.getKey(), contentions);
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,"(S)org.apache.cassandra.service.StorageProxy:proposePaxos(org.apache.cassandra.service.paxos.Commit,org.apache.cassandra.locator.ReplicaPlan$ForPaxosWrite,boolean,long)",proposePaxos,StorageProxy,../data/xml/cassandra_call_methods/StorageProxy.xml,"/**
+     * Propose the {@param proposal} accoding to the {@param replicaPlan}.
+     * When {@param backoffIfPartial} is true, the proposer backs off when seeing the proposal being accepted by some but not a quorum.
+     * The result of the cooresponding CAS in uncertain as the accepted proposal may or may not be spread to other nodes in later rounds.
+     */
+private static boolean proposePaxos(Commit proposal, ReplicaPlan.ForPaxosWrite replicaPlan, boolean backoffIfPartial, long queryStartNanoTime)
+    throws WriteTimeoutException, CasWriteUnknownResultException
+    {
+        ProposeCallback callback = new ProposeCallback(replicaPlan.contacts().size(), replicaPlan.requiredParticipants(), !backoffIfPartial, replicaPlan.consistencyLevel(), queryStartNanoTime);
+        Message<Commit> message = Message.out(PAXOS_PROPOSE_REQ, proposal);
+        for (Replica replica : replicaPlan.contacts())
+        {
+            if (replica.isSelf())
+            {
+                PAXOS_PROPOSE_REQ.stage.execute(() -> {
+                    try
+                    {
+                        Message<Boolean> response = message.responseWith(doPropose(proposal));
+                        callback.onResponse(response);
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.error(""Failed paxos propose locally"", ex);
+                    }
+                });
+            }
+            else
+            {
+                MessagingService.instance().sendWithCallback(message, replica.endpoint(), callback);
+            }
+        }
+        callback.await();
+
+        if (callback.isSuccessful())
+            return true;
+
+        if (backoffIfPartial && !callback.isFullyRefused())
+            throw new CasWriteUnknownResultException(replicaPlan.consistencyLevel(), callback.getAcceptCount(), replicaPlan.requiredParticipants());
+
+        return false;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,(M)org.apache.cassandra.db.partitions.PartitionUpdate:isEmpty(),isEmpty,PartitionUpdate,../data/xml/cassandra_call_methods/PartitionUpdate.xml,not found
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,"(S)org.apache.cassandra.service.StorageProxy:commitPaxos(org.apache.cassandra.service.paxos.Commit,org.apache.cassandra.db.ConsistencyLevel,boolean,long)",commitPaxos,StorageProxy,../data/xml/cassandra_call_methods/StorageProxy.xml,"
+private static void commitPaxos(Commit proposal, ConsistencyLevel consistencyLevel, boolean allowHints, long queryStartNanoTime) throws WriteTimeoutException
+    {
+        boolean shouldBlock = consistencyLevel != ConsistencyLevel.ANY;
+        Keyspace keyspace = Keyspace.open(proposal.update.metadata().keyspace);
+
+        Token tk = proposal.update.partitionKey().getToken();
+
+        AbstractWriteResponseHandler<Commit> responseHandler = null;
+        // NOTE: this ReplicaPlan is a lie, this usage of ReplicaPlan could do with being clarified - the selected() collection is essentially (I think) never used
+        ReplicaPlan.ForTokenWrite replicaPlan = ReplicaPlans.forWrite(keyspace, consistencyLevel, tk, ReplicaPlans.writeAll);
+        if (shouldBlock)
+        {
+            AbstractReplicationStrategy rs = replicaPlan.replicationStrategy();
+            responseHandler = rs.getWriteResponseHandler(replicaPlan, null, WriteType.SIMPLE, queryStartNanoTime);
+        }
+
+        Message<Commit> message = Message.outWithFlag(PAXOS_COMMIT_REQ, proposal, MessageFlag.CALL_BACK_ON_FAILURE);
+        for (Replica replica : replicaPlan.liveAndDown())
+        {
+            InetAddressAndPort destination = replica.endpoint();
+            checkHintOverload(replica);
+
+            if (replicaPlan.isAlive(replica))
+            {
+                if (shouldBlock)
+                {
+                    if (replica.isSelf())
+                        commitPaxosLocal(replica, message, responseHandler);
+                    else
+                        MessagingService.instance().sendWriteWithCallback(message, replica, responseHandler, allowHints && shouldHint(replica));
+                }
+                else
+                {
+                    MessagingService.instance().send(message, destination);
+                }
+            }
+            else
+            {
+                if (responseHandler != null)
+                {
+                    responseHandler.expired();
+                }
+                if (allowHints && shouldHint(replica))
+                {
+                    submitHint(proposal.makeMutation(), replica, null);
+                }
+            }
+        }
+
+        if (shouldBlock)
+            responseHandler.get();
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,"(O)org.apache.cassandra.exceptions.CasWriteTimeoutException:<init>(org.apache.cassandra.db.WriteType,org.apache.cassandra.db.ConsistencyLevel,int,int,int)",<init>,CasWriteTimeoutException,../data/xml/cassandra_call_methods/CasWriteTimeoutException.xml,"
+public CasWriteTimeoutException(WriteType writeType, ConsistencyLevel consistency, int received, int blockFor, int contentions)
+    {
+        super(writeType, consistency, received, blockFor, String.format(""CAS operation timed out - encountered contentions: %d"", contentions));
+        this.contentions = contentions;
+    }
+}"
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,(M)org.apache.cassandra.db.ConsistencyLevel:blockFor(org.apache.cassandra.locator.AbstractReplicationStrategy),blockFor,ConsistencyLevel,../data/xml/cassandra_call_methods/ConsistencyLevel.xml,"
+public int blockFor(AbstractReplicationStrategy replicationStrategy)
+    {
+        switch (this)
+        {
+            case ONE:
+            case LOCAL_ONE:
+                return 1;
+            case ANY:
+                return 1;
+            case TWO:
+                return 2;
+            case THREE:
+                return 3;
+            case QUORUM:
+            case SERIAL:
+                return quorumFor(replicationStrategy);
+            case ALL:
+                return replicationStrategy.getReplicationFactor().allReplicas;
+            case LOCAL_QUORUM:
+            case LOCAL_SERIAL:
+                return localQuorumForOurDc(replicationStrategy);
+            case EACH_QUORUM:
+                if (replicationStrategy instanceof NetworkTopologyStrategy)
+                {
+                    NetworkTopologyStrategy strategy = (NetworkTopologyStrategy) replicationStrategy;
+                    int n = 0;
+                    for (String dc : strategy.getDatacenters())
+                        n += localQuorumFor(replicationStrategy, dc);
+                    return n;
+                }
+                else
+                {
+                    return quorumFor(replicationStrategy);
+                }
+            default:
+                throw new UnsupportedOperationException(""Invalid consistency level: "" + toString());
+        }
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,(M)org.apache.cassandra.service.ClientState:getTimestampForPaxos(long),getTimestampForPaxos,ClientState,../data/xml/cassandra_call_methods/ClientState.xml,"/**
+     * Returns a timestamp suitable for paxos given the timestamp of the last known commit (or in progress update).
+     * <p>
+     * Paxos ensures that the timestamp it uses for commits respects the serial order of those commits. It does so
+     * by having each replica reject any proposal whose timestamp is not strictly greater than the last proposal it
+     * accepted. So in practice, which timestamp we use for a given proposal doesn't affect correctness but it does
+     * affect the chance of making progress (if we pick a timestamp lower than what has been proposed before, our
+     * new proposal will just get rejected).
+     * <p>
+     * As during the prepared phase replica send us the last propose they accepted, a first option would be to take
+     * the maximum of those last accepted proposal timestamp plus 1 (and use a default value, say 0, if it's the
+     * first known proposal for the partition). This would most work (giving commits the timestamp 0, 1, 2, ...
+     * in the order they are commited) up to 2 important caveats:
+     *   1) it would give a very poor experience when Paxos and non-Paxos updates are mixed in the same partition,
+     *      since paxos operations wouldn't be using microseconds timestamps. And while you shouldn't theoretically
+     *      mix the 2 kind of operations, this would still be pretty unintuitive. And what if you started writing
+     *      normal updates and realize later you should switch to Paxos to enforce a property you want?
+     *   2) this wouldn't actually be safe due to the expiration set on the Paxos state table.
+     * <p>
+     * So instead, we initially chose to use the current time in microseconds as for normal update. Which works in
+     * general but mean that clock skew creates unavailability periods for Paxos updates (either a node has his clock
+     * in the past and he may no be able to get commit accepted until its clock catch up, or a node has his clock in
+     * the future and then once one of its commit his accepted, other nodes ones won't be until they catch up). This
+     * is ok for small clock skew (few ms) but can be pretty bad for large one.
+     * <p>
+     * Hence our current solution: we mix both approaches. That is, we compare the timestamp of the last known
+     * accepted proposal and the local time. If the local time is greater, we use it, thus keeping paxos timestamps
+     * locked to the current time in general (making mixing Paxos and non-Paxos more friendly, and behaving correctly
+     * when the paxos state expire (as long as your maximum clock skew is lower than the Paxos state expiration
+     * time)). Otherwise (the local time is lower than the last proposal, meaning that this last proposal was done
+     * with a clock in the future compared to the local one), we use the last proposal timestamp plus 1, ensuring
+     * progress.
+     *
+     * @param minTimestampToUse the max timestamp of the last proposal accepted by replica having responded
+     * to the prepare phase of the paxos round this is for. In practice, that's the minimum timestamp this method
+     * may return.
+     * @return a timestamp suitable for a Paxos proposal (using the reasoning described above). Note that
+     * contrarily to the {@link #getTimestamp()} method, the return value is not guaranteed to be unique (nor
+     * monotonic) across calls since it can return it's argument (so if the same argument is passed multiple times,
+     * it may be returned multiple times). Note that we still ensure Paxos ""ballot"" are unique (for different
+     * proposal) by (securely) randomizing the non-timestamp part of the UUID.
+     */
+public long getTimestampForPaxos(long minTimestampToUse)
+    {
+        while (true)
+        {
+            long current = Math.max(System.currentTimeMillis() * 1000, minTimestampToUse);
+            long last = lastTimestampMicros.get();
+            long tstamp = last >= current ? last + 1 : current;
+            // Note that if we ended up picking minTimestampMicrosToUse (it was ""in the future""), we don't
+            // want to change the local clock, otherwise a single node in the future could corrupt the clock
+            // of all nodes and for all inserts (since non-paxos inserts also use lastTimestampMicros).
+            // See CASSANDRA-11991
+            if (tstamp == minTimestampToUse || lastTimestampMicros.compareAndSet(last, tstamp))
+                return tstamp;
+        }
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,(S)org.apache.cassandra.utils.UUIDGen:getRandomTimeUUIDFromMicros(long),getRandomTimeUUIDFromMicros,UUIDGen,../data/xml/cassandra_call_methods/UUIDGen.xml,"/**
+     * Similar to {@link #getTimeUUIDFromMicros}, but randomize (using SecureRandom) the clock and sequence.
+     * <p>
+     * If you can guarantee that the {@code whenInMicros} argument is unique (for this JVM instance) for
+     * every call, then you should prefer {@link #getTimeUUIDFromMicros} which is faster. If you can't
+     * guarantee this however, this method will ensure the returned UUID are still unique (accross calls)
+     * through randomization.
+     *
+     * @param whenInMicros a unix time in microseconds.
+     * @return a new UUID {@code id} such that {@code microsTimestamp(id) == whenInMicros}. The UUID returned
+     * by different calls will be unique even if {@code whenInMicros} is not.
+     */
+public static UUID getRandomTimeUUIDFromMicros(long whenInMicros)
+    {
+        long whenInMillis = whenInMicros / 1000;
+        long nanos = (whenInMicros - (whenInMillis * 1000)) * 10;
+        return new UUID(createTime(fromUnixTimestamp(whenInMillis, nanos)), secureRandom.nextLong());
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,"(S)org.apache.cassandra.service.StorageProxy:preparePaxos(org.apache.cassandra.service.paxos.Commit,org.apache.cassandra.locator.ReplicaPlan$ForPaxosWrite,long)",preparePaxos,StorageProxy,../data/xml/cassandra_call_methods/StorageProxy.xml,"
+private static PrepareCallback preparePaxos(Commit toPrepare, ReplicaPlan.ForPaxosWrite replicaPlan, long queryStartNanoTime)
+    throws WriteTimeoutException
+    {
+        PrepareCallback callback = new PrepareCallback(toPrepare.update.partitionKey(), toPrepare.update.metadata(), replicaPlan.requiredParticipants(), replicaPlan.consistencyLevel(), queryStartNanoTime);
+        Message<Commit> message = Message.out(PAXOS_PREPARE_REQ, toPrepare);
+        for (Replica replica: replicaPlan.contacts())
+        {
+            if (replica.isSelf())
+            {
+                PAXOS_PREPARE_REQ.stage.execute(() -> {
+                    try
+                    {
+                        callback.onResponse(message.responseWith(doPrepare(toPrepare)));
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.error(""Failed paxos prepare locally"", ex);
+                    }
+                });
+            }
+            else
+            {
+                MessagingService.instance().sendWithCallback(message, replica.endpoint(), callback);
+            }
+        }
+        callback.await();
+        return callback;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,(M)org.apache.cassandra.service.paxos.Commit:isAfter(org.apache.cassandra.service.paxos.Commit),isAfter,Commit,../data/xml/cassandra_call_methods/Commit.xml,"
+public boolean isAfter(Commit other)
+    {
+        return ballot.timestamp() > other.ballot.timestamp();
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getCasContentionTimeout(java.util.concurrent.TimeUnit),cas_contention_timeout_in_ms,"(M)org.apache.cassandra.service.paxos.PrepareCallback:replicasMissingMostRecentCommit(org.apache.cassandra.schema.TableMetadata,int)",replicasMissingMostRecentCommit,PrepareCallback,../data/xml/cassandra_call_methods/PrepareCallback.xml,"
+public Iterable<InetAddressAndPort> replicasMissingMostRecentCommit(TableMetadata metadata, int nowInSec)
+    {
+        // In general, we need every replicas that have answered to the prepare (a quorum) to agree on the MRC (see
+        // coment in StorageProxy.beginAndRepairPaxos(), but basically we need to make sure at least a quorum of nodes
+        // have learn a commit before commit a new one otherwise that previous commit is not guaranteed to have reach a
+        // quorum and further commit may proceed on incomplete information).
+        // However, if that commit is too hold, it may have been expired from some of the replicas paxos table (we don't
+        // keep the paxos state forever or that could grow unchecked), and we could end up in some infinite loop as
+        // explained on CASSANDRA-12043. To avoid that, we ignore a MRC that is too old, i.e. older than the TTL we set
+        // on paxos tables. For such old commit, we rely on hints and repair to ensure the commit has indeed be
+        // propagated to all nodes.
+        long paxosTtlSec = SystemKeyspace.paxosTtlSec(metadata);
+        if (UUIDGen.unixTimestampInSec(mostRecentCommit.ballot) + paxosTtlSec < nowInSec)
+            return Collections.emptySet();
+
+        return Iterables.filter(commitsByReplica.keySet(), new Predicate<InetAddressAndPort>()
+        {
+            public boolean apply(InetAddressAndPort inetAddress)
+            {
+                return (!commitsByReplica.get(inetAddress).ballot.equals(mostRecentCommit.ballot));
+            }
+        });
+    }
+}"

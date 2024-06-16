@@ -1,0 +1,533 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/commitlog/CommitLogReader.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>file</name><operator>.</operator><name>Files</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>file</name><operator>.</operator><name>Path</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicInteger</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>zip</name><operator>.</operator><name>CRC32</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>commons</name><operator>.</operator><name>lang3</name><operator>.</operator><name>StringUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Mutation</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name><operator>.</operator><name>CommitLogReadHandler</name><operator>.</operator><name>CommitLogReadErrorReason</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name><operator>.</operator><name>CommitLogReadHandler</name><operator>.</operator><name>CommitLogReadException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>PartitionUpdate</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>DeserializationHelper</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>UnknownTableException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>ConfigurationException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataInputBuffer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>FileDataInput</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>RandomAccessReader</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>RebufferingInputStream</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableId</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>JVMStabilityInspector</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name><operator>.</operator><name>updateChecksumInt</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>CommitLogReader</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>CommitLogReader</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>LEGACY_END_OF_SEGMENT_MARKER</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>ALL_MUTATIONS</name> <init>= <expr><operator>-</operator><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>CRC32</name></type> <name>checksum</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name>AtomicInteger</name></argument>&gt;</argument_list></name></type> <name>invalidMutations</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>byte</name><index>[]</index></name></type> <name>buffer</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>CommitLogReader</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>checksum</name> <operator>=</operator> <operator>new</operator> <call><name>CRC32</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>invalidMutations</name> <operator>=</operator> <operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>buffer</name> <operator>=</operator> <operator>new</operator> <name><name>byte</name><index>[<expr><literal type="number">4096</literal></expr>]</index></name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name>AtomicInteger</name></argument>&gt;</argument_list></name></name></argument>&gt;</argument_list></name></type> <name>getInvalidMutations</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>invalidMutations</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Reads all passed in files with no minimum, no start, and no mutation limit.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>readAllFiles</name><parameter_list>(<parameter><decl><type><name>CommitLogReadHandler</name></type> <name>handler</name></decl></parameter>, <parameter><decl><type><name><name>File</name><index>[]</index></name></type> <name>files</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>readAllFiles</name><argument_list>(<argument><expr><name>handler</name></expr></argument>, <argument><expr><name>files</name></expr></argument>, <argument><expr><name><name>CommitLogPosition</name><operator>.</operator><name>NONE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>shouldSkip</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>file</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument>, <argument><expr><name>ConfigurationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <try>try<init>(<decl><type><name>RandomAccessReader</name></type> <name>reader</name> <init>= <expr><call><name><name>RandomAccessReader</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><name>file</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>CommitLogDescriptor</name><operator>.</operator><name>readHeader</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getEncryptionContext</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>end</name> <init>= <expr><call><name><name>reader</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>filecrc</name> <init>= <expr><call><name><name>reader</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call> <operator>&amp;</operator> <literal type="number">0xffffffffL</literal></expr></init></decl>;</decl_stmt>
+            <return>return <expr><name>end</name> <operator>==</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>filecrc</name> <operator>==</operator> <literal type="number">0</literal></expr>;</return>
+        </block_content>}</block></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>File</name></argument>&gt;</argument_list></name></type> <name>filterCommitLogFiles</name><parameter_list>(<parameter><decl><type><name><name>File</name><index>[]</index></name></type> <name>toFilter</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>File</name></argument>&gt;</argument_list></name></type> <name>filtered</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name><name>toFilter</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>File</name></type> <name>file</name><range>: <expr><name>toFilter</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name>shouldSkip</name><argument_list>(<argument><expr><name>file</name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Skipping playback of empty log: {}"</literal></expr></argument>, <argument><expr><call><name><name>file</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>filtered</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>file</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <comment type="line">// let recover deal with it</comment>
+                <expr_stmt><expr><call><name><name>filtered</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>file</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></for>
+
+        <return>return <expr><name>filtered</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Reads all passed in files with minPosition, no start, and no mutation limit.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>readAllFiles</name><parameter_list>(<parameter><decl><type><name>CommitLogReadHandler</name></type> <name>handler</name></decl></parameter>, <parameter><decl><type><name><name>File</name><index>[]</index></name></type> <name>files</name></decl></parameter>, <parameter><decl><type><name>CommitLogPosition</name></type> <name>minPosition</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>File</name></argument>&gt;</argument_list></name></type> <name>filteredLogs</name> <init>= <expr><call><name>filterCommitLogFiles</name><argument_list>(<argument><expr><name>files</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>File</name></type> <name>file</name><range>: <expr><name>filteredLogs</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><name>i</name><operator>++</operator></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>readCommitLogSegment</name><argument_list>(<argument><expr><name>handler</name></expr></argument>, <argument><expr><name>file</name></expr></argument>, <argument><expr><name>minPosition</name></expr></argument>, <argument><expr><name>ALL_MUTATIONS</name></expr></argument>, <argument><expr><name>i</name> <operator>==</operator> <call><name><name>filteredLogs</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Reads passed in file fully
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>readCommitLogSegment</name><parameter_list>(<parameter><decl><type><name>CommitLogReadHandler</name></type> <name>handler</name></decl></parameter>, <parameter><decl><type><name>File</name></type> <name>file</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>tolerateTruncation</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>readCommitLogSegment</name><argument_list>(<argument><expr><name>handler</name></expr></argument>, <argument><expr><name>file</name></expr></argument>, <argument><expr><name><name>CommitLogPosition</name><operator>.</operator><name>NONE</name></name></expr></argument>, <argument><expr><name>ALL_MUTATIONS</name></expr></argument>, <argument><expr><name>tolerateTruncation</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Reads all mutations from passed in file from minPosition
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>readCommitLogSegment</name><parameter_list>(<parameter><decl><type><name>CommitLogReadHandler</name></type> <name>handler</name></decl></parameter>, <parameter><decl><type><name>File</name></type> <name>file</name></decl></parameter>, <parameter><decl><type><name>CommitLogPosition</name></type> <name>minPosition</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>tolerateTruncation</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>readCommitLogSegment</name><argument_list>(<argument><expr><name>handler</name></expr></argument>, <argument><expr><name>file</name></expr></argument>, <argument><expr><name>minPosition</name></expr></argument>, <argument><expr><name>ALL_MUTATIONS</name></expr></argument>, <argument><expr><name>tolerateTruncation</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Reads passed in file fully, up to mutationLimit count
+     */</comment>
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>readCommitLogSegment</name><parameter_list>(<parameter><decl><type><name>CommitLogReadHandler</name></type> <name>handler</name></decl></parameter>, <parameter><decl><type><name>File</name></type> <name>file</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>mutationLimit</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>tolerateTruncation</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>readCommitLogSegment</name><argument_list>(<argument><expr><name>handler</name></expr></argument>, <argument><expr><name>file</name></expr></argument>, <argument><expr><name><name>CommitLogPosition</name><operator>.</operator><name>NONE</name></name></expr></argument>, <argument><expr><name>mutationLimit</name></expr></argument>, <argument><expr><name>tolerateTruncation</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Reads mutations from file, handing them off to handler
+     * @param handler Handler that will take action based on deserialized Mutations
+     * @param file CommitLogSegment file to read
+     * @param minPosition Optional minimum CommitLogPosition - all segments with id larger or matching w/greater position will be read
+     * @param mutationLimit Optional limit on # of mutations to replay. Local ALL_MUTATIONS serves as marker to play all.
+     * @param tolerateTruncation Whether or not we should allow truncation of this file or throw if EOF found
+     *
+     * @throws IOException
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>readCommitLogSegment</name><parameter_list>(<parameter><decl><type><name>CommitLogReadHandler</name></type> <name>handler</name></decl></parameter>,
+                                     <parameter><decl><type><name>File</name></type> <name>file</name></decl></parameter>,
+                                     <parameter><decl><type><name>CommitLogPosition</name></type> <name>minPosition</name></decl></parameter>,
+                                     <parameter><decl><type><name>int</name></type> <name>mutationLimit</name></decl></parameter>,
+                                     <parameter><decl><type><name>boolean</name></type> <name>tolerateTruncation</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <comment type="line">// just transform from the file name (no reading of headers) to determine version</comment>
+        <decl_stmt><decl><type><name>CommitLogDescriptor</name></type> <name>desc</name> <init>= <expr><call><name><name>CommitLogDescriptor</name><operator>.</operator><name>fromFileName</name></name><argument_list>(<argument><expr><call><name><name>file</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <try>try<init>(<decl><type><name>RandomAccessReader</name></type> <name>reader</name> <init>= <expr><call><name><name>RandomAccessReader</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><name>file</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>segmentIdFromFilename</name> <init>= <expr><name><name>desc</name><operator>.</operator><name>id</name></name></expr></init></decl>;</decl_stmt>
+            <try>try
+            <block>{<block_content>
+                <comment type="line">// The following call can either throw or legitimately return null. For either case, we need to check</comment>
+                <comment type="line">// desc outside this block and set it to null in the exception case.</comment>
+                <expr_stmt><expr><name>desc</name> <operator>=</operator> <call><name><name>CommitLogDescriptor</name><operator>.</operator><name>readHeader</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getEncryptionContext</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><name>desc</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            </block_content>}</block></catch></try>
+            <if_stmt><if>if <condition>(<expr><name>desc</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// don't care about whether or not the handler thinks we can continue. We can't w/out descriptor.</comment>
+                <comment type="line">// whether or not we can continue depends on whether this is the last segment</comment>
+                <expr_stmt><expr><call><name><name>handler</name><operator>.</operator><name>handleUnrecoverableError</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>CommitLogReadException</name><argument_list>(
+                    <argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Could not read commit log descriptor in file %s"</literal></expr></argument>, <argument><expr><name>file</name></expr></argument>)</argument_list></call></expr></argument>,
+                    <argument><expr><name><name>CommitLogReadErrorReason</name><operator>.</operator><name>UNRECOVERABLE_DESCRIPTOR_ERROR</name></name></expr></argument>,
+                    <argument><expr><name>tolerateTruncation</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>segmentIdFromFilename</name> <operator>!=</operator> <name><name>desc</name><operator>.</operator><name>id</name></name></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>handler</name><operator>.</operator><name>shouldSkipSegmentOnError</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>CommitLogReadException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(
+                    <argument><expr><literal type="string">"Segment id mismatch (filename %d, descriptor %d) in file %s"</literal></expr></argument>, <argument><expr><name>segmentIdFromFilename</name></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>id</name></name></expr></argument>, <argument><expr><name>file</name></expr></argument>)</argument_list></call></expr></argument>,
+                                                                                <argument><expr><name><name>CommitLogReadErrorReason</name><operator>.</operator><name>RECOVERABLE_DESCRIPTOR_ERROR</name></name></expr></argument>,
+                                                                                <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name>shouldSkipSegmentId</name><argument_list>(<argument><expr><name>file</name></expr></argument>, <argument><expr><name>desc</name></expr></argument>, <argument><expr><name>minPosition</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>CommitLogSegmentReader</name></type> <name>segmentReader</name></decl>;</decl_stmt>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><name>segmentReader</name> <operator>=</operator> <operator>new</operator> <call><name>CommitLogSegmentReader</name><argument_list>(<argument><expr><name>handler</name></expr></argument>, <argument><expr><name>desc</name></expr></argument>, <argument><expr><name>reader</name></expr></argument>, <argument><expr><name>tolerateTruncation</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch<parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>handler</name><operator>.</operator><name>handleUnrecoverableError</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>CommitLogReadException</name><argument_list>(
+                    <argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Unable to create segment reader for commit log file: %s"</literal></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr></argument>,
+                    <argument><expr><name><name>CommitLogReadErrorReason</name><operator>.</operator><name>UNRECOVERABLE_UNKNOWN_ERROR</name></name></expr></argument>,
+                    <argument><expr><name>tolerateTruncation</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return;</return>
+            </block_content>}</block></catch></try>
+
+            <try>try
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>ReadStatusTracker</name></type> <name>statusTracker</name> <init>= <expr><operator>new</operator> <call><name>ReadStatusTracker</name><argument_list>(<argument><expr><name>mutationLimit</name></expr></argument>, <argument><expr><name>tolerateTruncation</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <for>for <control>(<init><decl><type><name><name>CommitLogSegmentReader</name><operator>.</operator><name>SyncSegment</name></name></type> <name>syncSegment</name> <range>: <expr><name>segmentReader</name></expr></range></decl></init>)</control>
+                <block>{<block_content>
+                    <comment type="line">// Only tolerate truncation if we allow in both global and segment</comment>
+                    <expr_stmt><expr><name><name>statusTracker</name><operator>.</operator><name>tolerateErrorsInSection</name></name> <operator>=</operator> <name>tolerateTruncation</name> <operator>&amp;</operator> <name><name>syncSegment</name><operator>.</operator><name>toleratesErrorsInSection</name></name></expr>;</expr_stmt>
+
+                    <comment type="line">// Skip segments that are completely behind the desired minPosition</comment>
+                    <if_stmt><if>if <condition>(<expr><name><name>desc</name><operator>.</operator><name>id</name></name> <operator>==</operator> <name><name>minPosition</name><operator>.</operator><name>segmentId</name></name> <operator>&amp;&amp;</operator> <name><name>syncSegment</name><operator>.</operator><name>endPosition</name></name> <operator>&lt;</operator> <name><name>minPosition</name><operator>.</operator><name>position</name></name></expr>)</condition><block type="pseudo"><block_content>
+                        <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                    <expr_stmt><expr><name><name>statusTracker</name><operator>.</operator><name>errorContext</name></name> <operator>=</operator> <call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Next section at %d in %s"</literal></expr></argument>, <argument><expr><name><name>syncSegment</name><operator>.</operator><name>fileStartPosition</name></name></expr></argument>, <argument><expr><call><name><name>desc</name><operator>.</operator><name>fileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <expr_stmt><expr><call><name>readSection</name><argument_list>(<argument><expr><name>handler</name></expr></argument>, <argument><expr><name><name>syncSegment</name><operator>.</operator><name>input</name></name></expr></argument>, <argument><expr><name>minPosition</name></expr></argument>, <argument><expr><name><name>syncSegment</name><operator>.</operator><name>endPosition</name></name></expr></argument>, <argument><expr><name>statusTracker</name></expr></argument>, <argument><expr><name>desc</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>statusTracker</name><operator>.</operator><name>shouldContinue</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <break>break;</break></block_content></block></if></if_stmt>
+                </block_content>}</block></for>
+            </block_content>}</block>
+            <comment type="line">// Unfortunately AbstractIterator cannot throw a checked exception, so we check to see if a RuntimeException</comment>
+            <comment type="line">// is wrapping an IOException.</comment>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>RuntimeException</name></type> <name>re</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>re</name><operator>.</operator><name>getCause</name></name><argument_list>()</argument_list></call> <operator>instanceof</operator> <name>IOException</name></expr>)</condition><block type="pseudo"><block_content>
+                    <throw>throw <expr><operator>(</operator><name>IOException</name><operator>)</operator> <call><name><name>re</name><operator>.</operator><name>getCause</name></name><argument_list>()</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+                <throw>throw <expr><name>re</name></expr>;</throw>
+            </block_content>}</block></catch></try>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Finished reading {}"</literal></expr></argument>, <argument><expr><name>file</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Any segment with id &gt;= minPosition.segmentId is a candidate for read.
+     */</comment>
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>shouldSkipSegmentId</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>file</name></decl></parameter>, <parameter><decl><type><name>CommitLogDescriptor</name></type> <name>desc</name></decl></parameter>, <parameter><decl><type><name>CommitLogPosition</name></type> <name>minPosition</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Reading {} (CL version {}, messaging version {}, compression {})"</literal></expr></argument>,
+            <argument><expr><call><name><name>file</name><operator>.</operator><name>getPath</name></name><argument_list>()</argument_list></call></expr></argument>,
+            <argument><expr><name><name>desc</name><operator>.</operator><name>version</name></name></expr></argument>,
+            <argument><expr><call><name><name>desc</name><operator>.</operator><name>getMessagingVersion</name></name><argument_list>()</argument_list></call></expr></argument>,
+            <argument><expr><name><name>desc</name><operator>.</operator><name>compression</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name><name>minPosition</name><operator>.</operator><name>segmentId</name></name> <operator>&gt;</operator> <name><name>desc</name><operator>.</operator><name>id</name></name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Skipping read of fully-flushed {}"</literal></expr></argument>, <argument><expr><name>file</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Reads a section of a file containing mutations
+     *
+     * @param handler Handler that will take action based on deserialized Mutations
+     * @param reader FileDataInput / logical buffer containing commitlog mutations
+     * @param minPosition CommitLogPosition indicating when we should start actively replaying mutations
+     * @param end logical numeric end of the segment being read
+     * @param statusTracker ReadStatusTracker with current state of mutation count, error state, etc
+     * @param desc Descriptor for CommitLog serialization
+     */</comment>
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>readSection</name><parameter_list>(<parameter><decl><type><name>CommitLogReadHandler</name></type> <name>handler</name></decl></parameter>,
+                             <parameter><decl><type><name>FileDataInput</name></type> <name>reader</name></decl></parameter>,
+                             <parameter><decl><type><name>CommitLogPosition</name></type> <name>minPosition</name></decl></parameter>,
+                             <parameter><decl><type><name>int</name></type> <name>end</name></decl></parameter>,
+                             <parameter><decl><type><name>ReadStatusTracker</name></type> <name>statusTracker</name></decl></parameter>,
+                             <parameter><decl><type><name>CommitLogDescriptor</name></type> <name>desc</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <comment type="line">// seek rather than deserializing mutation-by-mutation to reach the desired minPosition in this SyncSegment</comment>
+        <if_stmt><if>if <condition>(<expr><name><name>desc</name><operator>.</operator><name>id</name></name> <operator>==</operator> <name><name>minPosition</name><operator>.</operator><name>segmentId</name></name> <operator>&amp;&amp;</operator> <call><name><name>reader</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <name><name>minPosition</name><operator>.</operator><name>position</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>reader</name><operator>.</operator><name>seek</name></name><argument_list>(<argument><expr><name><name>minPosition</name><operator>.</operator><name>position</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <while>while <condition>(<expr><call><name><name>statusTracker</name><operator>.</operator><name>shouldContinue</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>reader</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <name>end</name> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>reader</name><operator>.</operator><name>isEOF</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>mutationStart</name> <init>= <expr><call><name><name>reader</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Reading mutation at {}"</literal></expr></argument>, <argument><expr><name>mutationStart</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>long</name></type> <name>claimedCRC32</name></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>serializedSize</name></decl>;</decl_stmt>
+            <try>try
+            <block>{<block_content>
+                <comment type="line">// We rely on reading serialized size == 0 (LEGACY_END_OF_SEGMENT_MARKER) to identify the end</comment>
+                <comment type="line">// of a segment, which happens naturally due to the 0 padding of the empty segment on creation.</comment>
+                <comment type="line">// However, it's possible with 2.1 era commitlogs that the last mutation ended less than 4 bytes</comment>
+                <comment type="line">// from the end of the file, which means that we'll be unable to read an a full int and instead</comment>
+                <comment type="line">// read an EOF here</comment>
+                <if_stmt><if>if<condition>(<expr><name>end</name> <operator>-</operator> <call><name><name>reader</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <literal type="number">4</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Not enough bytes left for another mutation in this CommitLog section, continuing"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>statusTracker</name><operator>.</operator><name>requestTermination</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+
+                <comment type="line">// any of the reads may hit EOF</comment>
+                <expr_stmt><expr><name>serializedSize</name> <operator>=</operator> <call><name><name>reader</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>serializedSize</name> <operator>==</operator> <name>LEGACY_END_OF_SEGMENT_MARKER</name></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Encountered end of segment marker at {}"</literal></expr></argument>, <argument><expr><call><name><name>reader</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>statusTracker</name><operator>.</operator><name>requestTermination</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+
+                <comment type="line">// Mutation must be at LEAST 10 bytes:</comment>
+                <comment type="line">//    3 for a non-empty Keyspace</comment>
+                <comment type="line">//    3 for a Key (including the 2-byte length from writeUTF/writeWithShortLength)</comment>
+                <comment type="line">//    4 bytes for column count.</comment>
+                <comment type="line">// This prevents CRC by being fooled by special-case garbage in the file; see CASSANDRA-2128</comment>
+                <if_stmt><if>if <condition>(<expr><name>serializedSize</name> <operator>&lt;</operator> <literal type="number">10</literal></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>handler</name><operator>.</operator><name>shouldSkipSegmentOnError</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>CommitLogReadException</name><argument_list>(
+                                                    <argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Invalid mutation size %d at %d in %s"</literal></expr></argument>, <argument><expr><name>serializedSize</name></expr></argument>, <argument><expr><name>mutationStart</name></expr></argument>, <argument><expr><name><name>statusTracker</name><operator>.</operator><name>errorContext</name></name></expr></argument>)</argument_list></call></expr></argument>,
+                                                    <argument><expr><name><name>CommitLogReadErrorReason</name><operator>.</operator><name>MUTATION_ERROR</name></name></expr></argument>,
+                                                    <argument><expr><name><name>statusTracker</name><operator>.</operator><name>tolerateErrorsInSection</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><call><name><name>statusTracker</name><operator>.</operator><name>requestTermination</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+
+                <decl_stmt><decl><type><name>long</name></type> <name>claimedSizeChecksum</name> <init>= <expr><call><name><name>CommitLogFormat</name><operator>.</operator><name>calculateClaimedChecksum</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>version</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>checksum</name><operator>.</operator><name>reset</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>CommitLogFormat</name><operator>.</operator><name>updateChecksum</name></name><argument_list>(<argument><expr><name>checksum</name></expr></argument>, <argument><expr><name>serializedSize</name></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>version</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <if_stmt><if>if <condition>(<expr><call><name><name>checksum</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <name>claimedSizeChecksum</name></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>handler</name><operator>.</operator><name>shouldSkipSegmentOnError</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>CommitLogReadException</name><argument_list>(
+                                                    <argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Mutation size checksum failure at %d in %s"</literal></expr></argument>, <argument><expr><name>mutationStart</name></expr></argument>, <argument><expr><name><name>statusTracker</name><operator>.</operator><name>errorContext</name></name></expr></argument>)</argument_list></call></expr></argument>,
+                                                    <argument><expr><name><name>CommitLogReadErrorReason</name><operator>.</operator><name>MUTATION_ERROR</name></name></expr></argument>,
+                                                    <argument><expr><name><name>statusTracker</name><operator>.</operator><name>tolerateErrorsInSection</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><call><name><name>statusTracker</name><operator>.</operator><name>requestTermination</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>serializedSize</name> <operator>&gt;</operator> <name><name>buffer</name><operator>.</operator><name>length</name></name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>buffer</name> <operator>=</operator> <operator>new</operator> <name><name>byte</name><index>[<expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><literal type="number">1.2</literal> <operator>*</operator> <name>serializedSize</name><operator>)</operator></expr>]</index></name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>reader</name><operator>.</operator><name>readFully</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>serializedSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <expr_stmt><expr><name>claimedCRC32</name> <operator>=</operator> <call><name><name>CommitLogFormat</name><operator>.</operator><name>calculateClaimedCRC32</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>version</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>EOFException</name></type> <name>eof</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>handler</name><operator>.</operator><name>shouldSkipSegmentOnError</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>CommitLogReadException</name><argument_list>(
+                                                <argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Unexpected end of segment at %d in %s"</literal></expr></argument>, <argument><expr><name>mutationStart</name></expr></argument>, <argument><expr><name><name>statusTracker</name><operator>.</operator><name>errorContext</name></name></expr></argument>)</argument_list></call></expr></argument>,
+                                                <argument><expr><name><name>CommitLogReadErrorReason</name><operator>.</operator><name>EOF</name></name></expr></argument>,
+                                                <argument><expr><name><name>statusTracker</name><operator>.</operator><name>tolerateErrorsInSection</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>statusTracker</name><operator>.</operator><name>requestTermination</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <return>return;</return>
+            </block_content>}</block></catch></try>
+
+            <expr_stmt><expr><call><name><name>checksum</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>serializedSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>claimedCRC32</name> <operator>!=</operator> <call><name><name>checksum</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>handler</name><operator>.</operator><name>shouldSkipSegmentOnError</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>CommitLogReadException</name><argument_list>(
+                                                <argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Mutation checksum failure at %d in %s"</literal></expr></argument>, <argument><expr><name>mutationStart</name></expr></argument>, <argument><expr><name><name>statusTracker</name><operator>.</operator><name>errorContext</name></name></expr></argument>)</argument_list></call></expr></argument>,
+                                                <argument><expr><name><name>CommitLogReadErrorReason</name><operator>.</operator><name>MUTATION_ERROR</name></name></expr></argument>,
+                                                <argument><expr><name><name>statusTracker</name><operator>.</operator><name>tolerateErrorsInSection</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>statusTracker</name><operator>.</operator><name>requestTermination</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <continue>continue;</continue>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>long</name></type> <name>mutationPosition</name> <init>= <expr><call><name><name>reader</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name>readMutation</name><argument_list>(<argument><expr><name>handler</name></expr></argument>, <argument><expr><name>buffer</name></expr></argument>, <argument><expr><name>serializedSize</name></expr></argument>, <argument><expr><name>minPosition</name></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator><name>mutationPosition</name></expr></argument>, <argument><expr><name>desc</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <comment type="line">// Only count this as a processed mutation if it is after our min as we suppress reading of mutations that</comment>
+            <comment type="line">// are before this mark.</comment>
+            <if_stmt><if>if <condition>(<expr><name>mutationPosition</name> <operator>&gt;=</operator> <name><name>minPosition</name><operator>.</operator><name>position</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>statusTracker</name><operator>.</operator><name>addProcessedMutation</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Deserializes and passes a Mutation to the ICommitLogReadHandler requested
+     *
+     * @param handler Handler that will take action based on deserialized Mutations
+     * @param inputBuffer raw byte array w/Mutation data
+     * @param size deserialized size of mutation
+     * @param minPosition We need to suppress replay of mutations that are before the required minPosition
+     * @param entryLocation filePointer offset of end of mutation within CommitLogSegment
+     * @param desc CommitLogDescriptor being worked on
+     */</comment>
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>protected</specifier> <name>void</name></type> <name>readMutation</name><parameter_list>(<parameter><decl><type><name>CommitLogReadHandler</name></type> <name>handler</name></decl></parameter>,
+                                <parameter><decl><type><name><name>byte</name><index>[]</index></name></type> <name>inputBuffer</name></decl></parameter>,
+                                <parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>,
+                                <parameter><decl><type><name>CommitLogPosition</name></type> <name>minPosition</name></decl></parameter>,
+                                <parameter><decl><type><specifier>final</specifier> <name>int</name></type> <name>entryLocation</name></decl></parameter>,
+                                <parameter><decl><type><specifier>final</specifier> <name>CommitLogDescriptor</name></type> <name>desc</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <comment type="line">// For now, we need to go through the motions of deserializing the mutation to determine its size and move</comment>
+        <comment type="line">// the file pointer forward accordingly, even if we're behind the requested minPosition within this SyncSegment.</comment>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>shouldReplay</name> <init>= <expr><name>entryLocation</name> <operator>&gt;</operator> <name><name>minPosition</name><operator>.</operator><name>position</name></name></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name>Mutation</name></type> <name>mutation</name></decl>;</decl_stmt>
+        <try>try <init>(<decl><type><name>RebufferingInputStream</name></type> <name>bufIn</name> <init>= <expr><operator>new</operator> <call><name>DataInputBuffer</name><argument_list>(<argument><expr><name>inputBuffer</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>size</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <expr_stmt><expr><name>mutation</name> <operator>=</operator> <call><name><name>Mutation</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>bufIn</name></expr></argument>,
+                                                       <argument><expr><call><name><name>desc</name><operator>.</operator><name>getMessagingVersion</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                       <argument><expr><name><name>DeserializationHelper</name><operator>.</operator><name>Flag</name><operator>.</operator><name>LOCAL</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <comment type="line">// doublecheck that what we read is still] valid for the current schema</comment>
+            <for>for <control>(<init><decl><type><name>PartitionUpdate</name></type> <name>upd</name> <range>: <expr><call><name><name>mutation</name><operator>.</operator><name>getPartitionUpdates</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>upd</name><operator>.</operator><name>validate</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>UnknownTableException</name></type> <name>ex</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name><name>ex</name><operator>.</operator><name>id</name></name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+            <decl_stmt><decl><type><name>AtomicInteger</name></type> <name>i</name> <init>= <expr><call><name><name>invalidMutations</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ex</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>i</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>i</name> <operator>=</operator> <operator>new</operator> <call><name>AtomicInteger</name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>invalidMutations</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name><name>ex</name><operator>.</operator><name>id</name></name></expr></argument>, <argument><expr><name>i</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>i</name><operator>.</operator><name>incrementAndGet</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+            <return>return;</return>
+        </block_content>}</block></catch>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>JVMStabilityInspector</name><operator>.</operator><name>inspectThrowable</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>Path</name></type> <name>p</name> <init>= <expr><call><name><name>Files</name><operator>.</operator><name>createTempFile</name></name><argument_list>(<argument><expr><literal type="string">"mutation"</literal></expr></argument>, <argument><expr><literal type="string">"dat"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <try>try <init>(<decl><type><name>DataOutputStream</name></type> <name>out</name> <init>= <expr><operator>new</operator> <call><name>DataOutputStream</name><argument_list>(<argument><expr><call><name><name>Files</name><operator>.</operator><name>newOutputStream</name></name><argument_list>(<argument><expr><name>p</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><name>inputBuffer</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></try>
+
+            <comment type="line">// Checksum passed so this error can't be permissible.</comment>
+            <expr_stmt><expr><call><name><name>handler</name><operator>.</operator><name>handleUnrecoverableError</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>CommitLogReadException</name><argument_list>(
+                <argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(
+                    <argument><expr><literal type="string">"Unexpected error deserializing mutation; saved to %s.  "</literal> <operator>+</operator>
+                    <literal type="string">"This may be caused by replaying a mutation against a table with the same name but incompatible schema.  "</literal> <operator>+</operator>
+                    <literal type="string">"Exception follows: %s"</literal></expr></argument>, <argument><expr><call><name><name>p</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr></argument>,
+                <argument><expr><name><name>CommitLogReadErrorReason</name><operator>.</operator><name>MUTATION_ERROR</name></name></expr></argument>,
+                <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return;</return>
+        </block_content>}</block></catch></try>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Read mutation for {}.{}: {}"</literal></expr></argument>, <argument><expr><call><name><name>mutation</name><operator>.</operator><name>getKeyspaceName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>mutation</name><operator>.</operator><name>key</name></name><argument_list>()</argument_list></call></expr></argument>,
+                         <argument><expr><literal type="string">"{"</literal> <operator>+</operator> <call><name><name>StringUtils</name><operator>.</operator><name>join</name></name><argument_list>(<argument><expr><call><name><name>mutation</name><operator>.</operator><name>getPartitionUpdates</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>iterator</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="string">", "</literal></expr></argument>)</argument_list></call> <operator>+</operator> <literal type="string">"}"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>shouldReplay</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>handler</name><operator>.</operator><name>handleMutation</name></name><argument_list>(<argument><expr><name>mutation</name></expr></argument>, <argument><expr><name>size</name></expr></argument>, <argument><expr><name>entryLocation</name></expr></argument>, <argument><expr><name>desc</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Helper methods to deal with changing formats of internals of the CommitLog without polluting deserialization code.
+     */</comment>
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>CommitLogFormat</name>
+    <block>{
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>long</name></type> <name>calculateClaimedChecksum</name><parameter_list>(<parameter><decl><type><name>FileDataInput</name></type> <name>input</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>commitLogVersion</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>input</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call> <operator>&amp;</operator> <literal type="number">0xffffffffL</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>updateChecksum</name><parameter_list>(<parameter><decl><type><name>CRC32</name></type> <name>checksum</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>serializedSize</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>commitLogVersion</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>updateChecksumInt</name><argument_list>(<argument><expr><name>checksum</name></expr></argument>, <argument><expr><name>serializedSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>long</name></type> <name>calculateClaimedCRC32</name><parameter_list>(<parameter><decl><type><name>FileDataInput</name></type> <name>input</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>commitLogVersion</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>input</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call> <operator>&amp;</operator> <literal type="number">0xffffffffL</literal></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>ReadStatusTracker</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>mutationsLeft</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>public</specifier> <name>String</name></type> <name>errorContext</name> <init>= <expr><literal type="string">""</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>public</specifier> <name>boolean</name></type> <name>tolerateErrorsInSection</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>error</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>ReadStatusTracker</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>mutationLimit</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>tolerateErrorsInSection</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>mutationsLeft</name></name> <operator>=</operator> <name>mutationLimit</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>tolerateErrorsInSection</name></name> <operator>=</operator> <name>tolerateErrorsInSection</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>addProcessedMutation</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>mutationsLeft</name> <operator>==</operator> <name>ALL_MUTATIONS</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+            <expr_stmt><expr><operator>--</operator><name>mutationsLeft</name></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>shouldContinue</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>!</operator><name>error</name> <operator>&amp;&amp;</operator> <operator>(</operator><name>mutationsLeft</name> <operator>!=</operator> <literal type="number">0</literal> <operator>||</operator> <name>mutationsLeft</name> <operator>==</operator> <name>ALL_MUTATIONS</name><operator>)</operator></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>requestTermination</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name>error</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

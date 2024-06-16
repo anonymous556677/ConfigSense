@@ -1,0 +1,494 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/repair/RepairJob.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>CopyOnWriteArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Predicate</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Function</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>stream</name><operator>.</operator><name>Collectors</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Preconditions</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>ImmutableMap</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ColumnFamilyStore</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Keyspace</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>asymmetric</name><operator>.</operator><name>DifferenceHolder</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>asymmetric</name><operator>.</operator><name>HostDifferences</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>asymmetric</name><operator>.</operator><name>PreferedNodeFilter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>asymmetric</name><operator>.</operator><name>ReduceHelper</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>ActiveRepairService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>streaming</name><operator>.</operator><name>PreviewKind</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>Range</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>Token</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>tracing</name><operator>.</operator><name>Tracing</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>MerkleTrees</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>Pair</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * RepairJob runs repair on given ColumnFamily.
+ */</comment>
+<class><specifier>public</specifier> class <name>RepairJob</name> <super_list><extends>extends <super><name><name>AbstractFuture</name><argument_list type="generic">&lt;<argument><name>RepairResult</name></argument>&gt;</argument_list></name></super></extends> <implements>implements <super><name>Runnable</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>RepairJob</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>RepairSession</name></type> <name>session</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>RepairJobDesc</name></type> <name>desc</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>RepairParallelism</name></type> <name>parallelismDegree</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ListeningExecutorService</name></type> <name>taskExecutor</name></decl>;</decl_stmt>
+    
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncTask</name></argument>&gt;</argument_list></name></type> <name>syncTasks</name> <init>= <expr><operator>new</operator> <call><name><name>CopyOnWriteArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Create repair job to run on specific columnfamily
+     *
+     * @param session RepairSession that this RepairJob belongs
+     * @param columnFamily name of the ColumnFamily to repair
+     */</comment>
+    <constructor><specifier>public</specifier> <name>RepairJob</name><parameter_list>(<parameter><decl><type><name>RepairSession</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>columnFamily</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>session</name></name> <operator>=</operator> <name>session</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>desc</name></name> <operator>=</operator> <operator>new</operator> <call><name>RepairJobDesc</name><argument_list>(<argument><expr><name><name>session</name><operator>.</operator><name>parentRepairSession</name></name></expr></argument>, <argument><expr><call><name><name>session</name><operator>.</operator><name>getId</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>session</name><operator>.</operator><name>keyspace</name></name></expr></argument>, <argument><expr><name>columnFamily</name></expr></argument>, <argument><expr><name><name>session</name><operator>.</operator><name>commonRange</name><operator>.</operator><name>ranges</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>taskExecutor</name></name> <operator>=</operator> <name><name>session</name><operator>.</operator><name>taskExecutor</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>parallelismDegree</name></name> <operator>=</operator> <name><name>session</name><operator>.</operator><name>parallelismDegree</name></name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getNowInSeconds</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>nowInSeconds</name> <init>= <expr><call><name><name>FBUtilities</name><operator>.</operator><name>nowInSeconds</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name><name>session</name><operator>.</operator><name>previewKind</name></name> <operator>==</operator> <name><name>PreviewKind</name><operator>.</operator><name>REPAIRED</name></name></expr>)</condition>
+        <block>{<block_content>
+            <return>return <expr><name>nowInSeconds</name> <operator>+</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getValidationPreviewPurgeHeadStartInSec</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <return>return <expr><name>nowInSeconds</name></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Runs repair job.
+     *
+     * This sets up necessary task and runs them on given {@code taskExecutor}.
+     * After submitting all tasks, waits until validation with replica completes.
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"UnstableApiUsage"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Keyspace</name></type> <name>ks</name> <init>= <expr><call><name><name>Keyspace</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><name><name>desc</name><operator>.</operator><name>keyspace</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <init>= <expr><call><name><name>ks</name><operator>.</operator><name>getColumnFamilyStore</name></name><argument_list>(<argument><expr><name><name>desc</name><operator>.</operator><name>columnFamily</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>repairsStarted</name><operator>.</operator><name>inc</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>allEndpoints</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name><name>session</name><operator>.</operator><name>commonRange</name><operator>.</operator><name>endpoints</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>allEndpoints</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>validations</name></decl>;</decl_stmt>
+        <comment type="line">// Create a snapshot at all nodes unless we're using pure parallel repairs</comment>
+        <if_stmt><if>if <condition>(<expr><name>parallelismDegree</name> <operator>!=</operator> <name><name>RepairParallelism</name><operator>.</operator><name>PARALLEL</name></name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>allSnapshotTasks</name></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name><name>session</name><operator>.</operator><name>isIncremental</name></name></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// consistent repair does it's own "snapshotting"</comment>
+                <expr_stmt><expr><name>allSnapshotTasks</name> <operator>=</operator> <call><name><name>Futures</name><operator>.</operator><name>immediateFuture</name></name><argument_list>(<argument><expr><name>allEndpoints</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <comment type="line">// Request snapshot to all replica</comment>
+                <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>snapshotTasks</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>allEndpoints</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <for>for <control>(<init><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name> <range>: <expr><name>allEndpoints</name></expr></range></decl></init>)</control>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>SnapshotTask</name></type> <name>snapshotTask</name> <init>= <expr><operator>new</operator> <call><name>SnapshotTask</name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>snapshotTasks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>snapshotTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>taskExecutor</name><operator>.</operator><name>execute</name></name><argument_list>(<argument><expr><name>snapshotTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></for>
+                <expr_stmt><expr><name>allSnapshotTasks</name> <operator>=</operator> <call><name><name>Futures</name><operator>.</operator><name>allAsList</name></name><argument_list>(<argument><expr><name>snapshotTasks</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+
+            <comment type="line">// When all snapshot complete, send validation requests</comment>
+            <expr_stmt><expr><name>validations</name> <operator>=</operator> <call><name><name>Futures</name><operator>.</operator><name>transformAsync</name></name><argument_list>(<argument><expr><name>allSnapshotTasks</name></expr></argument>, <argument><expr><operator>new</operator> <class><super><name><name>AsyncFunction</name><argument_list type="generic">&lt;<argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></argument>, <argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></super><argument_list>()</argument_list>
+            <block>{
+                <function><type><specifier>public</specifier> <name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>apply</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>endpoints</name></decl></parameter>)</parameter_list>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><name>parallelismDegree</name> <operator>==</operator> <name><name>RepairParallelism</name><operator>.</operator><name>SEQUENTIAL</name></name></expr>)</condition><block type="pseudo"><block_content>
+                        <return>return <expr><call><name>sendSequentialValidationRequest</name><argument_list>(<argument><expr><name>endpoints</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+                    <else>else<block type="pseudo"><block_content>
+                        <return>return <expr><call><name>sendDCAwareValidationRequest</name><argument_list>(<argument><expr><name>endpoints</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></else></if_stmt>
+                </block_content>}</block></function>
+            }</block></class></expr></argument>, <argument><expr><name>taskExecutor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <comment type="line">// If not sequential, just send validation request to all replica</comment>
+            <expr_stmt><expr><name>validations</name> <operator>=</operator> <call><name>sendValidationRequest</name><argument_list>(<argument><expr><name>allEndpoints</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+
+        <comment type="line">// When all validations complete, submit sync tasks</comment>
+        <decl_stmt><decl><type><name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncStat</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>syncResults</name> <init>= <expr><call><name><name>Futures</name><operator>.</operator><name>transformAsync</name></name><argument_list>(<argument><expr><name>validations</name></expr></argument>,
+                                                                              <argument><expr><ternary><condition><expr><name><name>session</name><operator>.</operator><name>optimiseStreams</name></name> <operator>&amp;&amp;</operator> <operator>!</operator><name><name>session</name><operator>.</operator><name>pullRepair</name></name></expr> ?</condition><then> <expr><name>this</name><operator>::</operator><name>optimisedSyncing</name></expr> </then><else>: <expr><name>this</name><operator>::</operator><name>standardSyncing</name></expr></else></ternary></expr></argument>,
+                                                                              <argument><expr><name>taskExecutor</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// When all sync complete, set the final result</comment>
+        <expr_stmt><expr><call><name><name>Futures</name><operator>.</operator><name>addCallback</name></name><argument_list>(<argument><expr><name>syncResults</name></expr></argument>, <argument><expr><operator>new</operator> <class><super><name><name>FutureCallback</name><argument_list type="generic">&lt;<argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncStat</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></super><argument_list>()</argument_list>
+        <block>{
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onSuccess</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncStat</name></argument>&gt;</argument_list></name></type> <name>stats</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>session</name><operator>.</operator><name>previewKind</name><operator>.</operator><name>isPreview</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"{} {}.{} is fully synced"</literal></expr></argument>, <argument><expr><call><name><name>session</name><operator>.</operator><name>previewKind</name><operator>.</operator><name>logPrefix</name></name><argument_list>(<argument><expr><call><name><name>session</name><operator>.</operator><name>getId</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>keyspace</name></name></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>columnFamily</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>SystemDistributedKeyspace</name><operator>.</operator><name>successfulRepairJob</name></name><argument_list>(<argument><expr><call><name><name>session</name><operator>.</operator><name>getId</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>keyspace</name></name></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>columnFamily</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>repairsCompleted</name><operator>.</operator><name>inc</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name>set</name><argument_list>(<argument><expr><operator>new</operator> <call><name>RepairResult</name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>stats</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <comment type="block" format="javadoc">/**
+             * Snapshot, validation and sync failures are all handled here
+             */</comment>
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onFailure</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>syncTasks</name><operator>.</operator><name>forEach</name></name><argument_list>(<argument><expr><name>SyncTask</name><operator>::</operator><name>abort</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>session</name><operator>.</operator><name>previewKind</name><operator>.</operator><name>isPreview</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"{} {}.{} sync failed"</literal></expr></argument>, <argument><expr><call><name><name>session</name><operator>.</operator><name>previewKind</name><operator>.</operator><name>logPrefix</name></name><argument_list>(<argument><expr><call><name><name>session</name><operator>.</operator><name>getId</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>keyspace</name></name></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>columnFamily</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>SystemDistributedKeyspace</name><operator>.</operator><name>failedRepairJob</name></name><argument_list>(<argument><expr><call><name><name>session</name><operator>.</operator><name>getId</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>keyspace</name></name></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>columnFamily</name></name></expr></argument>, <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>repairsCompleted</name><operator>.</operator><name>inc</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name>setException</name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+        }</block></class></expr></argument>, <argument><expr><name>taskExecutor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>isTransient</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>ep</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>session</name><operator>.</operator><name>commonRange</name><operator>.</operator><name>transEndpoints</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>ep</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncStat</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>standardSyncing</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></type> <name>trees</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncTask</name></argument>&gt;</argument_list></name></type> <name>syncTasks</name> <init>= <expr><call><name>createStandardSyncTasks</name><argument_list>(<argument><expr><name>desc</name></expr></argument>,
+                                                           <argument><expr><name>trees</name></expr></argument>,
+                                                           <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getLocalAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                           <argument><expr><name>this</name><operator>::</operator><name>isTransient</name></expr></argument>,
+                                                           <argument><expr><name><name>session</name><operator>.</operator><name>isIncremental</name></name></expr></argument>,
+                                                           <argument><expr><name><name>session</name><operator>.</operator><name>pullRepair</name></name></expr></argument>,
+                                                           <argument><expr><name><name>session</name><operator>.</operator><name>previewKind</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name>executeTasks</name><argument_list>(<argument><expr><name>syncTasks</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncTask</name></argument>&gt;</argument_list></name></type> <name>createStandardSyncTasks</name><parameter_list>(<parameter><decl><type><name>RepairJobDesc</name></type> <name>desc</name></decl></parameter>,
+                                                  <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></type> <name>trees</name></decl></parameter>,
+                                                  <parameter><decl><type><name>InetAddressAndPort</name></type> <name>local</name></decl></parameter>,
+                                                  <parameter><decl><type><name><name>Predicate</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>isTransient</name></decl></parameter>,
+                                                  <parameter><decl><type><name>boolean</name></type> <name>isIncremental</name></decl></parameter>,
+                                                  <parameter><decl><type><name>boolean</name></type> <name>pullRepair</name></decl></parameter>,
+                                                  <parameter><decl><type><name>PreviewKind</name></type> <name>previewKind</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>startedAt</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>currentTimeMillis</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncTask</name></argument>&gt;</argument_list></name></type> <name>syncTasks</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// We need to difference all trees one against another</comment>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>trees</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>-</operator> <literal type="number">1</literal></expr>;</condition> <incr><expr><operator>++</operator><name>i</name></expr></incr>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>TreeResponse</name></type> <name>r1</name> <init>= <expr><call><name><name>trees</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>j</name> <init>= <expr><name>i</name> <operator>+</operator> <literal type="number">1</literal></expr></init></decl>;</init> <condition><expr><name>j</name> <operator>&lt;</operator> <call><name><name>trees</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><operator>++</operator><name>j</name></expr></incr>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>TreeResponse</name></type> <name>r2</name> <init>= <expr><call><name><name>trees</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>j</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                <comment type="line">// Avoid streming between two tansient replicas</comment>
+                <if_stmt><if>if <condition>(<expr><call><name><name>isTransient</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name><name>r1</name><operator>.</operator><name>endpoint</name></name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>isTransient</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name><name>r2</name><operator>.</operator><name>endpoint</name></name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>differences</name> <init>= <expr><call><name><name>MerkleTrees</name><operator>.</operator><name>difference</name></name><argument_list>(<argument><expr><name><name>r1</name><operator>.</operator><name>trees</name></name></expr></argument>, <argument><expr><name><name>r2</name><operator>.</operator><name>trees</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                <comment type="line">// Nothing to do</comment>
+                <if_stmt><if>if <condition>(<expr><call><name><name>differences</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <decl_stmt><decl><type><name>SyncTask</name></type> <name>task</name></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>r1</name><operator>.</operator><name>endpoint</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>local</name></expr></argument>)</argument_list></call> <operator>||</operator> <call><name><name>r2</name><operator>.</operator><name>endpoint</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>local</name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>TreeResponse</name></type> <name>self</name> <init>= <expr><ternary><condition><expr><call><name><name>r1</name><operator>.</operator><name>endpoint</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>local</name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><name>r1</name></expr> </then><else>: <expr><name>r2</name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>TreeResponse</name></type> <name>remote</name> <init>= <expr><ternary><condition><expr><call><name><name>r2</name><operator>.</operator><name>endpoint</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>local</name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><name>r1</name></expr> </then><else>: <expr><name>r2</name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+                    <comment type="line">// pull only if local is full</comment>
+                    <decl_stmt><decl><type><name>boolean</name></type> <name>requestRanges</name> <init>= <expr><operator>!</operator><call><name><name>isTransient</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name><name>self</name><operator>.</operator><name>endpoint</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <comment type="line">// push only if remote is full; additionally check for pull repair</comment>
+                    <decl_stmt><decl><type><name>boolean</name></type> <name>transferRanges</name> <init>= <expr><operator>!</operator><call><name><name>isTransient</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name><name>remote</name><operator>.</operator><name>endpoint</name></name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator><name>pullRepair</name></expr></init></decl>;</decl_stmt>
+
+                    <comment type="line">// Nothing to do</comment>
+                    <if_stmt><if>if <condition>(<expr><operator>!</operator><name>requestRanges</name> <operator>&amp;&amp;</operator> <operator>!</operator><name>transferRanges</name></expr>)</condition><block type="pseudo"><block_content>
+                        <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                    <expr_stmt><expr><name>task</name> <operator>=</operator> <operator>new</operator> <call><name>LocalSyncTask</name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name><name>self</name><operator>.</operator><name>endpoint</name></name></expr></argument>, <argument><expr><name><name>remote</name><operator>.</operator><name>endpoint</name></name></expr></argument>, <argument><expr><name>differences</name></expr></argument>, <argument><expr><ternary><condition><expr><name>isIncremental</name></expr> ?</condition><then> <expr><name><name>desc</name><operator>.</operator><name>parentSessionId</name></name></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr></argument>,
+                                             <argument><expr><name>requestRanges</name></expr></argument>, <argument><expr><name>transferRanges</name></expr></argument>, <argument><expr><name>previewKind</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <if type="elseif">else if <condition>(<expr><call><name><name>isTransient</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name><name>r1</name><operator>.</operator><name>endpoint</name></name></expr></argument>)</argument_list></call> <operator>||</operator> <call><name><name>isTransient</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name><name>r2</name><operator>.</operator><name>endpoint</name></name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <comment type="line">// Stream only from transient replica</comment>
+                    <decl_stmt><decl><type><name>TreeResponse</name></type> <name>streamFrom</name> <init>= <expr><ternary><condition><expr><call><name><name>isTransient</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name><name>r1</name><operator>.</operator><name>endpoint</name></name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><name>r1</name></expr> </then><else>: <expr><name>r2</name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>TreeResponse</name></type> <name>streamTo</name> <init>= <expr><ternary><condition><expr><call><name><name>isTransient</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name><name>r1</name><operator>.</operator><name>endpoint</name></name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><name>r2</name></expr> </then><else>: <expr><name>r1</name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><name>task</name> <operator>=</operator> <operator>new</operator> <call><name>AsymmetricRemoteSyncTask</name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name><name>streamTo</name><operator>.</operator><name>endpoint</name></name></expr></argument>, <argument><expr><name><name>streamFrom</name><operator>.</operator><name>endpoint</name></name></expr></argument>, <argument><expr><name>differences</name></expr></argument>, <argument><expr><name>previewKind</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <expr_stmt><expr><name>task</name> <operator>=</operator> <operator>new</operator> <call><name>SymmetricRemoteSyncTask</name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name><name>r1</name><operator>.</operator><name>endpoint</name></name></expr></argument>, <argument><expr><name><name>r2</name><operator>.</operator><name>endpoint</name></name></expr></argument>, <argument><expr><name>differences</name></expr></argument>, <argument><expr><name>previewKind</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></else></if_stmt>
+                <expr_stmt><expr><call><name><name>syncTasks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>task</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <expr_stmt><expr><call><name><name>trees</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><call><name><name>trees</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <expr_stmt><expr><call><name><name>trees</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>trees</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name><name>trees</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Created {} sync tasks based on {} merkle tree responses for {} (took: {}ms)"</literal></expr></argument>,
+                    <argument><expr><call><name><name>syncTasks</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>trees</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>parentSessionId</name></name></expr></argument>, <argument><expr><call><name><name>System</name><operator>.</operator><name>currentTimeMillis</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>startedAt</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>syncTasks</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncStat</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>optimisedSyncing</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></type> <name>trees</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncTask</name></argument>&gt;</argument_list></name></type> <name>syncTasks</name> <init>= <expr><call><name>createOptimisedSyncingSyncTasks</name><argument_list>(<argument><expr><name>desc</name></expr></argument>,
+                                                                   <argument><expr><name>trees</name></expr></argument>,
+                                                                   <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getLocalAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                                   <argument><expr><name>this</name><operator>::</operator><name>isTransient</name></expr></argument>,
+                                                                   <argument><expr><name>this</name><operator>::</operator><name>getDC</name></expr></argument>,
+                                                                   <argument><expr><name><name>session</name><operator>.</operator><name>isIncremental</name></name></expr></argument>,
+                                                                   <argument><expr><name><name>session</name><operator>.</operator><name>previewKind</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <return>return <expr><call><name>executeTasks</name><argument_list>(<argument><expr><name>syncTasks</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"UnstableApiUsage"</literal></expr></argument>)</argument_list></annotation>
+    <annotation>@<name>VisibleForTesting</name></annotation>
+    <type><name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncStat</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>executeTasks</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncTask</name></argument>&gt;</argument_list></name></type> <name>tasks</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// this throws if the parent session has failed</comment>
+        <expr_stmt><expr><call><name><name>ActiveRepairService</name><operator>.</operator><name>instance</name><operator>.</operator><name>getParentRepairSession</name></name><argument_list>(<argument><expr><name><name>desc</name><operator>.</operator><name>parentSessionId</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>syncTasks</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><name>tasks</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <for>for <control>(<init><decl><type><name>SyncTask</name></type> <name>task</name> <range>: <expr><name>tasks</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>task</name><operator>.</operator><name>isLocal</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>trackSyncCompletion</name></name><argument_list>(<argument><expr><call><name><name>Pair</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><call><name><name>task</name><operator>.</operator><name>nodePair</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><operator>(</operator><name>CompletableRemoteSyncTask</name><operator>)</operator> <name>task</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>taskExecutor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><name>task</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <return>return <expr><call><name><name>Futures</name><operator>.</operator><name>allAsList</name></name><argument_list>(<argument><expr><name>tasks</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncTask</name></argument>&gt;</argument_list></name></type> <name>createOptimisedSyncingSyncTasks</name><parameter_list>(<parameter><decl><type><name>RepairJobDesc</name></type> <name>desc</name></decl></parameter>,
+                                                          <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></type> <name>trees</name></decl></parameter>,
+                                                          <parameter><decl><type><name>InetAddressAndPort</name></type> <name>local</name></decl></parameter>,
+                                                          <parameter><decl><type><name><name>Predicate</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>isTransient</name></decl></parameter>,
+                                                          <parameter><decl><type><name><name>Function</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name></type> <name>getDC</name></decl></parameter>,
+                                                          <parameter><decl><type><name>boolean</name></type> <name>isIncremental</name></decl></parameter>,
+                                                          <parameter><decl><type><name>PreviewKind</name></type> <name>previewKind</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>startedAt</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>currentTimeMillis</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>SyncTask</name></argument>&gt;</argument_list></name></type> <name>syncTasks</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// We need to difference all trees one against another</comment>
+        <decl_stmt><decl><type><name>DifferenceHolder</name></type> <name>diffHolder</name> <init>= <expr><operator>new</operator> <call><name>DifferenceHolder</name><argument_list>(<argument><expr><name>trees</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"diffs = {}"</literal></expr></argument>, <argument><expr><name>diffHolder</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>PreferedNodeFilter</name></type> <name>preferSameDCFilter</name> <init>= <expr><lambda><parameter_list>(<parameter><decl><name>streaming</name></decl></parameter>, <parameter><decl><name>candidates</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content>
+                                                <expr><call><name><name>candidates</name><operator>.</operator><name>stream</name></name><argument_list>()</argument_list></call>
+                                                          <operator>.</operator><call><name>filter</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>node</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>getDC</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><name>streaming</name></expr></argument>)</argument_list></call>
+                                                                          <operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><call><name><name>getDC</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><name>node</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call>
+                                                          <operator>.</operator><call><name>collect</name><argument_list>(<argument><expr><call><name><name>Collectors</name><operator>.</operator><name>toSet</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>ImmutableMap</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>HostDifferences</name></argument>&gt;</argument_list></name></type> <name>reducedDifferences</name> <init>= <expr><call><name><name>ReduceHelper</name><operator>.</operator><name>reduce</name></name><argument_list>(<argument><expr><name>diffHolder</name></expr></argument>, <argument><expr><name>preferSameDCFilter</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>trees</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>address</name> <init>= <expr><call><name><name>trees</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><name>endpoint</name></expr></init></decl>;</decl_stmt>
+
+            <comment type="line">// we don't stream to transient replicas</comment>
+            <if_stmt><if>if <condition>(<expr><call><name><name>isTransient</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name>address</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <continue>continue;</continue></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>HostDifferences</name></type> <name>streamsFor</name> <init>= <expr><call><name><name>reducedDifferences</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>address</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>streamsFor</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><call><name><name>streamsFor</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>address</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>isEmpty</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="string">"We should not fetch ranges from ourselves"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <for>for <control>(<init><decl><type><name>InetAddressAndPort</name></type> <name>fetchFrom</name> <range>: <expr><call><name><name>streamsFor</name><operator>.</operator><name>hosts</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>toFetch</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>streamsFor</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>fetchFrom</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <assert>assert <expr><operator>!</operator><call><name><name>toFetch</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</assert>
+
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"{} is about to fetch {} from {}"</literal></expr></argument>, <argument><expr><name>address</name></expr></argument>, <argument><expr><name>toFetch</name></expr></argument>, <argument><expr><name>fetchFrom</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <decl_stmt><decl><type><name>SyncTask</name></type> <name>task</name></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>address</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>local</name></expr></argument>)</argument_list></call></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><name>task</name> <operator>=</operator> <operator>new</operator> <call><name>LocalSyncTask</name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>address</name></expr></argument>, <argument><expr><name>fetchFrom</name></expr></argument>, <argument><expr><name>toFetch</name></expr></argument>, <argument><expr><ternary><condition><expr><name>isIncremental</name></expr> ?</condition><then> <expr><name><name>desc</name><operator>.</operator><name>parentSessionId</name></name></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr></argument>,
+                                                 <argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><name>previewKind</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if>
+                    <else>else
+                    <block>{<block_content>
+                        <expr_stmt><expr><name>task</name> <operator>=</operator> <operator>new</operator> <call><name>AsymmetricRemoteSyncTask</name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>address</name></expr></argument>, <argument><expr><name>fetchFrom</name></expr></argument>, <argument><expr><name>toFetch</name></expr></argument>, <argument><expr><name>previewKind</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></else></if_stmt>
+                    <expr_stmt><expr><call><name><name>syncTasks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>task</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                </block_content>}</block></for>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Node {} has nothing to stream"</literal></expr></argument>, <argument><expr><name>address</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></for>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Created {} optimised sync tasks based on {} merkle tree responses for {} (took: {}ms)"</literal></expr></argument>,
+                    <argument><expr><call><name><name>syncTasks</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>trees</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>parentSessionId</name></name></expr></argument>, <argument><expr><call><name><name>System</name><operator>.</operator><name>currentTimeMillis</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>startedAt</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Optimised sync tasks for {}: {}"</literal></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>parentSessionId</name></name></expr></argument>, <argument><expr><name>syncTasks</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>syncTasks</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>String</name></type> <name>getDC</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>address</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getEndpointSnitch</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getDatacenter</name><argument_list>(<argument><expr><name>address</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates {@link ValidationTask} and submit them to task executor in parallel.
+     *
+     * @param endpoints Endpoint addresses to send validation request
+     * @return Future that can get all {@link TreeResponse} from replica, if all validation succeed.
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"UnstableApiUsage"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>private</specifier> <name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>sendValidationRequest</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>endpoints</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>message</name> <init>= <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Requesting merkle trees for %s (to %s)"</literal></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>columnFamily</name></name></expr></argument>, <argument><expr><name>endpoints</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"{} {}"</literal></expr></argument>, <argument><expr><call><name><name>session</name><operator>.</operator><name>previewKind</name><operator>.</operator><name>logPrefix</name></name><argument_list>(<argument><expr><name><name>desc</name><operator>.</operator><name>sessionId</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>traceRepair</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>nowInSec</name> <init>= <expr><call><name>getNowInSeconds</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>tasks</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>endpoints</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name> <range>: <expr><name>endpoints</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ValidationTask</name></type> <name>task</name> <init>= <expr><operator>new</operator> <call><name>ValidationTask</name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>endpoint</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name><name>session</name><operator>.</operator><name>previewKind</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>tasks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>task</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>trackValidationCompletion</name></name><argument_list>(<argument><expr><call><name><name>Pair</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>task</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>taskExecutor</name><operator>.</operator><name>execute</name></name><argument_list>(<argument><expr><name>task</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><call><name><name>Futures</name><operator>.</operator><name>allAsList</name></name><argument_list>(<argument><expr><name>tasks</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates {@link ValidationTask} and submit them to task executor so that tasks run sequentially.
+     */</comment>
+    <function><type><specifier>private</specifier> <name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>sendSequentialValidationRequest</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>endpoints</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>message</name> <init>= <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Requesting merkle trees for %s (to %s)"</literal></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>columnFamily</name></name></expr></argument>, <argument><expr><name>endpoints</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"{} {}"</literal></expr></argument>, <argument><expr><call><name><name>session</name><operator>.</operator><name>previewKind</name><operator>.</operator><name>logPrefix</name></name><argument_list>(<argument><expr><name><name>desc</name><operator>.</operator><name>sessionId</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>traceRepair</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>nowInSec</name> <init>= <expr><call><name>getNowInSeconds</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>tasks</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>endpoints</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>Queue</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>requests</name> <init>= <expr><operator>new</operator> <call><name><name>LinkedList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>endpoints</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>address</name> <init>= <expr><call><name><name>requests</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ValidationTask</name></type> <name>firstTask</name> <init>= <expr><operator>new</operator> <call><name>ValidationTask</name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>address</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name><name>session</name><operator>.</operator><name>previewKind</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"{} Validating {}"</literal></expr></argument>, <argument><expr><call><name><name>session</name><operator>.</operator><name>previewKind</name><operator>.</operator><name>logPrefix</name></name><argument_list>(<argument><expr><name><name>desc</name><operator>.</operator><name>sessionId</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>address</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>trackValidationCompletion</name></name><argument_list>(<argument><expr><call><name><name>Pair</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>address</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>firstTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>tasks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>firstTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>ValidationTask</name></type> <name>currentTask</name> <init>= <expr><name>firstTask</name></expr></init></decl>;</decl_stmt>
+        <while>while <condition>(<expr><call><name><name>requests</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>nextAddress</name> <init>= <expr><call><name><name>requests</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>ValidationTask</name></type> <name>nextTask</name> <init>= <expr><operator>new</operator> <call><name>ValidationTask</name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>nextAddress</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name><name>session</name><operator>.</operator><name>previewKind</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>tasks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>nextTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>Futures</name><operator>.</operator><name>addCallback</name></name><argument_list>(<argument><expr><name>currentTask</name></expr></argument>, <argument><expr><operator>new</operator> <class><super><name><name>FutureCallback</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></super><argument_list>()</argument_list>
+            <block>{
+                <function><type><specifier>public</specifier> <name>void</name></type> <name>onSuccess</name><parameter_list>(<parameter><decl><type><name>TreeResponse</name></type> <name>result</name></decl></parameter>)</parameter_list>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"{} Validating {}"</literal></expr></argument>, <argument><expr><call><name><name>session</name><operator>.</operator><name>previewKind</name><operator>.</operator><name>logPrefix</name></name><argument_list>(<argument><expr><name><name>desc</name><operator>.</operator><name>sessionId</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>nextAddress</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>trackValidationCompletion</name></name><argument_list>(<argument><expr><call><name><name>Pair</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>nextAddress</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>nextTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>taskExecutor</name><operator>.</operator><name>execute</name></name><argument_list>(<argument><expr><name>nextTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></function>
+
+                <comment type="line">// failure is handled at root of job chain</comment>
+                <function><type><specifier>public</specifier> <name>void</name></type> <name>onFailure</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list> <block>{<block_content/>}</block></function>
+            }</block></class></expr></argument>, <argument><expr><call><name><name>MoreExecutors</name><operator>.</operator><name>directExecutor</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>currentTask</name> <operator>=</operator> <name>nextTask</name></expr>;</expr_stmt>
+        </block_content>}</block></while>
+        <comment type="line">// start running tasks</comment>
+        <expr_stmt><expr><call><name><name>taskExecutor</name><operator>.</operator><name>execute</name></name><argument_list>(<argument><expr><name>firstTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name><name>Futures</name><operator>.</operator><name>allAsList</name></name><argument_list>(<argument><expr><name>tasks</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates {@link ValidationTask} and submit them to task executor so that tasks run sequentially within each dc.
+     */</comment>
+    <function><type><specifier>private</specifier> <name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>sendDCAwareValidationRequest</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>endpoints</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>message</name> <init>= <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Requesting merkle trees for %s (to %s)"</literal></expr></argument>, <argument><expr><name><name>desc</name><operator>.</operator><name>columnFamily</name></name></expr></argument>, <argument><expr><name>endpoints</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"{} {}"</literal></expr></argument>, <argument><expr><call><name><name>session</name><operator>.</operator><name>previewKind</name><operator>.</operator><name>logPrefix</name></name><argument_list>(<argument><expr><name><name>desc</name><operator>.</operator><name>sessionId</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>traceRepair</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>nowInSec</name> <init>= <expr><call><name>getNowInSeconds</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>tasks</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>endpoints</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name><name>Queue</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>requestsByDatacenter</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name> <range>: <expr><name>endpoints</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>dc</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getEndpointSnitch</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getDatacenter</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Queue</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>queue</name> <init>= <expr><call><name><name>requestsByDatacenter</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>dc</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>queue</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>queue</name> <operator>=</operator> <operator>new</operator> <call><name><name>LinkedList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>requestsByDatacenter</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>dc</name></expr></argument>, <argument><expr><name>queue</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>queue</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name><name>Queue</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></name></type> <name>entry</name> <range>: <expr><call><name><name>requestsByDatacenter</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Queue</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>requests</name> <init>= <expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>address</name> <init>= <expr><call><name><name>requests</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>ValidationTask</name></type> <name>firstTask</name> <init>= <expr><operator>new</operator> <call><name>ValidationTask</name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>address</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name><name>session</name><operator>.</operator><name>previewKind</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"{} Validating {}"</literal></expr></argument>, <argument><expr><call><name><name>session</name><operator>.</operator><name>previewKind</name><operator>.</operator><name>logPrefix</name></name><argument_list>(<argument><expr><call><name><name>session</name><operator>.</operator><name>getId</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>address</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>trackValidationCompletion</name></name><argument_list>(<argument><expr><call><name><name>Pair</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>address</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>firstTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>tasks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>firstTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>ValidationTask</name></type> <name>currentTask</name> <init>= <expr><name>firstTask</name></expr></init></decl>;</decl_stmt>
+            <while>while <condition>(<expr><call><name><name>requests</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>nextAddress</name> <init>= <expr><call><name><name>requests</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><specifier>final</specifier> <name>ValidationTask</name></type> <name>nextTask</name> <init>= <expr><operator>new</operator> <call><name>ValidationTask</name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>nextAddress</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name><name>session</name><operator>.</operator><name>previewKind</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>tasks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>nextTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>Futures</name><operator>.</operator><name>addCallback</name></name><argument_list>(<argument><expr><name>currentTask</name></expr></argument>, <argument><expr><operator>new</operator> <class><super><name><name>FutureCallback</name><argument_list type="generic">&lt;<argument><name>TreeResponse</name></argument>&gt;</argument_list></name></super><argument_list>()</argument_list>
+                <block>{
+                    <function><type><specifier>public</specifier> <name>void</name></type> <name>onSuccess</name><parameter_list>(<parameter><decl><type><name>TreeResponse</name></type> <name>result</name></decl></parameter>)</parameter_list>
+                    <block>{<block_content>
+                        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"{} Validating {}"</literal></expr></argument>, <argument><expr><call><name><name>session</name><operator>.</operator><name>previewKind</name><operator>.</operator><name>logPrefix</name></name><argument_list>(<argument><expr><call><name><name>session</name><operator>.</operator><name>getId</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>nextAddress</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>trackValidationCompletion</name></name><argument_list>(<argument><expr><call><name><name>Pair</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name>nextAddress</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>nextTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><call><name><name>taskExecutor</name><operator>.</operator><name>execute</name></name><argument_list>(<argument><expr><name>nextTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></function>
+
+                    <comment type="line">// failure is handled at root of job chain</comment>
+                    <function><type><specifier>public</specifier> <name>void</name></type> <name>onFailure</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list> <block>{<block_content/>}</block></function>
+                }</block></class></expr></argument>, <argument><expr><call><name><name>MoreExecutors</name><operator>.</operator><name>directExecutor</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>currentTask</name> <operator>=</operator> <name>nextTask</name></expr>;</expr_stmt>
+            </block_content>}</block></while>
+            <comment type="line">// start running tasks</comment>
+            <expr_stmt><expr><call><name><name>taskExecutor</name><operator>.</operator><name>execute</name></name><argument_list>(<argument><expr><name>firstTask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><call><name><name>Futures</name><operator>.</operator><name>allAsList</name></name><argument_list>(<argument><expr><name>tasks</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+}</block></class></unit>

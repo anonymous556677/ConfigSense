@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/hints/HintsBufferPool.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>hints</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>Closeable</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>UUID</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>BlockingQueue</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>LinkedBlockingQueue</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>Config</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>MessagingService</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A primitive pool of {@link HintsBuffer} buffers. Under normal conditions should only hold two buffers - the currently
+ * written to one, and a reserve buffer to switch to when the first one is beyond capacity.
+ */</comment>
+<class><specifier>final</specifier> class <name>HintsBufferPool</name> <super_list><implements>implements <super><name>Closeable</name></super></implements></super_list>
+<block>{
+    <interface>interface <name>FlushCallback</name>
+    <block>{
+        <function_decl><type><name>void</name></type> <name>flush</name><parameter_list>(<parameter><decl><type><name>HintsBuffer</name></type> <name>buffer</name></decl></parameter>, <parameter><decl><type><name>HintsBufferPool</name></type> <name>pool</name></decl></parameter>)</parameter_list>;</function_decl>
+    }</block></interface>
+
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MAX_ALLOCATED_BUFFERS</name> <init>= <expr><call><name><name>Integer</name><operator>.</operator><name>getInteger</name></name><argument_list>(<argument><expr><name><name>Config</name><operator>.</operator><name>PROPERTY_PREFIX</name></name> <operator>+</operator> <literal type="string">"MAX_HINT_BUFFERS"</literal></expr></argument>, <argument><expr><literal type="number">3</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>HintsBuffer</name></type> <name>currentBuffer</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>BlockingQueue</name><argument_list type="generic">&lt;<argument><name>HintsBuffer</name></argument>&gt;</argument_list></name></type> <name>reserveBuffers</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>bufferSize</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>FlushCallback</name></type> <name>flushCallback</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>allocatedBuffers</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+    <constructor><name>HintsBufferPool</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>bufferSize</name></decl></parameter>, <parameter><decl><type><name>FlushCallback</name></type> <name>flushCallback</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>reserveBuffers</name> <operator>=</operator> <operator>new</operator> <call><name><name>LinkedBlockingQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>bufferSize</name></name> <operator>=</operator> <name>bufferSize</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>flushCallback</name></name> <operator>=</operator> <name>flushCallback</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * @param hostIds host ids of the hint's target nodes
+     * @param hint the hint to store
+     */</comment>
+    <function><type><name>void</name></type> <name>write</name><parameter_list>(<parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>UUID</name></argument>&gt;</argument_list></name></type> <name>hostIds</name></decl></parameter>, <parameter><decl><type><name>Hint</name></type> <name>hint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>hintSize</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>Hint</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><name>hint</name></expr></argument>, <argument><expr><name><name>MessagingService</name><operator>.</operator><name>current_version</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <try>try <init>(<decl><type><name><name>HintsBuffer</name><operator>.</operator><name>Allocation</name></name></type> <name>allocation</name> <init>= <expr><call><name>allocate</name><argument_list>(<argument><expr><name>hintSize</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>allocation</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><name>hostIds</name></expr></argument>, <argument><expr><name>hint</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name><name>HintsBuffer</name><operator>.</operator><name>Allocation</name></name></type> <name>allocate</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>hintSize</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>HintsBuffer</name></type> <name>current</name> <init>= <expr><call><name>currentBuffer</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>HintsBuffer</name><operator>.</operator><name>Allocation</name></name></type> <name>allocation</name> <init>= <expr><call><name><name>current</name><operator>.</operator><name>allocate</name></name><argument_list>(<argument><expr><name>hintSize</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>allocation</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name>allocation</name></expr>;</return></block_content></block></if></if_stmt>
+
+            <comment type="line">// allocation failed due to insufficient size remaining in the buffer</comment>
+            <if_stmt><if>if <condition>(<expr><call><name>switchCurrentBuffer</name><argument_list>(<argument><expr><name>current</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>flushCallback</name><operator>.</operator><name>flush</name></name><argument_list>(<argument><expr><name>current</name></expr></argument>, <argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><name>current</name> <operator>=</operator> <name>currentBuffer</name></expr>;</expr_stmt>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>offer</name><parameter_list>(<parameter><decl><type><name>HintsBuffer</name></type> <name>buffer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>reserveBuffers</name><operator>.</operator><name>offer</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><literal type="string">"Failed to store buffer"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="line">// A wrapper to ensure a non-null currentBuffer value on the first call.</comment>
+    <function><type><name>HintsBuffer</name></type> <name>currentBuffer</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>currentBuffer</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>initializeCurrentBuffer</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <return>return <expr><name>currentBuffer</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>initializeCurrentBuffer</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>currentBuffer</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>currentBuffer</name> <operator>=</operator> <call><name>createBuffer</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>synchronized</specifier> <name>boolean</name></type> <name>switchCurrentBuffer</name><parameter_list>(<parameter><decl><type><name>HintsBuffer</name></type> <name>previous</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>currentBuffer</name> <operator>!=</operator> <name>previous</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>HintsBuffer</name></type> <name>buffer</name> <init>= <expr><call><name><name>reserveBuffers</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>buffer</name> <operator>==</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>allocatedBuffers</name> <operator>&gt;=</operator> <name>MAX_ALLOCATED_BUFFERS</name></expr>)</condition>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <comment type="line">//This BlockingQueue.take is a target for byteman in HintsBufferPoolTest</comment>
+                <expr_stmt><expr><name>buffer</name> <operator>=</operator> <call><name><name>reserveBuffers</name><operator>.</operator><name>take</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>InterruptedException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name>currentBuffer</name> <operator>=</operator> <ternary><condition><expr><name>buffer</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name>createBuffer</name><argument_list>()</argument_list></call></expr> </then><else>: <expr><name>buffer</name></expr></else></ternary></expr>;</expr_stmt>
+
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>HintsBuffer</name></type> <name>createBuffer</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>allocatedBuffers</name><operator>++</operator></expr>;</expr_stmt>
+        <return>return <expr><call><name><name>HintsBuffer</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>bufferSize</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>currentBuffer</name><operator>.</operator><name>free</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

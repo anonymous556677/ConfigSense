@@ -1,0 +1,538 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/h2database/h2/src/main/org/h2/expression/Expression.java"><comment type="block">/*
+ * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Initial Developer: H2 Group
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>api</name><operator>.</operator><name>ErrorCode</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>Constants</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>SessionLocal</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>function</name><operator>.</operator><name>NamedExpression</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>message</name><operator>.</operator><name>DbException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>Column</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>ColumnResolver</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>TableFilter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>HasSQL</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>StringUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>TypeInfo</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>Typed</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>Value</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * An expression is a operation, a value, or a function in a query.
+ */</comment>
+<class><specifier>public</specifier> <specifier>abstract</specifier> class <name>Expression</name> <super_list><implements>implements <super><name>HasSQL</name></super>, <super><name>Typed</name></super></implements></super_list> <block>{
+
+    <comment type="block" format="javadoc">/**
+     * Initial state for {@link #mapColumns(ColumnResolver, int, int)}.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MAP_INITIAL</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * State for expressions inside a window function for
+     * {@link #mapColumns(ColumnResolver, int, int)}.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MAP_IN_WINDOW</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * State for expressions inside an aggregate for
+     * {@link #mapColumns(ColumnResolver, int, int)}.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MAP_IN_AGGREGATE</name> <init>= <expr><literal type="number">2</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Wrap expression in parentheses only if it can't be safely included into
+     * other expressions without them.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>AUTO_PARENTHESES</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Wrap expression in parentheses unconditionally.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>WITH_PARENTHESES</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Do not wrap expression in parentheses.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>WITHOUT_PARENTHESES</name> <init>= <expr><literal type="number">2</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>addedToFilter</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Get the SQL snippet for a list of expressions.
+     *
+     * @param builder the builder to append the SQL to
+     * @param expressions the list of expressions
+     * @param sqlFlags formatting flags
+     * @return the specified string builder
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>StringBuilder</name></type> <name>writeExpressions</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>?</name> <extends>extends <name>Expression</name></extends></argument>&gt;</argument_list></name></type> <name>expressions</name></decl></parameter>,
+            <parameter><decl><type><name>int</name></type> <name>sqlFlags</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>length</name> <init>= <expr><call><name><name>expressions</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>length</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>i</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">", "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>expressions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>getUnenclosedSQL</name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><name>builder</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the SQL snippet for an array of expressions.
+     *
+     * @param builder the builder to append the SQL to
+     * @param expressions the list of expressions
+     * @param sqlFlags formatting flags
+     * @return the specified string builder
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>StringBuilder</name></type> <name>writeExpressions</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>, <parameter><decl><type><name><name>Expression</name><index>[]</index></name></type> <name>expressions</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>sqlFlags</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>length</name> <init>= <expr><name><name>expressions</name><operator>.</operator><name>length</name></name></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>length</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>i</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">", "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <decl_stmt><decl><type><name>Expression</name></type> <name>e</name> <init>= <expr><name><name>expressions</name><index>[<expr><name>i</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>e</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"DEFAULT"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><call><name><name>e</name><operator>.</operator><name>getUnenclosedSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><name>builder</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Return the resulting value for the current row.
+     *
+     * @param session the session
+     * @return the result
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>Value</name></type> <name>getValue</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Returns the data type. The data type may be unknown before the
+     * optimization phase.
+     *
+     * @return the data type
+     */</comment>
+    <function_decl><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <specifier>abstract</specifier> <name>TypeInfo</name></type> <name>getType</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Map the columns of the resolver to expression columns.
+     *
+     * @param resolver the column resolver
+     * @param level the subquery nesting level
+     * @param state current state for nesting checks, initial value is
+     *              {@link #MAP_INITIAL}
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>void</name></type> <name>mapColumns</name><parameter_list>(<parameter><decl><type><name>ColumnResolver</name></type> <name>resolver</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>level</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>state</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Try to optimize the expression.
+     *
+     * @param session the session
+     * @return the optimized expression
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>Expression</name></type> <name>optimize</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Try to optimize or remove the condition.
+     *
+     * @param session the session
+     * @return the optimized condition, or {@code null}
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>final</specifier> <name>Expression</name></type> <name>optimizeCondition</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>Expression</name></type> <name>e</name> <init>= <expr><call><name>optimize</name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>e</name><operator>.</operator><name>isConstant</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <return>return <expr><ternary><condition><expr><call><name><name>e</name><operator>.</operator><name>getBooleanValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><name><name>ValueExpression</name><operator>.</operator><name>FALSE</name></name></expr></else></ternary></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>e</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Tell the expression columns whether the table filter can return values
+     * now. This is used when optimizing the query.
+     *
+     * @param tableFilter the table filter
+     * @param value true if the table filter can return value
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>void</name></type> <name>setEvaluatable</name><parameter_list>(<parameter><decl><type><name>TableFilter</name></type> <name>tableFilter</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>value</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <specifier>final</specifier> <name>String</name></type> <name>getSQL</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>sqlFlags</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getSQL</name><argument_list>(<argument><expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>, <argument><expr><name>AUTO_PARENTHESES</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <specifier>final</specifier> <name>StringBuilder</name></type> <name>getSQL</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>sqlFlags</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getSQL</name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>, <argument><expr><name>AUTO_PARENTHESES</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the SQL statement of this expression. This may not always be the
+     * original SQL statement, especially after optimization.
+     *
+     * @param sqlFlags
+     *            formatting flags
+     * @param parentheses
+     *            parentheses mode
+     * @return the SQL statement
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>final</specifier> <name>String</name></type> <name>getSQL</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>sqlFlags</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>parentheses</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getSQL</name><argument_list>(<argument><expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>, <argument><expr><name>parentheses</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the SQL statement of this expression. This may not always be the
+     * original SQL statement, especially after optimization.
+     *
+     * @param builder
+     *            string builder
+     * @param sqlFlags
+     *            formatting flags
+     * @param parentheses
+     *            parentheses mode
+     * @return the specified string builder
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>final</specifier> <name>StringBuilder</name></type> <name>getSQL</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>sqlFlags</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>parentheses</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>parentheses</name> <operator>==</operator> <name>WITH_PARENTHESES</name> <operator>||</operator> <name>parentheses</name> <operator>!=</operator> <name>WITHOUT_PARENTHESES</name> <operator>&amp;&amp;</operator> <call><name>needParentheses</name><argument_list>()</argument_list></call></expr>
+                ?</condition><then> <expr><call><name>getUnenclosedSQL</name><argument_list>(<argument><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">'('</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="char">')'</literal></expr></argument>)</argument_list></call></expr>
+                </then><else>: <expr><call><name>getUnenclosedSQL</name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns whether this expressions needs to be wrapped in parentheses when
+     * it is used as an argument of other expressions.
+     *
+     * @return {@code true} if it is
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>needParentheses</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the SQL statement of this expression. This may not always be the
+     * original SQL statement, especially after optimization. Enclosing '(' and
+     * ')' are always appended.
+     *
+     * @param builder
+     *            string builder
+     * @param sqlFlags
+     *            formatting flags
+     * @return the specified string builder
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>final</specifier> <name>StringBuilder</name></type> <name>getEnclosedSQL</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>sqlFlags</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getUnenclosedSQL</name><argument_list>(<argument><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">'('</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="char">')'</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the SQL statement of this expression. This may not always be the
+     * original SQL statement, especially after optimization. Enclosing '(' and
+     * ')' are never appended.
+     *
+     * @param builder
+     *            string builder
+     * @param sqlFlags
+     *            formatting flags
+     * @return the specified string builder
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>StringBuilder</name></type> <name>getUnenclosedSQL</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>sqlFlags</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Update an aggregate value. This method is called at statement execution
+     * time. It is usually called once for each row, but if the expression is
+     * used multiple times (for example in the column list, and as part of the
+     * HAVING expression) it is called multiple times - the row counter needs to
+     * be used to make sure the internal state is only updated once.
+     *
+     * @param session the session
+     * @param stage select stage
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>void</name></type> <name>updateAggregate</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>stage</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Check if this expression and all sub-expressions can fulfill a criteria.
+     * If any part returns false, the result is false.
+     *
+     * @param visitor the visitor
+     * @return if the criteria can be fulfilled
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>boolean</name></type> <name>isEverything</name><parameter_list>(<parameter><decl><type><name>ExpressionVisitor</name></type> <name>visitor</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Estimate the cost to process the expression.
+     * Used when optimizing the query, to calculate the query plan
+     * with the lowest estimated cost.
+     *
+     * @return the estimated cost
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>int</name></type> <name>getCost</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * If it is possible, return the negated expression. This is used
+     * to optimize NOT expressions: NOT ID&amp;gt;10 can be converted to
+     * ID&amp;lt;=10. Returns null if negating is not possible.
+     *
+     * @param session the session
+     * @return the negated expression, or null
+     */</comment>
+    <function><type><specifier>public</specifier> <name>Expression</name></type> <name>getNotIfPossible</name><parameter_list>(<parameter><decl><type><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unused"</literal></expr></argument>)</argument_list></annotation> <name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <comment type="line">// by default it is not possible</comment>
+        <return>return <expr><literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check if this expression will always return the same value.
+     *
+     * @return if the expression is constant
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isConstant</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check if this expression will always return the NULL value.
+     *
+     * @return if the expression is constant NULL value
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isNullConstant</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Is the value of a parameter set.
+     *
+     * @return true if set
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isValueSet</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check if this is an identity column.
+     *
+     * @return true if it is an identity column
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isIdentity</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the value in form of a boolean expression.
+     * Returns true or false.
+     * In this database, everything can be a condition.
+     *
+     * @param session the session
+     * @return the result
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>getBooleanValue</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getValue</name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>isTrue</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create index conditions if possible and attach them to the table filter.
+     *
+     * @param session the session
+     * @param filter the table filter
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unused"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>createIndexConditions</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>TableFilter</name></type> <name>filter</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <comment type="line">// default is do nothing</comment>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the column name or alias name of this expression.
+     *
+     * @param session the session
+     * @param columnIndex 0-based column index
+     * @return the column name
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getColumnName</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>columnIndex</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getAlias</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>columnIndex</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the schema name, or null
+     *
+     * @return the schema name
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getSchemaName</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the table name, or null
+     *
+     * @return the table name
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getTableName</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check whether this expression is a column and can store NULL.
+     *
+     * @return whether NULL is allowed
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getNullable</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name><name>Column</name><operator>.</operator><name>NULLABLE_UNKNOWN</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the table alias name or null
+     * if this expression does not represent a column.
+     *
+     * @return the table alias name
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getTableAlias</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the alias name of a column or SQL expression
+     * if it is not an aliased expression.
+     *
+     * @param session the session
+     * @param columnIndex 0-based column index
+     * @return the alias name
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getAlias</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>columnIndex</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <switch>switch <condition>(<expr><call><name><name>session</name><operator>.</operator><name>getMode</name></name><argument_list>()</argument_list></call><operator>.</operator><name>expressionNames</name></expr>)</condition> <block>{<block_content>
+        <default>default:</default> <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>sql</name> <init>= <expr><call><name>getSQL</name><argument_list>(<argument><expr><name>QUOTE_ONLY_WHEN_REQUIRED</name> <operator>|</operator> <name>NO_CASTS</name></expr></argument>, <argument><expr><name>WITHOUT_PARENTHESES</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>sql</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>&lt;=</operator> <name><name>Constants</name><operator>.</operator><name>MAX_IDENTIFIER_LENGTH</name></name></expr>)</condition> <block>{<block_content>
+                <return>return <expr><name>sql</name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block>
+        <comment type="line">//$FALL-THROUGH$</comment>
+        <case>case <expr><name>C_NUMBER</name></expr>:</case>
+            <return>return <expr><literal type="string">"C"</literal> <operator>+</operator> <operator>(</operator><name>columnIndex</name> <operator>+</operator> <literal type="number">1</literal><operator>)</operator></expr>;</return>
+        <case>case <expr><name>EMPTY</name></expr>:</case>
+            <return>return <expr><literal type="string">""</literal></expr>;</return>
+        <case>case <expr><name>NUMBER</name></expr>:</case>
+            <return>return <expr><call><name><name>Integer</name><operator>.</operator><name>toString</name></name><argument_list>(<argument><expr><name>columnIndex</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</return>
+        <case>case <expr><name>POSTGRESQL_STYLE</name></expr>:</case>
+            <if_stmt><if>if <condition>(<expr><name>this</name> <operator>instanceof</operator> <name>NamedExpression</name></expr>)</condition> <block>{<block_content>
+                <return>return <expr><call><name><name>StringUtils</name><operator>.</operator><name>toLowerEnglish</name></name><argument_list>(<argument><expr><operator>(</operator><operator>(</operator><name>NamedExpression</name><operator>)</operator> <name>this</name><operator>)</operator><operator>.</operator><call><name>getName</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <return>return <expr><literal type="string">"?column?"</literal></expr>;</return>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the column name of this expression for a view.
+     *
+     * @param session the session
+     * @param columnIndex 0-based column index
+     * @return the column name for a view
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getColumnNameForView</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>columnIndex</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <switch>switch <condition>(<expr><call><name><name>session</name><operator>.</operator><name>getMode</name></name><argument_list>()</argument_list></call><operator>.</operator><name>viewExpressionNames</name></expr>)</condition> <block>{<block_content>
+        <case>case <expr><name>AS_IS</name></expr>:</case>
+        <default>default:</default>
+            <return>return <expr><call><name>getAlias</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>columnIndex</name></expr></argument>)</argument_list></call></expr>;</return>
+        <case>case <expr><name>EXCEPTION</name></expr>:</case>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>COLUMN_ALIAS_IS_NOT_SPECIFIED_1</name></name></expr></argument>, <argument><expr><call><name>getTraceSQL</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        <case>case <expr><name>MYSQL_STYLE</name></expr>:</case> <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>name</name> <init>= <expr><call><name>getSQL</name><argument_list>(<argument><expr><name>QUOTE_ONLY_WHEN_REQUIRED</name> <operator>|</operator> <name>NO_CASTS</name></expr></argument>, <argument><expr><name>WITHOUT_PARENTHESES</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>name</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">64</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>name</name> <operator>=</operator> <literal type="string">"Name_exp_"</literal> <operator>+</operator> <operator>(</operator><name>columnIndex</name> <operator>+</operator> <literal type="number">1</literal><operator>)</operator></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <return>return <expr><name>name</name></expr>;</return>
+        </block_content>}</block>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns the main expression, skipping aliases.
+     *
+     * @return the expression
+     */</comment>
+    <function><type><specifier>public</specifier> <name>Expression</name></type> <name>getNonAliasExpression</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>this</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Add conditions to a table filter if they can be evaluated.
+     *
+     * @param filter the table filter
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>addFilterConditions</name><parameter_list>(<parameter><decl><type><name>TableFilter</name></type> <name>filter</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>addedToFilter</name> <operator>&amp;&amp;</operator> <call><name>isEverything</name><argument_list>(<argument><expr><name><name>ExpressionVisitor</name><operator>.</operator><name>EVALUATABLE_VISITOR</name></name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>filter</name><operator>.</operator><name>addFilterCondition</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>addedToFilter</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Convert this expression to a String.
+     *
+     * @return the string representation
+     */</comment>
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getTraceSQL</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns count of subexpressions.
+     *
+     * @return count of subexpressions
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getSubexpressionCount</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns subexpression with specified index.
+     *
+     * @param index 0-based index
+     * @return subexpression with specified index, may be null
+     * @throws IndexOutOfBoundsException if specified index is not valid
+     */</comment>
+    <function><type><specifier>public</specifier> <name>Expression</name></type> <name>getSubexpression</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <throw>throw <expr><operator>new</operator> <call><name>IndexOutOfBoundsException</name><argument_list>()</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Return the resulting value of when operand for the current row.
+     *
+     * @param session
+     *            the session
+     * @param left
+     *            value on the left side
+     * @return the result
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>getWhenValue</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>Value</name></type> <name>left</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>session</name><operator>.</operator><name>compareWithNull</name></name><argument_list>(<argument><expr><name>left</name></expr></argument>, <argument><expr><call><name>getValue</name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Appends the SQL statement of this when operand to the specified builder.
+     *
+     * @param builder
+     *            string builder
+     * @param sqlFlags
+     *            formatting flags
+     * @return the specified string builder
+     */</comment>
+    <function><type><specifier>public</specifier> <name>StringBuilder</name></type> <name>getWhenSQL</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>sqlFlags</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getUnenclosedSQL</name><argument_list>(<argument><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">' '</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns whether this expression is a right side of condition in a when
+     * operand.
+     *
+     * @return {@code true} if it is, {@code false} otherwise
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isWhenConditionOperand</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

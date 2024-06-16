@@ -1,0 +1,744 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/rows/UnfilteredSerializer.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+
+<import>import <name><name>net</name><operator>.</operator><name>nicoulaj</name><operator>.</operator><name>compilecommand</name><operator>.</operator><name>annotations</name><operator>.</operator><name>Inline</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>marshal</name><operator>.</operator><name>ByteArrayAccessor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>ColumnMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>Row</name><operator>.</operator><name>Deletion</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataInputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputBuffer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>FileDataInput</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>SearchIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>WrappedException</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Serialize/deserialize a single Unfiltered (both on-wire and on-disk).
+ * &lt;p&gt;
+ *
+ * The encoded format for an unfiltered is {@code &lt;flags&gt;(&lt;row&gt;|&lt;marker&gt;)} where:
+ * &lt;ul&gt;
+ *   &lt;li&gt;
+ *     {@code &lt;flags&gt;} is a byte (or two) whose bits are flags used by the rest
+ *     of the serialization. Each flag is defined/explained below as the
+ *     "Unfiltered flags" constants. One of those flags is an extension flag,
+ *     and if present, indicates the presence of a 2ndbyte that contains more
+ *     flags. If the extension is not set, defaults are assumed for the flags
+ *     of that 2nd byte.
+ *   &lt;/li&gt;
+ *   &lt;li&gt;
+ *     {@code &lt;row&gt;} is
+ *        {@code &lt;clustering&gt;&lt;sizes&gt;[&lt;pkliveness&gt;][&lt;deletion&gt;][&lt;columns&gt;]&lt;columns_data&gt;}
+ *     where:
+ *     &lt;ul&gt;
+ *       &lt;li&gt;{@code &lt;clustering&gt;} is the row clustering as serialized by
+ *           {@link org.apache.cassandra.db.Clustering.Serializer} (note that static row are an
+ *           exception and don't have this). &lt;/li&gt;
+ *       &lt;li&gt;{@code &lt;sizes&gt;} are the sizes of the whole unfiltered on disk and
+ *           of the previous unfiltered. This is only present for sstables and
+ *           is used to efficiently skip rows (both forward and backward).&lt;/li&gt;
+ *       &lt;li&gt;{@code &lt;pkliveness&gt;} is the row primary key liveness infos, and it
+ *           contains the timestamp, ttl and local deletion time of that info,
+ *           though some/all of those can be absent based on the flags. &lt;/li&gt;
+ *       &lt;li&gt;{@code deletion} is the row deletion. It's presence is determined
+ *           by the flags and if present, it conists of both the deletion
+ *           timestamp and local deletion time.&lt;/li&gt;
+ *       &lt;li&gt;{@code &lt;columns&gt;} are the columns present in the row  encoded by
+ *           {@link org.apache.cassandra.db.Columns.Serializer#serializeSubset}. It is absent if the row
+ *           contains all the columns of the {@code SerializationHeader} (which
+ *           is then indicated by a flag). &lt;/li&gt;
+ *       &lt;li&gt;{@code &lt;columns_data&gt;} is the data for each of the column present
+ *           in the row. The encoding of each data depends on whether the data
+ *           is for a simple or complex column:
+ *           &lt;ul&gt;
+ *              &lt;li&gt;Simple columns are simply encoded as one {@code &lt;cell&gt;}&lt;/li&gt;
+ *              &lt;li&gt;Complex columns are encoded as {@code [&lt;delTime&gt;]&lt;n&gt;&lt;cell1&gt;...&lt;celln&gt;}
+ *                  where {@code &lt;delTime&gt;} is the deletion for this complex
+ *                  column (if flags indicates its presence), {@code &lt;n&gt;} is the
+ *                  vint encoded value of n, i.e. {@code &lt;celln&gt;}'s 1-based
+ *                  inde and {@code &lt;celli&gt;} are the {@code &lt;cell&gt;} for this
+ *                  complex column&lt;/li&gt;
+ *           &lt;/ul&gt;
+ *       &lt;/li&gt;
+ *     &lt;/ul&gt;
+ *   &lt;/li&gt;
+ *   &lt;li&gt;
+ *     {@code &lt;marker&gt;} is {@code &lt;bound&gt;&lt;deletion&gt;} where {@code &lt;bound&gt;} is
+ *     the marker bound as serialized by {@link org.apache.cassandra.db.ClusteringBoundOrBoundary.Serializer}
+ *     and {@code &lt;deletion&gt;} is the marker deletion time.
+ *   &lt;/li&gt;
+ * &lt;/ul&gt;
+ * &lt;p&gt;
+ * The serialization of a {@code &lt;cell&gt;} is defined by {@link Cell.Serializer}.
+ */</comment>
+<class><specifier>public</specifier> class <name>UnfilteredSerializer</name>
+<block>{
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>UnfilteredSerializer</name></type> <name>serializer</name> <init>= <expr><operator>new</operator> <call><name>UnfilteredSerializer</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block">/*
+     * Unfiltered flags constants.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <specifier>static</specifier> <name>int</name></type> <name>END_OF_PARTITION</name>     <init>= <expr><literal type="number">0x01</literal></expr></init></decl>;</decl_stmt> <comment type="line">// Signal the end of the partition. Nothing follows a &lt;flags&gt; field with that flag.</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <specifier>static</specifier> <name>int</name></type> <name>IS_MARKER</name>            <init>= <expr><literal type="number">0x02</literal></expr></init></decl>;</decl_stmt> <comment type="line">// Whether the encoded unfiltered is a marker or a row. All following markers applies only to rows.</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <specifier>static</specifier> <name>int</name></type> <name>HAS_TIMESTAMP</name>        <init>= <expr><literal type="number">0x04</literal></expr></init></decl>;</decl_stmt> <comment type="line">// Whether the encoded row has a timestamp (i.e. if row.partitionKeyLivenessInfo().hasTimestamp() == true).</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <specifier>static</specifier> <name>int</name></type> <name>HAS_TTL</name>              <init>= <expr><literal type="number">0x08</literal></expr></init></decl>;</decl_stmt> <comment type="line">// Whether the encoded row has some expiration info (i.e. if row.partitionKeyLivenessInfo().hasTTL() == true).</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <specifier>static</specifier> <name>int</name></type> <name>HAS_DELETION</name>         <init>= <expr><literal type="number">0x10</literal></expr></init></decl>;</decl_stmt> <comment type="line">// Whether the encoded row has some deletion info.</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <specifier>static</specifier> <name>int</name></type> <name>HAS_ALL_COLUMNS</name>      <init>= <expr><literal type="number">0x20</literal></expr></init></decl>;</decl_stmt> <comment type="line">// Whether the encoded row has all of the columns from the header present.</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <specifier>static</specifier> <name>int</name></type> <name>HAS_COMPLEX_DELETION</name> <init>= <expr><literal type="number">0x40</literal></expr></init></decl>;</decl_stmt> <comment type="line">// Whether the encoded row has some complex deletion for at least one of its columns.</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <specifier>static</specifier> <name>int</name></type> <name>EXTENSION_FLAG</name>       <init>= <expr><literal type="number">0x80</literal></expr></init></decl>;</decl_stmt> <comment type="line">// If present, another byte is read containing the "extended flags" above.</comment>
+
+    <comment type="block">/*
+     * Extended flags
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <specifier>static</specifier> <name>int</name></type> <name>IS_STATIC</name>               <init>= <expr><literal type="number">0x01</literal></expr></init></decl>;</decl_stmt> <comment type="line">// Whether the encoded row is a static. If there is no extended flag, the row is assumed not static.</comment>
+    <comment type="block" format="javadoc">/**
+     * A shadowable tombstone cannot replace a previous row deletion otherwise it could resurrect a
+     * previously deleted cell not updated by a subsequent update, SEE CASSANDRA-11500
+     */</comment>
+    <decl_stmt><decl><annotation>@<name>Deprecated</name></annotation>
+    <type><specifier>private</specifier> <specifier>final</specifier> <specifier>static</specifier> <name>int</name></type> <name>HAS_SHADOWABLE_DELETION</name> <init>= <expr><literal type="number">0x02</literal></expr></init></decl>;</decl_stmt> <comment type="line">// Whether the row deletion is shadowable. If there is no extended flag (or no row deletion), the deletion is assumed not shadowable.</comment>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>Unfiltered</name></type> <name>unfiltered</name></decl></parameter>, <parameter><decl><type><name>SerializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <assert>assert <expr><operator>!</operator><call><name><name>helper</name><operator>.</operator><name>header</name><operator>.</operator><name>isForSSTable</name></name><argument_list>()</argument_list></call></expr>;</assert>
+        <expr_stmt><expr><call><name>serialize</name><argument_list>(<argument><expr><name>unfiltered</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>Unfiltered</name></type> <name>unfiltered</name></decl></parameter>, <parameter><decl><type><name>SerializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>previousUnfilteredSize</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>unfiltered</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Unfiltered</name><operator>.</operator><name>Kind</name><operator>.</operator><name>RANGE_TOMBSTONE_MARKER</name></name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>serialize</name><argument_list>(<argument><expr><operator>(</operator><name>RangeTombstoneMarker</name><operator>)</operator> <name>unfiltered</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>previousUnfilteredSize</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>serialize</name><argument_list>(<argument><expr><operator>(</operator><name>Row</name><operator>)</operator> <name>unfiltered</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>previousUnfilteredSize</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>serializeStaticRow</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>, <parameter><decl><type><name>SerializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <assert>assert <expr><call><name><name>row</name><operator>.</operator><name>isStatic</name></name><argument_list>()</argument_list></call></expr>;</assert>
+        <expr_stmt><expr><call><name>serialize</name><argument_list>(<argument><expr><name>row</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>, <parameter><decl><type><name>SerializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>previousUnfilteredSize</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>flags</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>extendedFlags</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>boolean</name></type> <name>isStatic</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>isStatic</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>SerializationHeader</name></type> <name>header</name> <init>= <expr><name><name>helper</name><operator>.</operator><name>header</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>LivenessInfo</name></type> <name>pkLiveness</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>primaryKeyLivenessInfo</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Row</name><operator>.</operator><name>Deletion</name></name></type> <name>deletion</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>deletion</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>hasComplexDeletion</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>hasComplexDeletion</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>hasAllColumns</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>columnCount</name></name><argument_list>()</argument_list></call> <operator>==</operator> <call><name><name>header</name><operator>.</operator><name>columns</name></name><argument_list>(<argument><expr><name>isStatic</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>hasExtendedFlags</name> <init>= <expr><call><name>hasExtendedFlags</name><argument_list>(<argument><expr><name>row</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>isStatic</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>extendedFlags</name> <operator>|=</operator> <name>IS_STATIC</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>pkLiveness</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>flags</name> <operator>|=</operator> <name>HAS_TIMESTAMP</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>pkLiveness</name><operator>.</operator><name>isExpiring</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>flags</name> <operator>|=</operator> <name>HAS_TTL</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>deletion</name><operator>.</operator><name>isLive</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>flags</name> <operator>|=</operator> <name>HAS_DELETION</name></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>deletion</name><operator>.</operator><name>isShadowable</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>extendedFlags</name> <operator>|=</operator> <name>HAS_SHADOWABLE_DELETION</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>hasComplexDeletion</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>flags</name> <operator>|=</operator> <name>HAS_COMPLEX_DELETION</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>hasAllColumns</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>flags</name> <operator>|=</operator> <name>HAS_ALL_COLUMNS</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>hasExtendedFlags</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>flags</name> <operator>|=</operator> <name>EXTENSION_FLAG</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeByte</name></name><argument_list>(<argument><expr><operator>(</operator><name>byte</name><operator>)</operator><name>flags</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>hasExtendedFlags</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeByte</name></name><argument_list>(<argument><expr><operator>(</operator><name>byte</name><operator>)</operator><name>extendedFlags</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>isStatic</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>Clustering</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><call><name><name>header</name><operator>.</operator><name>clusteringTypes</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>header</name><operator>.</operator><name>isForSSTable</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <try>try <init>(<decl><type><name>DataOutputBuffer</name></type> <name>dob</name> <init>= <expr><call><name><name>DataOutputBuffer</name><operator>.</operator><name>scratchBuffer</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>serializeRowBody</name><argument_list>(<argument><expr><name>row</name></expr></argument>, <argument><expr><name>flags</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>dob</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><call><name><name>dob</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call> <operator>+</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><name>previousUnfilteredSize</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <comment type="line">// We write the size of the previous unfiltered to make reverse queries more efficient (and simpler).</comment>
+                <comment type="line">// This is currently not used however and using it is tbd.</comment>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>previousUnfilteredSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><call><name><name>dob</name><operator>.</operator><name>getData</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><call><name><name>dob</name><operator>.</operator><name>getLength</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></try>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>serializeRowBody</name><argument_list>(<argument><expr><name>row</name></expr></argument>, <argument><expr><name>flags</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Inline</name></annotation>
+    <type><specifier>private</specifier> <name>void</name></type> <name>serializeRowBody</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>flags</name></decl></parameter>, <parameter><decl><type><name>SerializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>isStatic</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>isStatic</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>SerializationHeader</name></type> <name>header</name> <init>= <expr><name><name>helper</name><operator>.</operator><name>header</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Columns</name></type> <name>headerColumns</name> <init>= <expr><call><name><name>header</name><operator>.</operator><name>columns</name></name><argument_list>(<argument><expr><name>isStatic</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>LivenessInfo</name></type> <name>pkLiveness</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>primaryKeyLivenessInfo</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Row</name><operator>.</operator><name>Deletion</name></name></type> <name>deletion</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>deletion</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>HAS_TIMESTAMP</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>header</name><operator>.</operator><name>writeTimestamp</name></name><argument_list>(<argument><expr><call><name><name>pkLiveness</name><operator>.</operator><name>timestamp</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>HAS_TTL</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>header</name><operator>.</operator><name>writeTTL</name></name><argument_list>(<argument><expr><call><name><name>pkLiveness</name><operator>.</operator><name>ttl</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>header</name><operator>.</operator><name>writeLocalDeletionTime</name></name><argument_list>(<argument><expr><call><name><name>pkLiveness</name><operator>.</operator><name>localExpirationTime</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>HAS_DELETION</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>header</name><operator>.</operator><name>writeDeletionTime</name></name><argument_list>(<argument><expr><call><name><name>deletion</name><operator>.</operator><name>time</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>HAS_ALL_COLUMNS</name><operator>)</operator> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>Columns</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializeSubset</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>columns</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>headerColumns</name></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>SearchIterator</name><argument_list type="generic">&lt;<argument><name>ColumnMetadata</name></argument>, <argument><name>ColumnMetadata</name></argument>&gt;</argument_list></name></type> <name>si</name> <init>= <expr><call><name><name>helper</name><operator>.</operator><name>iterator</name></name><argument_list>(<argument><expr><name>isStatic</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>row</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>cd</name></decl></parameter></parameter_list> -&gt; <block>{<block_content>
+                <comment type="line">// We can obtain the column for data directly from data.column(). However, if the cell/complex data</comment>
+                <comment type="line">// originates from a sstable, the column we'll get will have the type used when the sstable was serialized,</comment>
+                <comment type="line">// and if that type have been recently altered, that may not be the type we want to serialize the column</comment>
+                <comment type="line">// with. So we use the ColumnMetadata from the "header" which is "current". Also see #11810 for what</comment>
+                <comment type="line">// happens if we don't do that.</comment>
+                <decl_stmt><decl><type><name>ColumnMetadata</name></type> <name>column</name> <init>= <expr><call><name><name>si</name><operator>.</operator><name>next</name></name><argument_list>(<argument><expr><call><name><name>cd</name><operator>.</operator><name>column</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <assert>assert <expr><name>column</name> <operator>!=</operator> <literal type="null">null</literal> <operator>:</operator> <call><name><name>cd</name><operator>.</operator><name>column</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</assert>
+
+                <try>try
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>cd</name><operator>.</operator><name>column</name><operator>.</operator><name>isSimple</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name><name>Cell</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><operator>(</operator><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name><operator>)</operator> <name>cd</name></expr></argument>, <argument><expr><name>column</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>pkLiveness</name></expr></argument>, <argument><expr><name>header</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+                    <else>else<block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name>writeComplexColumn</name><argument_list>(<argument><expr><operator>(</operator><name>ComplexColumnData</name><operator>)</operator> <name>cd</name></expr></argument>, <argument><expr><name>column</name></expr></argument>, <argument><expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>HAS_COMPLEX_DELETION</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr></argument>, <argument><expr><name>pkLiveness</name></expr></argument>, <argument><expr><name>header</name></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+                </block_content>}</block>
+                <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+                <block>{<block_content>
+                    <throw>throw <expr><operator>new</operator> <call><name>WrappedException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+                </block_content>}</block></catch></try>
+            </block_content>}</block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>WrappedException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>e</name><operator>.</operator><name>getCause</name></name><argument_list>()</argument_list></call> <operator>instanceof</operator> <name>IOException</name></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>(</operator><name>IOException</name><operator>)</operator> <call><name><name>e</name><operator>.</operator><name>getCause</name></name><argument_list>()</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <throw>throw <expr><name>e</name></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>writeComplexColumn</name><parameter_list>(<parameter><decl><type><name>ComplexColumnData</name></type> <name>data</name></decl></parameter>, <parameter><decl><type><name>ColumnMetadata</name></type> <name>column</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>hasComplexDeletion</name></decl></parameter>, <parameter><decl><type><name>LivenessInfo</name></type> <name>rowLiveness</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>hasComplexDeletion</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>header</name><operator>.</operator><name>writeDeletionTime</name></name><argument_list>(<argument><expr><call><name><name>data</name><operator>.</operator><name>complexDeletion</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><call><name><name>data</name><operator>.</operator><name>cellsCount</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <for>for <control>(<init><decl><type><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>cell</name> <range>: <expr><name>data</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>Cell</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>cell</name></expr></argument>, <argument><expr><name>column</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>rowLiveness</name></expr></argument>, <argument><expr><name>header</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>RangeTombstoneMarker</name></type> <name>marker</name></decl></parameter>, <parameter><decl><type><name>SerializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>previousUnfilteredSize</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>SerializationHeader</name></type> <name>header</name> <init>= <expr><name><name>helper</name><operator>.</operator><name>header</name></name></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeByte</name></name><argument_list>(<argument><expr><operator>(</operator><name>byte</name><operator>)</operator><name>IS_MARKER</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>ClusteringBoundOrBoundary</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><call><name><name>marker</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><call><name><name>header</name><operator>.</operator><name>clusteringTypes</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>header</name><operator>.</operator><name>isForSSTable</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><call><name>serializedMarkerBodySize</name><argument_list>(<argument><expr><name>marker</name></expr></argument>, <argument><expr><name>header</name></expr></argument>, <argument><expr><name>previousUnfilteredSize</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>previousUnfilteredSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>marker</name><operator>.</operator><name>isBoundary</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>RangeTombstoneBoundaryMarker</name></type> <name>bm</name> <init>= <expr><operator>(</operator><name>RangeTombstoneBoundaryMarker</name><operator>)</operator><name>marker</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>header</name><operator>.</operator><name>writeDeletionTime</name></name><argument_list>(<argument><expr><call><name><name>bm</name><operator>.</operator><name>endDeletionTime</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>header</name><operator>.</operator><name>writeDeletionTime</name></name><argument_list>(<argument><expr><call><name><name>bm</name><operator>.</operator><name>startDeletionTime</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>header</name><operator>.</operator><name>writeDeletionTime</name></name><argument_list>(<argument><expr><operator>(</operator><operator>(</operator><name>RangeTombstoneBoundMarker</name><operator>)</operator><name>marker</name><operator>)</operator><operator>.</operator><call><name>deletionTime</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>serializedSize</name><parameter_list>(<parameter><decl><type><name>Unfiltered</name></type> <name>unfiltered</name></decl></parameter>, <parameter><decl><type><name>SerializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><operator>!</operator><call><name><name>helper</name><operator>.</operator><name>header</name><operator>.</operator><name>isForSSTable</name></name><argument_list>()</argument_list></call></expr>;</assert>
+        <return>return <expr><call><name>serializedSize</name><argument_list>(<argument><expr><name>unfiltered</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>serializedSize</name><parameter_list>(<parameter><decl><type><name>Unfiltered</name></type> <name>unfiltered</name></decl></parameter>, <parameter><decl><type><name>SerializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>previousUnfilteredSize</name></decl></parameter>,<parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><call><name><name>unfiltered</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Unfiltered</name><operator>.</operator><name>Kind</name><operator>.</operator><name>RANGE_TOMBSTONE_MARKER</name></name></expr>
+             ?</condition><then> <expr><call><name>serializedSize</name><argument_list>(<argument><expr><operator>(</operator><name>RangeTombstoneMarker</name><operator>)</operator> <name>unfiltered</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>previousUnfilteredSize</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>
+             </then><else>: <expr><call><name>serializedSize</name><argument_list>(<argument><expr><operator>(</operator><name>Row</name><operator>)</operator> <name>unfiltered</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>previousUnfilteredSize</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>long</name></type> <name>serializedSize</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>, <parameter><decl><type><name>SerializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>previousUnfilteredSize</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>size</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</decl_stmt> <comment type="line">// flags</comment>
+
+        <if_stmt><if>if <condition>(<expr><call><name>hasExtendedFlags</name><argument_list>(<argument><expr><name>row</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <literal type="number">1</literal></expr>;</expr_stmt></block_content></block></if></if_stmt> <comment type="line">// extended flags</comment>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>row</name><operator>.</operator><name>isStatic</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>Clustering</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><call><name><name>helper</name><operator>.</operator><name>header</name><operator>.</operator><name>clusteringTypes</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <return>return <expr><name>size</name> <operator>+</operator> <call><name>serializedRowBodySize</name><argument_list>(<argument><expr><name>row</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>previousUnfilteredSize</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>long</name></type> <name>serializedRowBodySize</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>, <parameter><decl><type><name>SerializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>previousUnfilteredSize</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>size</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>SerializationHeader</name></type> <name>header</name> <init>= <expr><name><name>helper</name><operator>.</operator><name>header</name></name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>header</name><operator>.</operator><name>isForSSTable</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><name>previousUnfilteredSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>boolean</name></type> <name>isStatic</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>isStatic</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>LivenessInfo</name></type> <name>pkLiveness</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>primaryKeyLivenessInfo</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Row</name><operator>.</operator><name>Deletion</name></name></type> <name>deletion</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>deletion</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>hasComplexDeletion</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>hasComplexDeletion</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>hasAllColumns</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>columnCount</name></name><argument_list>()</argument_list></call> <operator>==</operator> <call><name><name>header</name><operator>.</operator><name>columns</name></name><argument_list>(<argument><expr><name>isStatic</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>pkLiveness</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>header</name><operator>.</operator><name>timestampSerializedSize</name></name><argument_list>(<argument><expr><call><name><name>pkLiveness</name><operator>.</operator><name>timestamp</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>pkLiveness</name><operator>.</operator><name>isExpiring</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>header</name><operator>.</operator><name>ttlSerializedSize</name></name><argument_list>(<argument><expr><call><name><name>pkLiveness</name><operator>.</operator><name>ttl</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>header</name><operator>.</operator><name>localDeletionTimeSerializedSize</name></name><argument_list>(<argument><expr><call><name><name>pkLiveness</name><operator>.</operator><name>localExpirationTime</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>deletion</name><operator>.</operator><name>isLive</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>header</name><operator>.</operator><name>deletionTimeSerializedSize</name></name><argument_list>(<argument><expr><call><name><name>deletion</name><operator>.</operator><name>time</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>hasAllColumns</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>Columns</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializedSubsetSize</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>columns</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>header</name><operator>.</operator><name>columns</name></name><argument_list>(<argument><expr><name>isStatic</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>SearchIterator</name><argument_list type="generic">&lt;<argument><name>ColumnMetadata</name></argument>, <argument><name>ColumnMetadata</name></argument>&gt;</argument_list></name></type> <name>si</name> <init>= <expr><call><name><name>helper</name><operator>.</operator><name>iterator</name></name><argument_list>(<argument><expr><name>isStatic</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>row</name><operator>.</operator><name>accumulate</name></name><argument_list>(<argument><expr><lambda><parameter_list>(<parameter><decl><name>data</name></decl></parameter>, <parameter><decl><name>v</name></decl></parameter>)</parameter_list> -&gt; <block>{<block_content>
+            <decl_stmt><decl><type><name>ColumnMetadata</name></type> <name>column</name> <init>= <expr><call><name><name>si</name><operator>.</operator><name>next</name></name><argument_list>(<argument><expr><call><name><name>data</name><operator>.</operator><name>column</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <assert>assert <expr><name>column</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</assert>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>data</name><operator>.</operator><name>column</name><operator>.</operator><name>isSimple</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name>v</name> <operator>+</operator> <call><name><name>Cell</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><operator>(</operator><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name><operator>)</operator> <name>data</name></expr></argument>, <argument><expr><name>column</name></expr></argument>, <argument><expr><name>pkLiveness</name></expr></argument>, <argument><expr><name>header</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <return>return <expr><name>v</name> <operator>+</operator> <call><name>sizeOfComplexColumn</name><argument_list>(<argument><expr><operator>(</operator><name>ComplexColumnData</name><operator>)</operator> <name>data</name></expr></argument>, <argument><expr><name>column</name></expr></argument>, <argument><expr><name>hasComplexDeletion</name></expr></argument>, <argument><expr><name>pkLiveness</name></expr></argument>, <argument><expr><name>header</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></else></if_stmt>
+        </block_content>}</block></lambda></expr></argument>, <argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>long</name></type> <name>sizeOfComplexColumn</name><parameter_list>(<parameter><decl><type><name>ComplexColumnData</name></type> <name>data</name></decl></parameter>, <parameter><decl><type><name>ColumnMetadata</name></type> <name>column</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>hasComplexDeletion</name></decl></parameter>, <parameter><decl><type><name>LivenessInfo</name></type> <name>rowLiveness</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>size</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>hasComplexDeletion</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>header</name><operator>.</operator><name>deletionTimeSerializedSize</name></name><argument_list>(<argument><expr><call><name><name>data</name><operator>.</operator><name>complexDeletion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><call><name><name>data</name><operator>.</operator><name>cellsCount</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <for>for <control>(<init><decl><type><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>cell</name> <range>: <expr><name>data</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>Cell</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><name>cell</name></expr></argument>, <argument><expr><name>column</name></expr></argument>, <argument><expr><name>rowLiveness</name></expr></argument>, <argument><expr><name>header</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+        <return>return <expr><name>size</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>long</name></type> <name>serializedSize</name><parameter_list>(<parameter><decl><type><name>RangeTombstoneMarker</name></type> <name>marker</name></decl></parameter>, <parameter><decl><type><name>SerializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>previousUnfilteredSize</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><operator>!</operator><call><name><name>helper</name><operator>.</operator><name>header</name><operator>.</operator><name>isForSSTable</name></name><argument_list>()</argument_list></call></expr>;</assert>
+        <return>return <expr><literal type="number">1</literal> <comment type="line">// flags</comment>
+             <operator>+</operator> <call><name><name>ClusteringBoundOrBoundary</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><call><name><name>marker</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><call><name><name>helper</name><operator>.</operator><name>header</name><operator>.</operator><name>clusteringTypes</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call>
+             <operator>+</operator> <call><name>serializedMarkerBodySize</name><argument_list>(<argument><expr><name>marker</name></expr></argument>, <argument><expr><name><name>helper</name><operator>.</operator><name>header</name></name></expr></argument>, <argument><expr><name>previousUnfilteredSize</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>long</name></type> <name>serializedMarkerBodySize</name><parameter_list>(<parameter><decl><type><name>RangeTombstoneMarker</name></type> <name>marker</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>previousUnfilteredSize</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>size</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>header</name><operator>.</operator><name>isForSSTable</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><name>previousUnfilteredSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>marker</name><operator>.</operator><name>isBoundary</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>RangeTombstoneBoundaryMarker</name></type> <name>bm</name> <init>= <expr><operator>(</operator><name>RangeTombstoneBoundaryMarker</name><operator>)</operator><name>marker</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>header</name><operator>.</operator><name>deletionTimeSerializedSize</name></name><argument_list>(<argument><expr><call><name><name>bm</name><operator>.</operator><name>endDeletionTime</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>header</name><operator>.</operator><name>deletionTimeSerializedSize</name></name><argument_list>(<argument><expr><call><name><name>bm</name><operator>.</operator><name>startDeletionTime</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+           <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>header</name><operator>.</operator><name>deletionTimeSerializedSize</name></name><argument_list>(<argument><expr><operator>(</operator><operator>(</operator><name>RangeTombstoneBoundMarker</name><operator>)</operator><name>marker</name><operator>)</operator><operator>.</operator><call><name>deletionTime</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <return>return <expr><name>size</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>writeEndOfPartition</name><parameter_list>(<parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeByte</name></name><argument_list>(<argument><expr><operator>(</operator><name>byte</name><operator>)</operator><literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>serializedSizeEndOfPartition</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="number">1</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Deserialize an {@link Unfiltered} from the provided input.
+     *
+     * @param in the input from which to deserialize.
+     * @param header serialization header corresponding to the serialized data.
+     * @param helper the helper to use for deserialization.
+     * @param builder a row builder, passed here so we don't allocate a new one for every new row.
+     * @return the deserialized {@link Unfiltered} or {@code null} if we've read the end of a partition. This method is
+     * guaranteed to never return empty rows.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>Unfiltered</name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>DeserializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name><name>Row</name><operator>.</operator><name>Builder</name></name></type> <name>builder</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Unfiltered</name></type> <name>unfiltered</name> <init>= <expr><call><name>deserializeOne</name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>header</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>builder</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>unfiltered</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <comment type="line">// Skip empty rows, see deserializeOne javadoc</comment>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>unfiltered</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name>unfiltered</name></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Deserialize a single {@link Unfiltered} from the provided input.
+     * &lt;p&gt;
+     * &lt;b&gt;WARNING:&lt;/b&gt; this can return an empty row because it's possible there is a row serialized, but that row only
+     * contains data for dropped columns, see CASSANDRA-13337. But as most code expect rows to not be empty, this isn't
+     * meant to be exposed publicly.
+     *
+     * But as {@link UnfilteredRowIterator} should not return empty
+     * rows, this mean consumer of this method should make sure to skip said empty rows.
+     */</comment>
+    <function><type><specifier>private</specifier> <name>Unfiltered</name></type> <name>deserializeOne</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>DeserializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name><name>Row</name><operator>.</operator><name>Builder</name></name></type> <name>builder</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <comment type="line">// It wouldn't be wrong per-se to use an unsorted builder, but it would be inefficient so make sure we don't do it by mistake</comment>
+        <assert>assert <expr><call><name><name>builder</name><operator>.</operator><name>isSorted</name></name><argument_list>()</argument_list></call></expr>;</assert>
+
+        <decl_stmt><decl><type><name>int</name></type> <name>flags</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedByte</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name>isEndOfPartition</name><argument_list>(<argument><expr><name>flags</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>int</name></type> <name>extendedFlags</name> <init>= <expr><call><name>readExtendedFlags</name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>flags</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name>kind</name><argument_list>(<argument><expr><name>flags</name></expr></argument>)</argument_list></call> <operator>==</operator> <name><name>Unfiltered</name><operator>.</operator><name>Kind</name><operator>.</operator><name>RANGE_TOMBSTONE_MARKER</name></name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>ClusteringBoundOrBoundary</name><argument_list type="generic">&lt;<argument><name><name>byte</name><index>[]</index></name></argument>&gt;</argument_list></name></type> <name>bound</name> <init>= <expr><call><name><name>ClusteringBoundOrBoundary</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name><name>helper</name><operator>.</operator><name>version</name></name></expr></argument>, <argument><expr><call><name><name>header</name><operator>.</operator><name>clusteringTypes</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <return>return <expr><call><name>deserializeMarkerBody</name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>header</name></expr></argument>, <argument><expr><name>bound</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <comment type="line">// deserializeStaticRow should be used for that.</comment>
+            <if_stmt><if>if <condition>(<expr><call><name>isStatic</name><argument_list>(<argument><expr><name>extendedFlags</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IOException</name><argument_list>(<argument><expr><literal type="string">"Corrupt flags value for unfiltered partition (isStatic flag set): "</literal> <operator>+</operator> <name>flags</name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>newRow</name></name><argument_list>(<argument><expr><call><name><name>Clustering</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name><name>helper</name><operator>.</operator><name>version</name></name></expr></argument>, <argument><expr><call><name><name>header</name><operator>.</operator><name>clusteringTypes</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><call><name>deserializeRowBody</name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>header</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>flags</name></expr></argument>, <argument><expr><name>extendedFlags</name></expr></argument>, <argument><expr><name>builder</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Unfiltered</name></type> <name>deserializeTombstonesOnly</name><parameter_list>(<parameter><decl><type><name>FileDataInput</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>DeserializationHelper</name></type> <name>helper</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>flags</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedByte</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name>isEndOfPartition</name><argument_list>(<argument><expr><name>flags</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>int</name></type> <name>extendedFlags</name> <init>= <expr><call><name>readExtendedFlags</name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>flags</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name>kind</name><argument_list>(<argument><expr><name>flags</name></expr></argument>)</argument_list></call> <operator>==</operator> <name><name>Unfiltered</name><operator>.</operator><name>Kind</name><operator>.</operator><name>RANGE_TOMBSTONE_MARKER</name></name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name><name>ClusteringBoundOrBoundary</name><argument_list type="generic">&lt;<argument><name><name>byte</name><index>[]</index></name></argument>&gt;</argument_list></name></type> <name>bound</name> <init>= <expr><call><name><name>ClusteringBoundOrBoundary</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name><name>helper</name><operator>.</operator><name>version</name></name></expr></argument>, <argument><expr><call><name><name>header</name><operator>.</operator><name>clusteringTypes</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <return>return <expr><call><name>deserializeMarkerBody</name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>header</name></expr></argument>, <argument><expr><name>bound</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <assert>assert <expr><operator>!</operator><call><name>isStatic</name><argument_list>(<argument><expr><name>extendedFlags</name></expr></argument>)</argument_list></call></expr>;</assert> <comment type="line">// deserializeStaticRow should be used for that.</comment>
+                <if_stmt><if>if <condition>(<expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>HAS_DELETION</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition>
+                <block>{<block_content>
+                    <assert>assert <expr><call><name><name>header</name><operator>.</operator><name>isForSSTable</name></name><argument_list>()</argument_list></call></expr>;</assert>
+                    <decl_stmt><decl><type><name>boolean</name></type> <name>hasTimestamp</name> <init>= <expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>HAS_TIMESTAMP</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>boolean</name></type> <name>hasTTL</name> <init>= <expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>HAS_TTL</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>boolean</name></type> <name>deletionIsShadowable</name> <init>= <expr><operator>(</operator><name>extendedFlags</name> <operator>&amp;</operator> <name>HAS_SHADOWABLE_DELETION</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name><name>byte</name><index>[]</index></name></argument>&gt;</argument_list></name></type> <name>clustering</name> <init>= <expr><call><name><name>Clustering</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name><name>helper</name><operator>.</operator><name>version</name></name></expr></argument>, <argument><expr><call><name><name>header</name><operator>.</operator><name>clusteringTypes</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>long</name></type> <name>nextPosition</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call> <operator>+</operator> <call><name><name>in</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt> <comment type="line">// skip previous unfiltered size</comment>
+                    <if_stmt><if>if <condition>(<expr><name>hasTimestamp</name></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><call><name><name>header</name><operator>.</operator><name>readTimestamp</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <if_stmt><if>if <condition>(<expr><name>hasTTL</name></expr>)</condition>
+                        <block>{<block_content>
+                            <expr_stmt><expr><call><name><name>header</name><operator>.</operator><name>readTTL</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                            <expr_stmt><expr><call><name><name>header</name><operator>.</operator><name>readLocalDeletionTime</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        </block_content>}</block></if></if_stmt>
+                    </block_content>}</block></if></if_stmt>
+
+                    <decl_stmt><decl><type><name>Deletion</name></type> <name>deletion</name> <init>= <expr><operator>new</operator> <call><name><name>Row</name><operator>.</operator><name>Deletion</name></name><argument_list>(<argument><expr><call><name><name>header</name><operator>.</operator><name>readDeletionTime</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>deletionIsShadowable</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>seek</name></name><argument_list>(<argument><expr><name>nextPosition</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <return>return <expr><call><name><name>BTreeRow</name><operator>.</operator><name>emptyDeletedRow</name></name><argument_list>(<argument><expr><name>clustering</name></expr></argument>, <argument><expr><name>deletion</name></expr></argument>)</argument_list></call></expr>;</return>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>Clustering</name><operator>.</operator><name>serializer</name><operator>.</operator><name>skip</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name><name>helper</name><operator>.</operator><name>version</name></name></expr></argument>, <argument><expr><call><name><name>header</name><operator>.</operator><name>clusteringTypes</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name>skipRowBody</name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <comment type="line">// Continue with next item.</comment>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Row</name></type> <name>deserializeStaticRow</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>DeserializationHelper</name></type> <name>helper</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>flags</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedByte</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <assert>assert <expr><operator>!</operator><call><name>isEndOfPartition</name><argument_list>(<argument><expr><name>flags</name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <call><name>kind</name><argument_list>(<argument><expr><name>flags</name></expr></argument>)</argument_list></call> <operator>==</operator> <name><name>Unfiltered</name><operator>.</operator><name>Kind</name><operator>.</operator><name>ROW</name></name> <operator>&amp;&amp;</operator> <call><name>isExtended</name><argument_list>(<argument><expr><name>flags</name></expr></argument>)</argument_list></call> <operator>:</operator> <name>flags</name></expr>;</assert>
+        <decl_stmt><decl><type><name>int</name></type> <name>extendedFlags</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedByte</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Row</name><operator>.</operator><name>Builder</name></name></type> <name>builder</name> <init>= <expr><call><name><name>BTreeRow</name><operator>.</operator><name>sortedBuilder</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>newRow</name></name><argument_list>(<argument><expr><name><name>Clustering</name><operator>.</operator><name>STATIC_CLUSTERING</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name>deserializeRowBody</name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>header</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>flags</name></expr></argument>, <argument><expr><name>extendedFlags</name></expr></argument>, <argument><expr><name>builder</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>RangeTombstoneMarker</name></type> <name>deserializeMarkerBody</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name><name>ClusteringBoundOrBoundary</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>bound</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>header</name><operator>.</operator><name>isForSSTable</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt> <comment type="line">// marker size</comment>
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt> <comment type="line">// previous unfiltered size</comment>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>bound</name><operator>.</operator><name>isBoundary</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><operator>new</operator> <call><name>RangeTombstoneBoundaryMarker</name><argument_list>(<argument><expr><operator>(</operator><name><name>ClusteringBoundary</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name><operator>)</operator> <name>bound</name></expr></argument>, <argument><expr><call><name><name>header</name><operator>.</operator><name>readDeletionTime</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>header</name><operator>.</operator><name>readDeletionTime</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <return>return <expr><operator>new</operator> <call><name>RangeTombstoneBoundMarker</name><argument_list>(<argument><expr><operator>(</operator><name><name>ClusteringBound</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name><operator>)</operator> <name>bound</name></expr></argument>, <argument><expr><call><name><name>header</name><operator>.</operator><name>readDeletionTime</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Row</name></type> <name>deserializeRowBody</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>,
+                                  <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>,
+                                  <parameter><decl><type><name>DeserializationHelper</name></type> <name>helper</name></decl></parameter>,
+                                  <parameter><decl><type><name>int</name></type> <name>flags</name></decl></parameter>,
+                                  <parameter><decl><type><name>int</name></type> <name>extendedFlags</name></decl></parameter>,
+                                  <parameter><decl><type><name><name>Row</name><operator>.</operator><name>Builder</name></name></type> <name>builder</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>isStatic</name> <init>= <expr><call><name>isStatic</name><argument_list>(<argument><expr><name>extendedFlags</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>hasTimestamp</name> <init>= <expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>HAS_TIMESTAMP</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>hasTTL</name> <init>= <expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>HAS_TTL</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>hasDeletion</name> <init>= <expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>HAS_DELETION</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>deletionIsShadowable</name> <init>= <expr><operator>(</operator><name>extendedFlags</name> <operator>&amp;</operator> <name>HAS_SHADOWABLE_DELETION</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>hasComplexDeletion</name> <init>= <expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>HAS_COMPLEX_DELETION</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>hasAllColumns</name> <init>= <expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>HAS_ALL_COLUMNS</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Columns</name></type> <name>headerColumns</name> <init>= <expr><call><name><name>header</name><operator>.</operator><name>columns</name></name><argument_list>(<argument><expr><name>isStatic</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>header</name><operator>.</operator><name>isForSSTable</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt> <comment type="line">// Skip row size</comment>
+                <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt> <comment type="line">// previous unfiltered size</comment>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>LivenessInfo</name></type> <name>rowLiveness</name> <init>= <expr><name><name>LivenessInfo</name><operator>.</operator><name>EMPTY</name></name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>hasTimestamp</name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>long</name></type> <name>timestamp</name> <init>= <expr><call><name><name>header</name><operator>.</operator><name>readTimestamp</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>int</name></type> <name>ttl</name> <init>= <expr><ternary><condition><expr><name>hasTTL</name></expr> ?</condition><then> <expr><call><name><name>header</name><operator>.</operator><name>readTTL</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><name><name>LivenessInfo</name><operator>.</operator><name>NO_TTL</name></name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>int</name></type> <name>localDeletionTime</name> <init>= <expr><ternary><condition><expr><name>hasTTL</name></expr> ?</condition><then> <expr><call><name><name>header</name><operator>.</operator><name>readLocalDeletionTime</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><name><name>LivenessInfo</name><operator>.</operator><name>NO_EXPIRATION_TIME</name></name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><name>rowLiveness</name> <operator>=</operator> <call><name><name>LivenessInfo</name><operator>.</operator><name>withExpirationTime</name></name><argument_list>(<argument><expr><name>timestamp</name></expr></argument>, <argument><expr><name>ttl</name></expr></argument>, <argument><expr><name>localDeletionTime</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>addPrimaryKeyLivenessInfo</name></name><argument_list>(<argument><expr><name>rowLiveness</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>addRowDeletion</name></name><argument_list>(<argument><expr><ternary><condition><expr><name>hasDeletion</name></expr> ?</condition><then> <expr><operator>new</operator> <call><name><name>Row</name><operator>.</operator><name>Deletion</name></name><argument_list>(<argument><expr><call><name><name>header</name><operator>.</operator><name>readDeletionTime</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>deletionIsShadowable</name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><name><name>Row</name><operator>.</operator><name>Deletion</name><operator>.</operator><name>LIVE</name></name></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <decl_stmt><decl><type><name>Columns</name></type> <name>columns</name> <init>= <expr><ternary><condition><expr><name>hasAllColumns</name></expr> ?</condition><then> <expr><name>headerColumns</name></expr> </then><else>: <expr><call><name><name>Columns</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserializeSubset</name></name><argument_list>(<argument><expr><name>headerColumns</name></expr></argument>, <argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><specifier>final</specifier> <name>LivenessInfo</name></type> <name>livenessInfo</name> <init>= <expr><name>rowLiveness</name></expr></init></decl>;</decl_stmt>
+
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>columns</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>column</name></decl></parameter></parameter_list> -&gt; <block>{<block_content>
+                    <try>try
+                    <block>{<block_content>
+                        <if_stmt><if>if <condition>(<expr><call><name><name>column</name><operator>.</operator><name>isSimple</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                            <expr_stmt><expr><call><name>readSimpleColumn</name><argument_list>(<argument><expr><name>column</name></expr></argument>, <argument><expr><name>in</name></expr></argument>, <argument><expr><name>header</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>builder</name></expr></argument>, <argument><expr><name>livenessInfo</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+                        <else>else<block type="pseudo"><block_content>
+                            <expr_stmt><expr><call><name>readComplexColumn</name><argument_list>(<argument><expr><name>column</name></expr></argument>, <argument><expr><name>in</name></expr></argument>, <argument><expr><name>header</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>hasComplexDeletion</name></expr></argument>, <argument><expr><name>builder</name></expr></argument>, <argument><expr><name>livenessInfo</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+                    </block_content>}</block>
+                    <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+                    <block>{<block_content>
+                        <throw>throw <expr><operator>new</operator> <call><name>WrappedException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+                    </block_content>}</block></catch></try>
+                </block_content>}</block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>WrappedException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>e</name><operator>.</operator><name>getCause</name></name><argument_list>()</argument_list></call> <operator>instanceof</operator> <name>IOException</name></expr>)</condition><block type="pseudo"><block_content>
+                    <throw>throw <expr><operator>(</operator><name>IOException</name><operator>)</operator> <call><name><name>e</name><operator>.</operator><name>getCause</name></name><argument_list>()</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+                <throw>throw <expr><name>e</name></expr>;</throw>
+            </block_content>}</block></catch></try>
+
+            <return>return <expr><call><name><name>builder</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>RuntimeException</name></type> | <type><name>AssertionError</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// Corrupted data could be such that it triggers an assertion in the row Builder, or break one of its assumption.</comment>
+            <comment type="line">// Of course, a bug in said builder could also trigger this, but it's impossible a priori to always make the distinction</comment>
+            <comment type="line">// between a real bug and data corrupted in just the bad way. Besides, re-throwing as an IOException doesn't hide the</comment>
+            <comment type="line">// exception, it just make we catch it properly and mark the sstable as corrupted.</comment>
+            <throw>throw <expr><operator>new</operator> <call><name>IOException</name><argument_list>(<argument><expr><literal type="string">"Error building row with data deserialized from "</literal> <operator>+</operator> <name>in</name></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>readSimpleColumn</name><parameter_list>(<parameter><decl><type><name>ColumnMetadata</name></type> <name>column</name></decl></parameter>, <parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>DeserializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name><name>Row</name><operator>.</operator><name>Builder</name></name></type> <name>builder</name></decl></parameter>, <parameter><decl><type><name>LivenessInfo</name></type> <name>rowLiveness</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>helper</name><operator>.</operator><name>includes</name></name><argument_list>(<argument><expr><name>column</name></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Cell</name><argument_list type="generic">&lt;<argument><name><name>byte</name><index>[]</index></name></argument>&gt;</argument_list></name></type> <name>cell</name> <init>= <expr><call><name><name>Cell</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>rowLiveness</name></expr></argument>, <argument><expr><name>column</name></expr></argument>, <argument><expr><name>header</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name><name>ByteArrayAccessor</name><operator>.</operator><name>instance</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>helper</name><operator>.</operator><name>includes</name></name><argument_list>(<argument><expr><name>cell</name></expr></argument>, <argument><expr><name>rowLiveness</name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>helper</name><operator>.</operator><name>isDropped</name></name><argument_list>(<argument><expr><name>cell</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>addCell</name></name><argument_list>(<argument><expr><name>cell</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>Cell</name><operator>.</operator><name>serializer</name><operator>.</operator><name>skip</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>column</name></expr></argument>, <argument><expr><name>header</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>readComplexColumn</name><parameter_list>(<parameter><decl><type><name>ColumnMetadata</name></type> <name>column</name></decl></parameter>, <parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>DeserializationHelper</name></type> <name>helper</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>hasComplexDeletion</name></decl></parameter>, <parameter><decl><type><name><name>Row</name><operator>.</operator><name>Builder</name></name></type> <name>builder</name></decl></parameter>, <parameter><decl><type><name>LivenessInfo</name></type> <name>rowLiveness</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>helper</name><operator>.</operator><name>includes</name></name><argument_list>(<argument><expr><name>column</name></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>helper</name><operator>.</operator><name>startOfComplexColumn</name></name><argument_list>(<argument><expr><name>column</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>hasComplexDeletion</name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>DeletionTime</name></type> <name>complexDeletion</name> <init>= <expr><call><name><name>header</name><operator>.</operator><name>readDeletionTime</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>helper</name><operator>.</operator><name>isDroppedComplexDeletion</name></name><argument_list>(<argument><expr><name>complexDeletion</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>addComplexDeletion</name></name><argument_list>(<argument><expr><name>column</name></expr></argument>, <argument><expr><name>complexDeletion</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>int</name></type> <name>count</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <while>while <condition>(<expr><operator>--</operator><name>count</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name><name>Cell</name><argument_list type="generic">&lt;<argument><name><name>byte</name><index>[]</index></name></argument>&gt;</argument_list></name></type> <name>cell</name> <init>= <expr><call><name><name>Cell</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>rowLiveness</name></expr></argument>, <argument><expr><name>column</name></expr></argument>, <argument><expr><name>header</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name><name>ByteArrayAccessor</name><operator>.</operator><name>instance</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>helper</name><operator>.</operator><name>includes</name></name><argument_list>(<argument><expr><name>cell</name></expr></argument>, <argument><expr><name>rowLiveness</name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>helper</name><operator>.</operator><name>isDropped</name></name><argument_list>(<argument><expr><name>cell</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>addCell</name></name><argument_list>(<argument><expr><name>cell</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></while>
+
+            <expr_stmt><expr><call><name><name>helper</name><operator>.</operator><name>endOfComplexColumn</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>skipComplexColumn</name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>column</name></expr></argument>, <argument><expr><name>header</name></expr></argument>, <argument><expr><name>hasComplexDeletion</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>skipRowBody</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>rowSize</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>skipBytesFully</name></name><argument_list>(<argument><expr><name>rowSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>skipStaticRow</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>DeserializationHelper</name></type> <name>helper</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>flags</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedByte</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <assert>assert <expr><operator>!</operator><call><name>isEndOfPartition</name><argument_list>(<argument><expr><name>flags</name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <call><name>kind</name><argument_list>(<argument><expr><name>flags</name></expr></argument>)</argument_list></call> <operator>==</operator> <name><name>Unfiltered</name><operator>.</operator><name>Kind</name><operator>.</operator><name>ROW</name></name> <operator>&amp;&amp;</operator> <call><name>isExtended</name><argument_list>(<argument><expr><name>flags</name></expr></argument>)</argument_list></call> <operator>:</operator> <literal type="string">"Flags is "</literal> <operator>+</operator> <name>flags</name></expr>;</assert>
+        <decl_stmt><decl><type><name>int</name></type> <name>extendedFlags</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedByte</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <assert>assert <expr><call><name>isStatic</name><argument_list>(<argument><expr><name>extendedFlags</name></expr></argument>)</argument_list></call></expr>;</assert>
+        <expr_stmt><expr><call><name>skipRowBody</name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>skipMarkerBody</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>markerSize</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>skipBytesFully</name></name><argument_list>(<argument><expr><name>markerSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>skipComplexColumn</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>ColumnMetadata</name></type> <name>column</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>hasComplexDeletion</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>hasComplexDeletion</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>header</name><operator>.</operator><name>skipDeletionTime</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>int</name></type> <name>count</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <while>while <condition>(<expr><operator>--</operator><name>count</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>Cell</name><operator>.</operator><name>serializer</name><operator>.</operator><name>skip</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>column</name></expr></argument>, <argument><expr><name>header</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></while>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>isEndOfPartition</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>flags</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>END_OF_PARTITION</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>Unfiltered</name><operator>.</operator><name>Kind</name></name></type> <name>kind</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>flags</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>IS_MARKER</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><name><name>Unfiltered</name><operator>.</operator><name>Kind</name><operator>.</operator><name>RANGE_TOMBSTONE_MARKER</name></name></expr> </then><else>: <expr><name><name>Unfiltered</name><operator>.</operator><name>Kind</name><operator>.</operator><name>ROW</name></name></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>isStatic</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>extendedFlags</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>(</operator><name>extendedFlags</name> <operator>&amp;</operator> <name>IS_STATIC</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>isExtended</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>flags</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>(</operator><name>flags</name> <operator>&amp;</operator> <name>EXTENSION_FLAG</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>int</name></type> <name>readExtendedFlags</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>flags</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><call><name>isExtended</name><argument_list>(<argument><expr><name>flags</name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedByte</name></name><argument_list>()</argument_list></call></expr> </then><else>: <expr><literal type="number">0</literal></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>hasExtendedFlags</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>row</name><operator>.</operator><name>isStatic</name></name><argument_list>()</argument_list></call> <operator>||</operator> <call><name><name>row</name><operator>.</operator><name>deletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isShadowable</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

@@ -1,0 +1,304 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/dht/tokenallocator/TokenAllocation.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>tokenallocator</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Collection</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>HashMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Iterator</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>NavigableMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>TreeMap</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Lists</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Maps</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>commons</name><operator>.</operator><name>math3</name><operator>.</operator><name>stat</name><operator>.</operator><name>descriptive</name><operator>.</operator><name>SummaryStatistics</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>Token</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>ConfigurationException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>AbstractReplicationStrategy</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>IEndpointSnitch</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>NetworkTopologyStrategy</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>SimpleStrategy</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>TokenMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>TokenMetadata</name><operator>.</operator><name>Topology</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>TokenAllocation</name>
+<block>{
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>double</name></type> <name>WARN_STDEV_GROWTH</name> <init>= <expr><literal type="number">0.05</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>TokenAllocation</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>final</specifier> <name>TokenMetadata</name></type> <name>tokenMetadata</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>final</specifier> <name>AbstractReplicationStrategy</name></type> <name>replicationStrategy</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>numTokens</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>final</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>StrategyAdapter</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>strategyByRackDc</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <constructor><specifier>private</specifier> <name>TokenAllocation</name><parameter_list>(<parameter><decl><type><name>TokenMetadata</name></type> <name>tokenMetadata</name></decl></parameter>, <parameter><decl><type><name>AbstractReplicationStrategy</name></type> <name>replicationStrategy</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>numTokens</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>tokenMetadata</name></name> <operator>=</operator> <call><name><name>tokenMetadata</name><operator>.</operator><name>cloneOnlyTokenMap</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>replicationStrategy</name></name> <operator>=</operator> <name>replicationStrategy</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>numTokens</name></name> <operator>=</operator> <name>numTokens</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>allocateTokens</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>TokenMetadata</name></type> <name>tokenMetadata</name></decl></parameter>,
+                                                   <parameter><decl><type><specifier>final</specifier> <name>AbstractReplicationStrategy</name></type> <name>rs</name></decl></parameter>,
+                                                   <parameter><decl><type><specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>,
+                                                   <parameter><decl><type><name>int</name></type> <name>numTokens</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>create</name><argument_list>(<argument><expr><name>tokenMetadata</name></expr></argument>, <argument><expr><name>rs</name></expr></argument>, <argument><expr><name>numTokens</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>allocate</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>allocateTokens</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>TokenMetadata</name></type> <name>tokenMetadata</name></decl></parameter>,
+                                                   <parameter><decl><type><specifier>final</specifier> <name>int</name></type> <name>replicas</name></decl></parameter>,
+                                                   <parameter><decl><type><specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>,
+                                                   <parameter><decl><type><name>int</name></type> <name>numTokens</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>create</name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getEndpointSnitch</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>tokenMetadata</name></expr></argument>, <argument><expr><name>replicas</name></expr></argument>, <argument><expr><name>numTokens</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>allocate</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name>TokenAllocation</name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>IEndpointSnitch</name></type> <name>snitch</name></decl></parameter>, <parameter><decl><type><name>TokenMetadata</name></type> <name>tokenMetadata</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>replicas</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>numTokens</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// We create a fake NTS replication strategy with the specified RF in the local DC</comment>
+        <decl_stmt><decl><type><name><name>HashMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name></type> <name>options</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>options</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>snitch</name><operator>.</operator><name>getLocalDatacenter</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>Integer</name><operator>.</operator><name>toString</name></name><argument_list>(<argument><expr><name>replicas</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>NetworkTopologyStrategy</name></type> <name>fakeReplicationStrategy</name> <init>= <expr><operator>new</operator> <call><name>NetworkTopologyStrategy</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>tokenMetadata</name></expr></argument>, <argument><expr><name>snitch</name></expr></argument>, <argument><expr><name>options</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>TokenAllocation</name></type> <name>allocator</name> <init>= <expr><operator>new</operator> <call><name>TokenAllocation</name><argument_list>(<argument><expr><name>tokenMetadata</name></expr></argument>, <argument><expr><name>fakeReplicationStrategy</name></expr></argument>, <argument><expr><name>numTokens</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><name>allocator</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name>TokenAllocation</name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>TokenMetadata</name></type> <name>tokenMetadata</name></decl></parameter>, <parameter><decl><type><name>AbstractReplicationStrategy</name></type> <name>rs</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>numTokens</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>TokenAllocation</name><argument_list>(<argument><expr><name>tokenMetadata</name></expr></argument>, <argument><expr><name>rs</name></expr></argument>, <argument><expr><name>numTokens</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>allocate</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>StrategyAdapter</name></type> <name>strategy</name> <init>= <expr><call><name>getOrCreateStrategy</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>tokens</name> <init>= <expr><call><name><name>strategy</name><operator>.</operator><name>createAllocator</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>addUnit</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>, <argument><expr><name>numTokens</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name>tokens</name> <operator>=</operator> <call><name><name>strategy</name><operator>.</operator><name>adjustForCrossDatacenterClashes</name></name><argument_list>(<argument><expr><name>tokens</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>SummaryStatistics</name></type> <name>os</name> <init>= <expr><call><name><name>strategy</name><operator>.</operator><name>replicatedOwnershipStats</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>tokenMetadata</name><operator>.</operator><name>updateNormalTokens</name></name><argument_list>(<argument><expr><name>tokens</name></expr></argument>, <argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>SummaryStatistics</name></type> <name>ns</name> <init>= <expr><call><name><name>strategy</name><operator>.</operator><name>replicatedOwnershipStats</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Selected tokens {}"</literal></expr></argument>, <argument><expr><name>tokens</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Replicated node load in datacenter before allocation {}"</literal></expr></argument>, <argument><expr><call><name>statToString</name><argument_list>(<argument><expr><name>os</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Replicated node load in datacenter after allocation {}"</literal></expr></argument>, <argument><expr><call><name>statToString</name><argument_list>(<argument><expr><name>ns</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>double</name></type> <name>stdDevGrowth</name> <init>= <expr><call><name><name>ns</name><operator>.</operator><name>getStandardDeviation</name></name><argument_list>()</argument_list></call> <operator>-</operator> <call><name><name>os</name><operator>.</operator><name>getStandardDeviation</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>stdDevGrowth</name> <operator>&gt;</operator> <name><name>TokenAllocation</name><operator>.</operator><name>WARN_STDEV_GROWTH</name></name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Growth of %.2f%% in token ownership standard deviation after allocation above warning threshold of %d%%"</literal></expr></argument>,
+                                      <argument><expr><name>stdDevGrowth</name> <operator>*</operator> <literal type="number">100</literal></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator><operator>(</operator><name><name>TokenAllocation</name><operator>.</operator><name>WARN_STDEV_GROWTH</name></name> <operator>*</operator> <literal type="number">100</literal><operator>)</operator></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <return>return <expr><name>tokens</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name>String</name></type> <name>statToString</name><parameter_list>(<parameter><decl><type><name>SummaryStatistics</name></type> <name>stat</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"max %.2f min %.2f stddev %.4f"</literal></expr></argument>, <argument><expr><call><name><name>stat</name><operator>.</operator><name>getMax</name></name><argument_list>()</argument_list></call> <operator>/</operator> <call><name><name>stat</name><operator>.</operator><name>getMean</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>stat</name><operator>.</operator><name>getMin</name></name><argument_list>()</argument_list></call> <operator>/</operator> <call><name><name>stat</name><operator>.</operator><name>getMean</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>stat</name><operator>.</operator><name>getStandardDeviation</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>SummaryStatistics</name></type> <name>getAllocationRingOwnership</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>datacenter</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>rack</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>getOrCreateStrategy</name><argument_list>(<argument><expr><name>datacenter</name></expr></argument>, <argument><expr><name>rack</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>replicatedOwnershipStats</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>SummaryStatistics</name></type> <name>getAllocationRingOwnership</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>getOrCreateStrategy</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>replicatedOwnershipStats</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>abstract</specifier> class <name>StrategyAdapter</name> <super_list><implements>implements <super><name><name>ReplicationStrategy</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></super></implements></super_list>
+    <block>{
+        <comment type="line">// return true iff the provided endpoint occurs in the same virtual token-ring we are allocating for</comment>
+        <comment type="line">// i.e. the set of the nodes that share ownership with the node we are allocating</comment>
+        <comment type="line">// alternatively: return false if the endpoint's ownership is independent of the node we are allocating tokens for</comment>
+        <function_decl><type><specifier>abstract</specifier> <name>boolean</name></type> <name>inAllocationRing</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>other</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <function><type><specifier>final</specifier> <name><name>TokenAllocator</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>createAllocator</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>NavigableMap</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>, <argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>sortedTokens</name> <init>= <expr><operator>new</operator> <call><name><name>TreeMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>, <argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></name></type> <name>en</name> <range>: <expr><call><name><name>tokenMetadata</name><operator>.</operator><name>getNormalAndBootstrappingTokenToEndpointMap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>entrySet</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name>inAllocationRing</name><argument_list>(<argument><expr><call><name><name>en</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>sortedTokens</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>en</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>en</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></for>
+            <return>return <expr><call><name><name>TokenAllocatorFactory</name><operator>.</operator><name>createTokenAllocator</name></name><argument_list>(<argument><expr><name>sortedTokens</name></expr></argument>, <argument><expr><name>this</name></expr></argument>, <argument><expr><name><name>tokenMetadata</name><operator>.</operator><name>partitioner</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>final</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>adjustForCrossDatacenterClashes</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>tokens</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>filtered</name> <init>= <expr><call><name><name>Lists</name><operator>.</operator><name>newArrayListWithCapacity</name></name><argument_list>(<argument><expr><call><name><name>tokens</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <for>for <control>(<init><decl><type><name>Token</name></type> <name>t</name> <range>: <expr><name>tokens</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <while>while <condition>(<expr><call><name><name>tokenMetadata</name><operator>.</operator><name>getEndpoint</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>other</name> <init>= <expr><call><name><name>tokenMetadata</name><operator>.</operator><name>getEndpoint</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><call><name>inAllocationRing</name><argument_list>(<argument><expr><name>other</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <throw>throw <expr><operator>new</operator> <call><name>ConfigurationException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Allocated token %s already assigned to node %s. Is another node also allocating tokens?"</literal></expr></argument>, <argument><expr><name>t</name></expr></argument>, <argument><expr><name>other</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+                    <expr_stmt><expr><name>t</name> <operator>=</operator> <call><name><name>t</name><operator>.</operator><name>increaseSlightly</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></while>
+                <expr_stmt><expr><call><name><name>filtered</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <return>return <expr><name>filtered</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>final</specifier> <name>SummaryStatistics</name></type> <name>replicatedOwnershipStats</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>SummaryStatistics</name></type> <name>stat</name> <init>= <expr><operator>new</operator> <call><name>SummaryStatistics</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Double</name></argument>&gt;</argument_list></name></name></type> <name>en</name> <range>: <expr><call><name>evaluateReplicatedOwnership</name><argument_list>()</argument_list></call><operator>.</operator><call><name>entrySet</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <comment type="line">// Filter only in the same allocation ring</comment>
+                <if_stmt><if>if <condition>(<expr><call><name>inAllocationRing</name><argument_list>(<argument><expr><call><name><name>en</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>stat</name><operator>.</operator><name>addValue</name></name><argument_list>(<argument><expr><call><name><name>en</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call> <operator>/</operator> <call><name><name>tokenMetadata</name><operator>.</operator><name>getTokens</name></name><argument_list>(<argument><expr><call><name><name>en</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></for>
+            <return>return <expr><name>stat</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="line">// return the ratio of ownership for each endpoint</comment>
+        <function><type><specifier>private</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>evaluateReplicatedOwnership</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>ownership</name> <init>= <expr><call><name><name>Maps</name><operator>.</operator><name>newHashMap</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>sortedTokens</name> <init>= <expr><call><name><name>tokenMetadata</name><operator>.</operator><name>sortedTokens</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>sortedTokens</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name>ownership</name></expr>;</return></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>it</name> <init>= <expr><call><name><name>sortedTokens</name><operator>.</operator><name>iterator</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Token</name></type> <name>current</name> <init>= <expr><call><name><name>it</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <while>while <condition>(<expr><call><name><name>it</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>Token</name></type> <name>next</name> <init>= <expr><call><name><name>it</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name>addOwnership</name><argument_list>(<argument><expr><name>current</name></expr></argument>, <argument><expr><name>next</name></expr></argument>, <argument><expr><name>ownership</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>current</name> <operator>=</operator> <name>next</name></expr>;</expr_stmt>
+            </block_content>}</block></while>
+            <expr_stmt><expr><call><name>addOwnership</name><argument_list>(<argument><expr><name>current</name></expr></argument>, <argument><expr><call><name><name>sortedTokens</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>ownership</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <return>return <expr><name>ownership</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>addOwnership</name><parameter_list>(<parameter><decl><type><name>Token</name></type> <name>current</name></decl></parameter>, <parameter><decl><type><name>Token</name></type> <name>next</name></decl></parameter>, <parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>ownership</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>double</name></type> <name>size</name> <init>= <expr><call><name><name>current</name><operator>.</operator><name>size</name></name><argument_list>(<argument><expr><name>next</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Token</name></type> <name>representative</name> <init>= <expr><call><name><name>current</name><operator>.</operator><name>getPartitioner</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>midpoint</name><argument_list>(<argument><expr><name>current</name></expr></argument>, <argument><expr><name>next</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>InetAddressAndPort</name></type> <name>n</name> <range>: <expr><call><name><name>replicationStrategy</name><operator>.</operator><name>calculateNaturalReplicas</name></name><argument_list>(<argument><expr><name>representative</name></expr></argument>, <argument><expr><name>tokenMetadata</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>endpoints</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>Double</name></type> <name>v</name> <init>= <expr><call><name><name>ownership</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>n</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>ownership</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>n</name></expr></argument>, <argument><expr><ternary><condition><expr><name>v</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>v</name> <operator>+</operator> <name>size</name></expr> </then><else>: <expr><name>size</name></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>private</specifier> <name>StrategyAdapter</name></type> <name>getOrCreateStrategy</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>dc</name> <init>= <expr><call><name><name>replicationStrategy</name><operator>.</operator><name>snitch</name><operator>.</operator><name>getDatacenter</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>String</name></type> <name>rack</name> <init>= <expr><call><name><name>replicationStrategy</name><operator>.</operator><name>snitch</name><operator>.</operator><name>getRack</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name>getOrCreateStrategy</name><argument_list>(<argument><expr><name>dc</name></expr></argument>, <argument><expr><name>rack</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>StrategyAdapter</name></type> <name>getOrCreateStrategy</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>dc</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>rack</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>strategyByRackDc</name><operator>.</operator><name>computeIfAbsent</name></name><argument_list>(<argument><expr><name>dc</name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>k</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call><operator>.</operator><call><name>computeIfAbsent</name><argument_list>(<argument><expr><name>rack</name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>k</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name>createStrategy</name><argument_list>(<argument><expr><name>dc</name></expr></argument>, <argument><expr><name>rack</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>StrategyAdapter</name></type> <name>createStrategy</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>dc</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>rack</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>replicationStrategy</name> <operator>instanceof</operator> <name>NetworkTopologyStrategy</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>createStrategy</name><argument_list>(<argument><expr><name>tokenMetadata</name></expr></argument>, <argument><expr><operator>(</operator><name>NetworkTopologyStrategy</name><operator>)</operator> <name>replicationStrategy</name></expr></argument>, <argument><expr><name>dc</name></expr></argument>, <argument><expr><name>rack</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>replicationStrategy</name> <operator>instanceof</operator> <name>SimpleStrategy</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>createStrategy</name><argument_list>(<argument><expr><operator>(</operator><name>SimpleStrategy</name><operator>)</operator> <name>replicationStrategy</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+        <throw>throw <expr><operator>new</operator> <call><name>ConfigurationException</name><argument_list>(<argument><expr><literal type="string">"Token allocation does not support replication strategy "</literal> <operator>+</operator> <call><name><name>replicationStrategy</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getSimpleName</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>StrategyAdapter</name></type> <name>createStrategy</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>SimpleStrategy</name></type> <name>rs</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>createStrategy</name><argument_list>(<argument><expr><name><name>rs</name><operator>.</operator><name>snitch</name></name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><call><name><name>rs</name><operator>.</operator><name>getReplicationFactor</name></name><argument_list>()</argument_list></call><operator>.</operator><name>allReplicas</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>StrategyAdapter</name></type> <name>createStrategy</name><parameter_list>(<parameter><decl><type><name>TokenMetadata</name></type> <name>tokenMetadata</name></decl></parameter>, <parameter><decl><type><name>NetworkTopologyStrategy</name></type> <name>strategy</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>dc</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>rack</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>replicas</name> <init>= <expr><call><name><name>strategy</name><operator>.</operator><name>getReplicationFactor</name></name><argument_list>(<argument><expr><name>dc</name></expr></argument>)</argument_list></call><operator>.</operator><name>allReplicas</name></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>Topology</name></type> <name>topology</name> <init>= <expr><call><name><name>tokenMetadata</name><operator>.</operator><name>getTopology</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// if topology hasn't been setup yet for this dc+rack then treat it as a separate unit</comment>
+        <decl_stmt><decl><type><name>int</name></type> <name>racks</name> <init>= <expr><ternary><condition><expr><call><name><name>topology</name><operator>.</operator><name>getDatacenterRacks</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><name>dc</name></expr></argument>)</argument_list></call> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>topology</name><operator>.</operator><name>getDatacenterRacks</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><name>dc</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>containsKey</name><argument_list>(<argument><expr><name>rack</name></expr></argument>)</argument_list></call></expr>
+                ?</condition><then> <expr><call><name><name>topology</name><operator>.</operator><name>getDatacenterRacks</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><name>dc</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>asMap</name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call></expr>
+                </then><else>: <expr><literal type="number">1</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>replicas</name> <operator>&lt;=</operator> <literal type="number">1</literal></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// each node is treated as separate and replicates once</comment>
+            <return>return <expr><call><name>createStrategy</name><argument_list>(<argument><expr><name><name>strategy</name><operator>.</operator><name>snitch</name></name></expr></argument>, <argument><expr><name>dc</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if>
+        <if type="elseif">else if <condition>(<expr><name>racks</name> <operator>==</operator> <name>replicas</name></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// each node is treated as separate and replicates once, with separate allocation rings for each rack</comment>
+            <return>return <expr><call><name>createStrategy</name><argument_list>(<argument><expr><name><name>strategy</name><operator>.</operator><name>snitch</name></name></expr></argument>, <argument><expr><name>dc</name></expr></argument>, <argument><expr><name>rack</name></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if>
+        <if type="elseif">else if <condition>(<expr><name>racks</name> <operator>&gt;</operator> <name>replicas</name></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// group by rack</comment>
+            <return>return <expr><call><name>createStrategy</name><argument_list>(<argument><expr><name><name>strategy</name><operator>.</operator><name>snitch</name></name></expr></argument>, <argument><expr><name>dc</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>replicas</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if>
+        <if type="elseif">else if <condition>(<expr><name>racks</name> <operator>==</operator> <literal type="number">1</literal></expr>)</condition>
+        <block>{<block_content>
+            <return>return <expr><call><name>createStrategy</name><argument_list>(<argument><expr><name><name>strategy</name><operator>.</operator><name>snitch</name></name></expr></argument>, <argument><expr><name>dc</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>replicas</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <throw>throw <expr><operator>new</operator> <call><name>ConfigurationException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Token allocation failed: the number of racks %d in datacenter %s is lower than its replication factor %d."</literal></expr></argument>,
+                                                       <argument><expr><name>racks</name></expr></argument>, <argument><expr><name>dc</name></expr></argument>, <argument><expr><name>replicas</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <comment type="line">// a null dc will always return true for inAllocationRing(..)</comment>
+    <comment type="line">// a null rack will return true for inAllocationRing(..) for all nodes in the same dc</comment>
+    <function><type><specifier>private</specifier> <name>StrategyAdapter</name></type> <name>createStrategy</name><parameter_list>(<parameter><decl><type><name>IEndpointSnitch</name></type> <name>snitch</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>dc</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>rack</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>replicas</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>groupByRack</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <class><super><name>StrategyAdapter</name></super><argument_list>()</argument_list>
+        <block>{
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>int</name></type> <name>replicas</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>replicas</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>Object</name></type> <name>getGroup</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>unit</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><ternary><condition><expr><name>groupByRack</name></expr> ?</condition><then> <expr><call><name><name>snitch</name><operator>.</operator><name>getRack</name></name><argument_list>(<argument><expr><name>unit</name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><name>unit</name></expr></else></ternary></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>boolean</name></type> <name>inAllocationRing</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>other</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><operator>(</operator><name>dc</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>dc</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name><name>snitch</name><operator>.</operator><name>getDatacenter</name></name><argument_list>(<argument><expr><name>other</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call><operator>)</operator> <operator>&amp;&amp;</operator> <operator>(</operator><name>rack</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>rack</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name><name>snitch</name><operator>.</operator><name>getRack</name></name><argument_list>(<argument><expr><name>other</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call><operator>)</operator></expr>;</return>
+            </block_content>}</block></function>
+        }</block></class></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+
+</unit>

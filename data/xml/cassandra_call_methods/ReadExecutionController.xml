@@ -1,0 +1,237 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/ReadExecutionController.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name><operator>.</operator><name>DataLimits</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>index</name><operator>.</operator><name>Index</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>MonotonicClock</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>OpOrder</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>MonotonicClock</name><operator>.</operator><name>preciseTime</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>ReadExecutionController</name> <super_list><implements>implements <super><name>AutoCloseable</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>NO_SAMPLING</name> <init>= <expr><name><name>Long</name><operator>.</operator><name>MIN_VALUE</name></name></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// For every reads</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>baseOp</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>TableMetadata</name></type> <name>baseMetadata</name></decl>;</decl_stmt> <comment type="line">// kept to sanity check that we have take the op order on the right table</comment>
+
+    <comment type="line">// For index reads</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ReadExecutionController</name></type> <name>indexController</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>WriteContext</name></type> <name>writeContext</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ReadCommand</name></type> <name>command</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>static</specifier> <name>MonotonicClock</name></type> <name>clock</name> <init>= <expr><name>preciseTime</name></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>createdAtNanos</name></decl>;</decl_stmt> <comment type="line">// Only used while sampling</comment>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>RepairedDataInfo</name></type> <name>repairedDataInfo</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>oldestUnrepairedTombstone</name> <init>= <expr><name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr></init></decl>;</decl_stmt>
+
+    <constructor><name>ReadExecutionController</name><parameter_list>(<parameter><decl><type><name>ReadCommand</name></type> <name>command</name></decl></parameter>,
+                            <parameter><decl><type><name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>baseOp</name></decl></parameter>,
+                            <parameter><decl><type><name>TableMetadata</name></type> <name>baseMetadata</name></decl></parameter>,
+                            <parameter><decl><type><name>ReadExecutionController</name></type> <name>indexController</name></decl></parameter>,
+                            <parameter><decl><type><name>WriteContext</name></type> <name>writeContext</name></decl></parameter>,
+                            <parameter><decl><type><name>long</name></type> <name>createdAtNanos</name></decl></parameter>,
+                            <parameter><decl><type><name>boolean</name></type> <name>trackRepairedStatus</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// We can have baseOp == null, but only when empty() is called, in which case the controller will never really be used</comment>
+        <comment type="line">// (which validForReadOn should ensure). But if it's not null, we should have the proper metadata too.</comment>
+        <assert>assert <expr><operator>(</operator><name>baseOp</name> <operator>==</operator> <literal type="null">null</literal><operator>)</operator> <operator>==</operator> <operator>(</operator><name>baseMetadata</name> <operator>==</operator> <literal type="null">null</literal><operator>)</operator></expr>;</assert>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>baseOp</name></name> <operator>=</operator> <name>baseOp</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>baseMetadata</name></name> <operator>=</operator> <name>baseMetadata</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>indexController</name></name> <operator>=</operator> <name>indexController</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>writeContext</name></name> <operator>=</operator> <name>writeContext</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>command</name></name> <operator>=</operator> <name>command</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>createdAtNanos</name></name> <operator>=</operator> <name>createdAtNanos</name></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>trackRepairedStatus</name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>DataLimits</name><operator>.</operator><name>Counter</name></name></type> <name>repairedReadCount</name> <init>= <expr><call><name><name>command</name><operator>.</operator><name>limits</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>newCounter</name><argument_list>(<argument><expr><call><name><name>command</name><operator>.</operator><name>nowInSec</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                                               <argument><expr><literal type="boolean">false</literal></expr></argument>,
+                                                                               <argument><expr><call><name><name>command</name><operator>.</operator><name>selectsFullPartition</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                                               <argument><expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name>enforceStrictLiveness</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>onlyCount</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>repairedDataInfo</name> <operator>=</operator> <operator>new</operator> <call><name>RepairedDataInfo</name><argument_list>(<argument><expr><name>repairedReadCount</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><name>repairedDataInfo</name> <operator>=</operator> <name><name>RepairedDataInfo</name><operator>.</operator><name>NO_OP_REPAIRED_DATA_INFO</name></name></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>ReadExecutionController</name></type> <name>indexReadController</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>indexController</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>WriteContext</name></type> <name>getWriteContext</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>writeContext</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>int</name></type> <name>oldestUnrepairedTombstone</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>oldestUnrepairedTombstone</name></expr>;</return>
+    </block_content>}</block></function>
+    
+    <function><type><name>void</name></type> <name>updateMinOldestUnrepairedTombstone</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>candidate</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>oldestUnrepairedTombstone</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>oldestUnrepairedTombstone</name></expr></argument>, <argument><expr><name>candidate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>boolean</name></type> <name>validForReadOn</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>baseOp</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>cfs</name><operator>.</operator><name>metadata</name><operator>.</operator><name>id</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>baseMetadata</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>ReadExecutionController</name></type> <name>empty</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>ReadExecutionController</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>NO_SAMPLING</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates an execution controller for the provided command.
+     * &lt;p&gt;
+     * Note: no code should use this method outside of {@link ReadCommand#executionController} (for
+     * consistency sake) and you should use that latter method if you need an execution controller.
+     *
+     * @param command the command for which to create a controller.
+     * @return the created execution controller, which must always be closed.
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation> <comment type="line">// ops closed during controller close</comment>
+    <type><specifier>static</specifier> <name>ReadExecutionController</name></type> <name>forCommand</name><parameter_list>(<parameter><decl><type><name>ReadCommand</name></type> <name>command</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>trackRepairedStatus</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ColumnFamilyStore</name></type> <name>baseCfs</name> <init>= <expr><call><name><name>Keyspace</name><operator>.</operator><name>openAndGetStore</name></name><argument_list>(<argument><expr><call><name><name>command</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ColumnFamilyStore</name></type> <name>indexCfs</name> <init>= <expr><call><name>maybeGetIndexCfs</name><argument_list>(<argument><expr><name>baseCfs</name></expr></argument>, <argument><expr><name>command</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>createdAtNanos</name> <init>= <expr><ternary><condition><expr><call><name><name>baseCfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>topLocalReadQueryTime</name><operator>.</operator><name>isEnabled</name></name><argument_list>()</argument_list></call></expr> ?</condition><then> <expr><call><name><name>clock</name><operator>.</operator><name>now</name></name><argument_list>()</argument_list></call></expr> </then><else>: <expr><name>NO_SAMPLING</name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>indexCfs</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><operator>new</operator> <call><name>ReadExecutionController</name><argument_list>(<argument><expr><name>command</name></expr></argument>, <argument><expr><call><name><name>baseCfs</name><operator>.</operator><name>readOrdering</name><operator>.</operator><name>start</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>baseCfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>createdAtNanos</name></expr></argument>, <argument><expr><name>trackRepairedStatus</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>baseOp</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>WriteContext</name></type> <name>writeContext</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ReadExecutionController</name></type> <name>indexController</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <comment type="line">// OpOrder.start() shouldn't fail, but better safe than sorry.</comment>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><name>baseOp</name> <operator>=</operator> <call><name><name>baseCfs</name><operator>.</operator><name>readOrdering</name><operator>.</operator><name>start</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>indexController</name> <operator>=</operator> <operator>new</operator> <call><name>ReadExecutionController</name><argument_list>(<argument><expr><name>command</name></expr></argument>, <argument><expr><call><name><name>indexCfs</name><operator>.</operator><name>readOrdering</name><operator>.</operator><name>start</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>indexCfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>NO_SAMPLING</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <comment type="block">/*
+             * TODO: this should perhaps not open and maintain a writeOp for the full duration, but instead only *try*
+             * to delete stale entries, without blocking if there's no room
+             * as it stands, we open a writeOp and keep it open for the duration to ensure that should this CF get flushed to make room we don't block the reclamation of any room being made
+             */</comment>
+            <expr_stmt><expr><name>writeContext</name> <operator>=</operator> <call><name><name>baseCfs</name><operator>.</operator><name>keyspace</name><operator>.</operator><name>getWriteHandler</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>createContextForRead</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><operator>new</operator> <call><name>ReadExecutionController</name><argument_list>(<argument><expr><name>command</name></expr></argument>, <argument><expr><name>baseOp</name></expr></argument>, <argument><expr><call><name><name>baseCfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>indexController</name></expr></argument>, <argument><expr><name>writeContext</name></expr></argument>, <argument><expr><name>createdAtNanos</name></expr></argument>, <argument><expr><name>trackRepairedStatus</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>RuntimeException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// Note that must have writeContext == null since ReadOrderGroup ctor can't fail</comment>
+            <assert>assert <expr><name>writeContext</name> <operator>==</operator> <literal type="null">null</literal></expr>;</assert>
+            <try>try
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>baseOp</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>baseOp</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block>
+            <finally>finally
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>indexController</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>indexController</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></finally></try>
+            <throw>throw <expr><name>e</name></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>ColumnFamilyStore</name></type> <name>maybeGetIndexCfs</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>baseCfs</name></decl></parameter>, <parameter><decl><type><name>ReadCommand</name></type> <name>command</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Index</name></type> <name>index</name> <init>= <expr><call><name><name>command</name><operator>.</operator><name>getIndex</name></name><argument_list>(<argument><expr><name>baseCfs</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><ternary><condition><expr><name>index</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>index</name><operator>.</operator><name>getBackingTable</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>orElse</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>TableMetadata</name></type> <name>metadata</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>baseMetadata</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>baseOp</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>baseOp</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block>
+        <finally>finally
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>indexController</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <try>try
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>indexController</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block>
+                <finally>finally
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>writeContext</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></finally></try>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></finally></try>
+
+        <if_stmt><if>if <condition>(<expr><name>createdAtNanos</name> <operator>!=</operator> <name>NO_SAMPLING</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>addSample</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isTrackingRepairedStatus</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>repairedDataInfo</name> <operator>!=</operator> <name><name>RepairedDataInfo</name><operator>.</operator><name>NO_OP_REPAIRED_DATA_INFO</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>ByteBuffer</name></type> <name>getRepairedDataDigest</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>repairedDataInfo</name><operator>.</operator><name>getDigest</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>isRepairedDataDigestConclusive</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>repairedDataInfo</name><operator>.</operator><name>isConclusive</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+    
+    <function><type><specifier>public</specifier> <name>RepairedDataInfo</name></type> <name>getRepairedDataInfo</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>repairedDataInfo</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>addSample</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>cql</name> <init>= <expr><call><name><name>command</name><operator>.</operator><name>toCQLString</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>timeMicros</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><call><name><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name><operator>.</operator><name>toMicros</name></name><argument_list>(<argument><expr><call><name><name>clock</name><operator>.</operator><name>now</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>createdAtNanos</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <init>= <expr><call><name><name>ColumnFamilyStore</name><operator>.</operator><name>getIfExists</name></name><argument_list>(<argument><expr><name><name>baseMetadata</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>cfs</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>topLocalReadQueryTime</name><operator>.</operator><name>addSample</name></name><argument_list>(<argument><expr><name>cql</name></expr></argument>, <argument><expr><name>timeMicros</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

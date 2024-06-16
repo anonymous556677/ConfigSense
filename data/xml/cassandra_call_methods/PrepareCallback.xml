@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/service/paxos/PrepareCallback.java"><package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>paxos</name></name>;</package>
+<comment type="block">/*
+ * 
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ * 
+ */</comment>
+
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Collections</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentHashMap</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Predicate</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterables</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ConsistencyLevel</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>DecoratedKey</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>SystemKeyspace</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>Message</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>UUIDGen</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>PrepareCallback</name> <super_list><extends>extends <super><name><name>AbstractPaxosCallback</name><argument_list type="generic">&lt;<argument><name>PrepareResponse</name></argument>&gt;</argument_list></name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>PrepareCallback</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <name>boolean</name></type> <name>promised</name> <init>= <expr><literal type="boolean">true</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <name>Commit</name></type> <name>mostRecentCommit</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <name>Commit</name></type> <name>mostRecentInProgressCommit</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Commit</name></argument>&gt;</argument_list></name></type> <name>commitsByReplica</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>PrepareCallback</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>targets</name></decl></parameter>, <parameter><decl><type><name>ConsistencyLevel</name></type> <name>consistency</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>targets</name></expr></argument>, <argument><expr><name>consistency</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// need to inject the right key in the empty commit so comparing with empty commits in the response works as expected</comment>
+        <expr_stmt><expr><name>mostRecentCommit</name> <operator>=</operator> <call><name><name>Commit</name><operator>.</operator><name>emptyCommit</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><name>metadata</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>mostRecentInProgressCommit</name> <operator>=</operator> <call><name><name>Commit</name><operator>.</operator><name>emptyCommit</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><name>metadata</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>onResponse</name><parameter_list>(<parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>PrepareResponse</name></argument>&gt;</argument_list></name></type> <name>message</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>PrepareResponse</name></type> <name>response</name> <init>= <expr><name><name>message</name><operator>.</operator><name>payload</name></name></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Prepare response {} from {}"</literal></expr></argument>, <argument><expr><name>response</name></expr></argument>, <argument><expr><call><name><name>message</name><operator>.</operator><name>from</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// We set the mostRecentInProgressCommit even if we're not promised as, in that case, the ballot of that commit</comment>
+        <comment type="line">// will be used to avoid generating a ballot that has not chance to win on retry (think clock skew).</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>response</name><operator>.</operator><name>inProgressCommit</name><operator>.</operator><name>isAfter</name></name><argument_list>(<argument><expr><name>mostRecentInProgressCommit</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>mostRecentInProgressCommit</name> <operator>=</operator> <name><name>response</name><operator>.</operator><name>inProgressCommit</name></name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name><name>response</name><operator>.</operator><name>promised</name></name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>promised</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+            <while>while <condition>(<expr><call><name><name>latch</name><operator>.</operator><name>getCount</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>latch</name><operator>.</operator><name>countDown</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></while>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>commitsByReplica</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>message</name><operator>.</operator><name>from</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>response</name><operator>.</operator><name>mostRecentCommit</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>response</name><operator>.</operator><name>mostRecentCommit</name><operator>.</operator><name>isAfter</name></name><argument_list>(<argument><expr><name>mostRecentCommit</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>mostRecentCommit</name> <operator>=</operator> <name><name>response</name><operator>.</operator><name>mostRecentCommit</name></name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>latch</name><operator>.</operator><name>countDown</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>replicasMissingMostRecentCommit</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// In general, we need every replicas that have answered to the prepare (a quorum) to agree on the MRC (see</comment>
+        <comment type="line">// coment in StorageProxy.beginAndRepairPaxos(), but basically we need to make sure at least a quorum of nodes</comment>
+        <comment type="line">// have learn a commit before commit a new one otherwise that previous commit is not guaranteed to have reach a</comment>
+        <comment type="line">// quorum and further commit may proceed on incomplete information).</comment>
+        <comment type="line">// However, if that commit is too hold, it may have been expired from some of the replicas paxos table (we don't</comment>
+        <comment type="line">// keep the paxos state forever or that could grow unchecked), and we could end up in some infinite loop as</comment>
+        <comment type="line">// explained on CASSANDRA-12043. To avoid that, we ignore a MRC that is too old, i.e. older than the TTL we set</comment>
+        <comment type="line">// on paxos tables. For such old commit, we rely on hints and repair to ensure the commit has indeed be</comment>
+        <comment type="line">// propagated to all nodes.</comment>
+        <decl_stmt><decl><type><name>long</name></type> <name>paxosTtlSec</name> <init>= <expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>paxosTtlSec</name></name><argument_list>(<argument><expr><name>metadata</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>UUIDGen</name><operator>.</operator><name>unixTimestampInSec</name></name><argument_list>(<argument><expr><name><name>mostRecentCommit</name><operator>.</operator><name>ballot</name></name></expr></argument>)</argument_list></call> <operator>+</operator> <name>paxosTtlSec</name> <operator>&lt;</operator> <name>nowInSec</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>Collections</name><operator>.</operator><name>emptySet</name></name><argument_list>()</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name><name>Iterables</name><operator>.</operator><name>filter</name></name><argument_list>(<argument><expr><call><name><name>commitsByReplica</name><operator>.</operator><name>keySet</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><operator>new</operator> <class><super><name><name>Predicate</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></super><argument_list>()</argument_list>
+        <block>{
+            <function><type><specifier>public</specifier> <name>boolean</name></type> <name>apply</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>inetAddress</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><operator>(</operator><operator>!</operator><call><name><name>commitsByReplica</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>inetAddress</name></expr></argument>)</argument_list></call><operator>.</operator><call><name><name>ballot</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>mostRecentCommit</name><operator>.</operator><name>ballot</name></name></expr></argument>)</argument_list></call><operator>)</operator></expr>;</return>
+            </block_content>}</block></function>
+        }</block></class></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

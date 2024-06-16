@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/service/NativeTransportService.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>InetAddress</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Arrays</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Collection</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Collections</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>EventLoopGroup</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>epoll</name><operator>.</operator><name>Epoll</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>epoll</name><operator>.</operator><name>EpollEventLoopGroup</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>nio</name><operator>.</operator><name>NioEventLoopGroup</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>Version</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>EncryptionOptions</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>ClientMetrics</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name><operator>.</operator><name>Dispatcher</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name><operator>.</operator><name>Server</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>NativeLibrary</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Handles native transport server lifecycle and associated resources. Lazily initialized.
+ */</comment>
+<class><specifier>public</specifier> class <name>NativeTransportService</name>
+<block>{
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>NativeTransportService</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Server</name></argument>&gt;</argument_list></name></type> <name>servers</name> <init>= <expr><call><name><name>Collections</name><operator>.</operator><name>emptyList</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>initialized</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>EventLoopGroup</name></type> <name>workerGroup</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Creates netty thread pools and event loops.
+     */</comment>
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>synchronized</specifier> <name>void</name></type> <name>initialize</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>initialized</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name>useEpoll</name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>workerGroup</name> <operator>=</operator> <operator>new</operator> <call><name>EpollEventLoopGroup</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Netty using native Epoll event loop"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><name>workerGroup</name> <operator>=</operator> <operator>new</operator> <call><name>NioEventLoopGroup</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Netty using Java NIO event loop"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+
+        <decl_stmt><decl><type><name>int</name></type> <name>nativePort</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getNativeTransportPort</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>nativePortSSL</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getNativeTransportPortSSL</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>InetAddress</name></type> <name>nativeAddr</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getRpcAddress</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name><operator>.</operator><name>Server</name><operator>.</operator><name>Builder</name></name></type> <name>builder</name> <init>= <expr><operator>new</operator> <call><name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name><operator>.</operator><name>Server</name><operator>.</operator><name>Builder</name></name><argument_list>()</argument_list></call>
+                                                                <operator>.</operator><call><name>withEventLoopGroup</name><argument_list>(<argument><expr><name>workerGroup</name></expr></argument>)</argument_list></call>
+                                                                <operator>.</operator><call><name>withHost</name><argument_list>(<argument><expr><name>nativeAddr</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>EncryptionOptions</name><operator>.</operator><name>TlsEncryptionPolicy</name></name></type> <name>encryptionPolicy</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getNativeProtocolEncryptionOptions</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>tlsEncryptionPolicy</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Server</name></type> <name>regularPortServer</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Server</name></type> <name>tlsPortServer</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// If an SSL port is separately supplied for the native transport, listen for unencrypted connections on the</comment>
+        <comment type="line">// regular port, and encryption / optionally encrypted connections on the ssl port.</comment>
+        <if_stmt><if>if <condition>(<expr><name>nativePort</name> <operator>!=</operator> <name>nativePortSSL</name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>regularPortServer</name> <operator>=</operator> <call><name><name>builder</name><operator>.</operator><name>withTlsEncryptionPolicy</name></name><argument_list>(<argument><expr><name><name>EncryptionOptions</name><operator>.</operator><name>TlsEncryptionPolicy</name><operator>.</operator><name>UNENCRYPTED</name></name></expr></argument>)</argument_list></call><operator>.</operator><call><name>withPort</name><argument_list>(<argument><expr><name>nativePort</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>build</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <switch>switch<condition>(<expr><name>encryptionPolicy</name></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><name>OPTIONAL</name></expr>:</case> <comment type="line">// FALLTHRU - encryption is optional on the regular port, but encrypted on the tls port.</comment>
+                <case>case <expr><name>ENCRYPTED</name></expr>:</case>
+                    <expr_stmt><expr><name>tlsPortServer</name> <operator>=</operator> <call><name><name>builder</name><operator>.</operator><name>withTlsEncryptionPolicy</name></name><argument_list>(<argument><expr><name>encryptionPolicy</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>withPort</name><argument_list>(<argument><expr><name>nativePortSSL</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>build</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <break>break;</break>
+                <case>case <expr><name>UNENCRYPTED</name></expr>:</case> <comment type="line">// Should have been caught by DatabaseDescriptor.applySimpleConfig</comment>
+                    <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"Encryption must be enabled in client_encryption_options for native_transport_port_ssl"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+                <default>default:</default>
+                    <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"Unrecognized TLS encryption policy: "</literal> <operator>+</operator> <name>encryptionPolicy</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></switch>
+        </block_content>}</block></if>
+        <comment type="line">// Otherwise, if only the regular port is supplied, listen as the encryption policy specifies</comment>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><name>regularPortServer</name> <operator>=</operator> <call><name><name>builder</name><operator>.</operator><name>withTlsEncryptionPolicy</name></name><argument_list>(<argument><expr><name>encryptionPolicy</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>withPort</name><argument_list>(<argument><expr><name>nativePort</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>build</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>tlsPortServer</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>servers</name> <operator>=</operator> <call><name><name>Collections</name><operator>.</operator><name>singleton</name></name><argument_list>(<argument><expr><name>regularPortServer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><name>servers</name> <operator>=</operator> <call><name><name>Collections</name><operator>.</operator><name>unmodifiableList</name></name><argument_list>(<argument><expr><call><name><name>Arrays</name><operator>.</operator><name>asList</name></name><argument_list>(<argument><expr><name>regularPortServer</name></expr></argument>, <argument><expr><name>tlsPortServer</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+
+        <expr_stmt><expr><call><name><name>ClientMetrics</name><operator>.</operator><name>instance</name><operator>.</operator><name>init</name></name><argument_list>(<argument><expr><name>servers</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name>initialized</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Starts native transport servers.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>start</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Using Netty Version: {}"</literal></expr></argument>, <argument><expr><call><name><name>Version</name><operator>.</operator><name>identify</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>entrySet</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>initialize</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>servers</name><operator>.</operator><name>forEach</name></name><argument_list>(<argument><expr><name>Server</name><operator>::</operator><name>start</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Stops currently running native transport servers.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>stop</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>servers</name><operator>.</operator><name>forEach</name></name><argument_list>(<argument><expr><name>Server</name><operator>::</operator><name>stop</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Ultimately stops servers and closes all resources.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>destroy</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>stop</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>servers</name> <operator>=</operator> <call><name><name>Collections</name><operator>.</operator><name>emptyList</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// shutdown executors used by netty for native transport server</comment>
+        <expr_stmt><expr><call><name><name>workerGroup</name><operator>.</operator><name>shutdownGracefully</name></name><argument_list>(<argument><expr><literal type="number">3</literal></expr></argument>, <argument><expr><literal type="number">5</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>SECONDS</name></name></expr></argument>)</argument_list></call><operator>.</operator><call><name>awaitUninterruptibly</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>Dispatcher</name><operator>.</operator><name>shutdown</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return intend to use epoll based event looping
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>useEpoll</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>boolean</name></type> <name>enableEpoll</name> <init>= <expr><call><name><name>Boolean</name><operator>.</operator><name>parseBoolean</name></name><argument_list>(<argument><expr><call><name><name>System</name><operator>.</operator><name>getProperty</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.native.epoll.enabled"</literal></expr></argument>, <argument><expr><literal type="string">"true"</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>enableEpoll</name> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>Epoll</name><operator>.</operator><name>isAvailable</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <name><name>NativeLibrary</name><operator>.</operator><name>osType</name></name> <operator>==</operator> <name><name>NativeLibrary</name><operator>.</operator><name>OSType</name><operator>.</operator><name>LINUX</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"epoll not available"</literal></expr></argument>, <argument><expr><call><name><name>Epoll</name><operator>.</operator><name>unavailabilityCause</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <return>return <expr><name>enableEpoll</name> <operator>&amp;&amp;</operator> <call><name><name>Epoll</name><operator>.</operator><name>isAvailable</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return true in case native transport server is running
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isRunning</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>Server</name></type> <name>server</name> <range>: <expr><name>servers</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>server</name><operator>.</operator><name>isRunning</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content> <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt></block_content></block></for>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><name>EventLoopGroup</name></type> <name>getWorkerGroup</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>workerGroup</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Server</name></argument>&gt;</argument_list></name></type> <name>getServers</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>servers</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>clearConnectionHistory</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>Server</name></type> <name>server</name> <range>: <expr><name>servers</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>server</name><operator>.</operator><name>clearConnectionHistory</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

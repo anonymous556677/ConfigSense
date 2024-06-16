@@ -1,0 +1,453 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/io/util/FileHandle.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Objects</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Optional</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>RateLimiter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cache</name><operator>.</operator><name>ChunkCache</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>compress</name><operator>.</operator><name>BufferType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>compress</name><operator>.</operator><name>CompressionMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>NativeLibrary</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Ref</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>RefCounted</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>SharedCloseableImpl</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>Throwables</name><operator>.</operator><name>maybeFail</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>Throwables</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * {@link FileHandle} provides access to a file for reading, including the ones written by various {@link SequentialWriter}
+ * instances, and it is typically used by {@link org.apache.cassandra.io.sstable.format.SSTableReader}.
+ *
+ * Use {@link FileHandle.Builder} to create an instance, and call {@link #createReader()} (and its variants) to
+ * access the readers for the underlying file.
+ *
+ * You can use {@link Builder#complete()} several times during its lifecycle with different {@code overrideLength}(i.e. early opening file).
+ * For that reason, the builder keeps a reference to the file channel and makes a copy for each {@link Builder#complete()} call.
+ * Therefore, it is important to close the {@link Builder} when it is no longer needed, as well as any {@link FileHandle}
+ * instances.
+ */</comment>
+<class><specifier>public</specifier> class <name>FileHandle</name> <super_list><extends>extends <super><name>SharedCloseableImpl</name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>FileHandle</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>ChannelProxy</name></type> <name>channel</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>long</name></type> <name>onDiskLength</name></decl>;</decl_stmt>
+
+    <comment type="block">/*
+     * Rebufferer factory to use when constructing RandomAccessReaders
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>RebuffererFactory</name></type> <name>rebuffererFactory</name></decl>;</decl_stmt>
+
+    <comment type="block">/*
+     * Optional CompressionMetadata when dealing with compressed file
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Optional</name><argument_list type="generic">&lt;<argument><name>CompressionMetadata</name></argument>&gt;</argument_list></name></type> <name>compressionMetadata</name></decl>;</decl_stmt>
+
+    <constructor><specifier>private</specifier> <name>FileHandle</name><parameter_list>(<parameter><decl><type><name>Cleanup</name></type> <name>cleanup</name></decl></parameter>,
+                       <parameter><decl><type><name>ChannelProxy</name></type> <name>channel</name></decl></parameter>,
+                       <parameter><decl><type><name>RebuffererFactory</name></type> <name>rebuffererFactory</name></decl></parameter>,
+                       <parameter><decl><type><name>CompressionMetadata</name></type> <name>compressionMetadata</name></decl></parameter>,
+                       <parameter><decl><type><name>long</name></type> <name>onDiskLength</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>cleanup</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>rebuffererFactory</name></name> <operator>=</operator> <name>rebuffererFactory</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>channel</name></name> <operator>=</operator> <name>channel</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>compressionMetadata</name></name> <operator>=</operator> <call><name><name>Optional</name><operator>.</operator><name>ofNullable</name></name><argument_list>(<argument><expr><name>compressionMetadata</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>onDiskLength</name></name> <operator>=</operator> <name>onDiskLength</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>private</specifier> <name>FileHandle</name><parameter_list>(<parameter><decl><type><name>FileHandle</name></type> <name>copy</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>copy</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>channel</name> <operator>=</operator> <name><name>copy</name><operator>.</operator><name>channel</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name>rebuffererFactory</name> <operator>=</operator> <name><name>copy</name><operator>.</operator><name>rebuffererFactory</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name>compressionMetadata</name> <operator>=</operator> <name><name>copy</name><operator>.</operator><name>compressionMetadata</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name>onDiskLength</name> <operator>=</operator> <name><name>copy</name><operator>.</operator><name>onDiskLength</name></name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * @return Path to the file this factory is referencing
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>path</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>channel</name><operator>.</operator><name>filePath</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>dataLength</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>compressionMetadata</name><operator>.</operator><name>map</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>c</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name><name>c</name><operator>.</operator><name>dataLength</name></name></expr></block_content></block></lambda></expr></argument>)</argument_list></call><operator>.</operator><call><name>orElseGet</name><argument_list>(<argument><expr><name>rebuffererFactory</name><operator>::</operator><name>fileLength</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>RebuffererFactory</name></type> <name>rebuffererFactory</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>rebuffererFactory</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>Optional</name><argument_list type="generic">&lt;<argument><name>CompressionMetadata</name></argument>&gt;</argument_list></name></type> <name>compressionMetadata</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>compressionMetadata</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>addTo</name><parameter_list>(<parameter><decl><type><name><name>Ref</name><operator>.</operator><name>IdentityCollection</name></name></type> <name>identities</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>super</name><operator>.</operator><name>addTo</name></name><argument_list>(<argument><expr><name>identities</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>compressionMetadata</name><operator>.</operator><name>ifPresent</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>metadata</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>metadata</name><operator>.</operator><name>addTo</name></name><argument_list>(<argument><expr><name>identities</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>FileHandle</name></type> <name>sharedCopy</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>FileHandle</name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create {@link RandomAccessReader} with configured method of reading content of the file.
+     *
+     * @return RandomAccessReader for the file
+     */</comment>
+    <function><type><specifier>public</specifier> <name>RandomAccessReader</name></type> <name>createReader</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>createReader</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create {@link RandomAccessReader} with configured method of reading content of the file.
+     * Reading from file will be rate limited by given {@link RateLimiter}.
+     *
+     * @param limiter RateLimiter to use for rate limiting read
+     * @return RandomAccessReader for the file
+     */</comment>
+    <function><type><specifier>public</specifier> <name>RandomAccessReader</name></type> <name>createReader</name><parameter_list>(<parameter><decl><type><name>RateLimiter</name></type> <name>limiter</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>RandomAccessReader</name><argument_list>(<argument><expr><call><name>instantiateRebufferer</name><argument_list>(<argument><expr><name>limiter</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>FileDataInput</name></type> <name>createReader</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>position</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>RandomAccessReader</name></type> <name>reader</name> <init>= <expr><call><name>createReader</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>reader</name><operator>.</operator><name>seek</name></name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>reader</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Drop page cache from start to given {@code before}.
+     *
+     * @param before uncompressed position from start of the file to be dropped from cache. if 0, to end of file.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>dropPageCache</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>before</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>position</name> <init>= <expr><call><name><name>compressionMetadata</name><operator>.</operator><name>map</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>metadata</name></decl></parameter></parameter_list> -&gt; <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>before</name> <operator>&gt;=</operator> <name><name>metadata</name><operator>.</operator><name>dataLength</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="number">0L</literal></expr>;</return></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <return>return <expr><call><name><name>metadata</name><operator>.</operator><name>chunkFor</name></name><argument_list>(<argument><expr><name>before</name></expr></argument>)</argument_list></call><operator>.</operator><name>offset</name></expr>;</return></block_content></block></else></if_stmt>
+        </block_content>}</block></lambda></expr></argument>)</argument_list></call><operator>.</operator><call><name>orElse</name><argument_list>(<argument><expr><name>before</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>NativeLibrary</name><operator>.</operator><name>trySkipCache</name></name><argument_list>(<argument><expr><call><name><name>channel</name><operator>.</operator><name>getFileDescriptor</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>position</name></expr></argument>, <argument><expr><call><name>path</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>Rebufferer</name></type> <name>instantiateRebufferer</name><parameter_list>(<parameter><decl><type><name>RateLimiter</name></type> <name>limiter</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Rebufferer</name></type> <name>rebufferer</name> <init>= <expr><call><name><name>rebuffererFactory</name><operator>.</operator><name>instantiateRebufferer</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>limiter</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>rebufferer</name> <operator>=</operator> <operator>new</operator> <call><name>LimitingRebufferer</name><argument_list>(<argument><expr><name>rebufferer</name></expr></argument>, <argument><expr><name>limiter</name></expr></argument>, <argument><expr><name><name>DiskOptimizationStrategy</name><operator>.</operator><name>MAX_BUFFER_SIZE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <return>return <expr><name>rebufferer</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Perform clean up of all resources held by {@link FileHandle}.
+     */</comment>
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>Cleanup</name> <super_list><implements>implements <super><name><name>RefCounted</name><operator>.</operator><name>Tidy</name></name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>final</specifier> <name>ChannelProxy</name></type> <name>channel</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>RebuffererFactory</name></type> <name>rebufferer</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>CompressionMetadata</name></type> <name>compressionMetadata</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>Optional</name><argument_list type="generic">&lt;<argument><name>ChunkCache</name></argument>&gt;</argument_list></name></type> <name>chunkCache</name></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>Cleanup</name><parameter_list>(<parameter><decl><type><name>ChannelProxy</name></type> <name>channel</name></decl></parameter>,
+                        <parameter><decl><type><name>RebuffererFactory</name></type> <name>rebufferer</name></decl></parameter>,
+                        <parameter><decl><type><name>CompressionMetadata</name></type> <name>compressionMetadata</name></decl></parameter>,
+                        <parameter><decl><type><name>ChunkCache</name></type> <name>chunkCache</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>channel</name></name> <operator>=</operator> <name>channel</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>rebufferer</name></name> <operator>=</operator> <name>rebufferer</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>compressionMetadata</name></name> <operator>=</operator> <name>compressionMetadata</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>chunkCache</name></name> <operator>=</operator> <call><name><name>Optional</name><operator>.</operator><name>ofNullable</name></name><argument_list>(<argument><expr><name>chunkCache</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>String</name></type> <name>name</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>channel</name><operator>.</operator><name>filePath</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>tidy</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>chunkCache</name><operator>.</operator><name>ifPresent</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>cache</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>cache</name><operator>.</operator><name>invalidateFile</name></name><argument_list>(<argument><expr><call><name>name</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <try>try
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>compressionMetadata</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>compressionMetadata</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block>
+            <finally>finally
+            <block>{<block_content>
+                <try>try
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>channel</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block>
+                <finally>finally
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>rebufferer</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></finally></try>
+            </block_content>}</block></finally></try>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * Configures how the file will be read (compressed, mmapped, use cache etc.)
+     */</comment>
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>Builder</name> <super_list><implements>implements <super><name>AutoCloseable</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>String</name></type> <name>path</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <name>ChannelProxy</name></type> <name>channel</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>CompressionMetadata</name></type> <name>compressionMetadata</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>MmappedRegions</name></type> <name>regions</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>ChunkCache</name></type> <name>chunkCache</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>bufferSize</name> <init>= <expr><name><name>RandomAccessReader</name><operator>.</operator><name>DEFAULT_BUFFER_SIZE</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>BufferType</name></type> <name>bufferType</name> <init>= <expr><name><name>BufferType</name><operator>.</operator><name>OFF_HEAP</name></name></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>mmapped</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>compressed</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>Builder</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>path</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>path</name></name> <operator>=</operator> <name>path</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><specifier>public</specifier> <name>Builder</name><parameter_list>(<parameter><decl><type><name>ChannelProxy</name></type> <name>channel</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>channel</name></name> <operator>=</operator> <name>channel</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>path</name></name> <operator>=</operator> <call><name><name>channel</name><operator>.</operator><name>filePath</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>Builder</name></type> <name>compressed</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>compressed</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>compressed</name></name> <operator>=</operator> <name>compressed</name></expr>;</expr_stmt>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Set {@link ChunkCache} to use.
+         *
+         * @param chunkCache ChunkCache object to use for caching
+         * @return this object
+         */</comment>
+        <function><type><specifier>public</specifier> <name>Builder</name></type> <name>withChunkCache</name><parameter_list>(<parameter><decl><type><name>ChunkCache</name></type> <name>chunkCache</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>chunkCache</name></name> <operator>=</operator> <name>chunkCache</name></expr>;</expr_stmt>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Provide {@link CompressionMetadata} to use when reading compressed file.
+         *
+         * @param metadata CompressionMetadata to use
+         * @return this object
+         */</comment>
+        <function><type><specifier>public</specifier> <name>Builder</name></type> <name>withCompressionMetadata</name><parameter_list>(<parameter><decl><type><name>CompressionMetadata</name></type> <name>metadata</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>compressed</name></name> <operator>=</operator> <call><name><name>Objects</name><operator>.</operator><name>nonNull</name></name><argument_list>(<argument><expr><name>metadata</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>compressionMetadata</name></name> <operator>=</operator> <name>metadata</name></expr>;</expr_stmt>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Set whether to use mmap for reading
+         *
+         * @param mmapped true if using mmap
+         * @return this instance
+         */</comment>
+        <function><type><specifier>public</specifier> <name>Builder</name></type> <name>mmapped</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>mmapped</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>mmapped</name></name> <operator>=</operator> <name>mmapped</name></expr>;</expr_stmt>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Set the buffer size to use (if appropriate).
+         *
+         * @param bufferSize Buffer size in bytes
+         * @return this instance
+         */</comment>
+        <function><type><specifier>public</specifier> <name>Builder</name></type> <name>bufferSize</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>bufferSize</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>bufferSize</name></name> <operator>=</operator> <name>bufferSize</name></expr>;</expr_stmt>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Set the buffer type (on heap or off heap) to use (if appropriate).
+         *
+         * @param bufferType Buffer type to use
+         * @return this instance
+         */</comment>
+        <function><type><specifier>public</specifier> <name>Builder</name></type> <name>bufferType</name><parameter_list>(<parameter><decl><type><name>BufferType</name></type> <name>bufferType</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>bufferType</name></name> <operator>=</operator> <name>bufferType</name></expr>;</expr_stmt>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Complete building {@link FileHandle} without overriding file length.
+         *
+         * @see #complete(long)
+         */</comment>
+        <function><type><specifier>public</specifier> <name>FileHandle</name></type> <name>complete</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>complete</name><argument_list>(<argument><expr><operator>-</operator><literal type="number">1L</literal></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Complete building {@link FileHandle} with the given length, which overrides the file length.
+         *
+         * @param overrideLength Override file length (in bytes) so that read cannot go further than this value.
+         *                       If the value is less than or equal to 0, then the value is ignored.
+         * @return Built file
+         */</comment>
+        <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation>
+        <type><specifier>public</specifier> <name>FileHandle</name></type> <name>complete</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>overrideLength</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>channelOpened</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>channel</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>channel</name> <operator>=</operator> <operator>new</operator> <call><name>ChannelProxy</name><argument_list>(<argument><expr><name>path</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>channelOpened</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>ChannelProxy</name></type> <name>channelCopy</name> <init>= <expr><call><name><name>channel</name><operator>.</operator><name>sharedCopy</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <try>try
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>compressed</name> <operator>&amp;&amp;</operator> <name>compressionMetadata</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>compressionMetadata</name> <operator>=</operator> <call><name><name>CompressionMetadata</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><call><name><name>channelCopy</name><operator>.</operator><name>filePath</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                <decl_stmt><decl><type><name>long</name></type> <name>length</name> <init>= <expr><ternary><condition><expr><name>overrideLength</name> <operator>&gt;</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><name>overrideLength</name></expr> </then><else>: <expr><ternary><condition><expr><name>compressed</name></expr> ?</condition><then> <expr><name><name>compressionMetadata</name><operator>.</operator><name>compressedFileLength</name></name></expr> </then><else>: <expr><call><name><name>channelCopy</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+                <decl_stmt><decl><type><name>RebuffererFactory</name></type> <name>rebuffererFactory</name></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>mmapped</name></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><name>compressed</name></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><name>regions</name> <operator>=</operator> <call><name><name>MmappedRegions</name><operator>.</operator><name>map</name></name><argument_list>(<argument><expr><name>channelCopy</name></expr></argument>, <argument><expr><name>compressionMetadata</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><name>rebuffererFactory</name> <operator>=</operator> <call><name>maybeCached</name><argument_list>(<argument><expr><operator>new</operator> <call><name><name>CompressedChunkReader</name><operator>.</operator><name>Mmap</name></name><argument_list>(<argument><expr><name>channelCopy</name></expr></argument>, <argument><expr><name>compressionMetadata</name></expr></argument>,
+                                                                                       <argument><expr><name>regions</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if>
+                    <else>else
+                    <block>{<block_content>
+                        <expr_stmt><expr><call><name>updateRegions</name><argument_list>(<argument><expr><name>channelCopy</name></expr></argument>, <argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><name>rebuffererFactory</name> <operator>=</operator> <operator>new</operator> <call><name>MmapRebufferer</name><argument_list>(<argument><expr><name>channelCopy</name></expr></argument>, <argument><expr><name>length</name></expr></argument>, <argument><expr><call><name><name>regions</name><operator>.</operator><name>sharedCopy</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></else></if_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <expr_stmt><expr><name>regions</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>compressed</name></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><name>rebuffererFactory</name> <operator>=</operator> <call><name>maybeCached</name><argument_list>(<argument><expr><operator>new</operator> <call><name><name>CompressedChunkReader</name><operator>.</operator><name>Standard</name></name><argument_list>(<argument><expr><name>channelCopy</name></expr></argument>, <argument><expr><name>compressionMetadata</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if>
+                    <else>else
+                    <block>{<block_content>
+                        <decl_stmt><decl><type><name>int</name></type> <name>chunkSize</name> <init>= <expr><call><name><name>DiskOptimizationStrategy</name><operator>.</operator><name>roundForCaching</name></name><argument_list>(<argument><expr><name>bufferSize</name></expr></argument>, <argument><expr><name><name>ChunkCache</name><operator>.</operator><name>roundUp</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                        <expr_stmt><expr><name>rebuffererFactory</name> <operator>=</operator> <call><name>maybeCached</name><argument_list>(<argument><expr><operator>new</operator> <call><name>SimpleChunkReader</name><argument_list>(<argument><expr><name>channelCopy</name></expr></argument>, <argument><expr><name>length</name></expr></argument>, <argument><expr><name>bufferType</name></expr></argument>, <argument><expr><name>chunkSize</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></else></if_stmt>
+                </block_content>}</block></else></if_stmt>
+                <decl_stmt><decl><type><name>Cleanup</name></type> <name>cleanup</name> <init>= <expr><operator>new</operator> <call><name>Cleanup</name><argument_list>(<argument><expr><name>channelCopy</name></expr></argument>, <argument><expr><name>rebuffererFactory</name></expr></argument>, <argument><expr><name>compressionMetadata</name></expr></argument>, <argument><expr><name>chunkCache</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <return>return <expr><operator>new</operator> <call><name>FileHandle</name><argument_list>(<argument><expr><name>cleanup</name></expr></argument>, <argument><expr><name>channelCopy</name></expr></argument>, <argument><expr><name>rebuffererFactory</name></expr></argument>, <argument><expr><name>compressionMetadata</name></expr></argument>, <argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>channelCopy</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>channelOpened</name></expr>)</condition>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>ChannelProxy</name></type> <name>c</name> <init>= <expr><name>channel</name></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><name>channel</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                    <throw>throw <expr><call><name><name>Throwables</name><operator>.</operator><name>cleaned</name></name><argument_list>(<argument><expr><call><name><name>c</name><operator>.</operator><name>close</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+                </block_content>}</block></if></if_stmt>
+                <throw>throw <expr><name>t</name></expr>;</throw>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Throwable</name></type> <name>close</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><name>compressed</name> <operator>&amp;&amp;</operator> <name>regions</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name><name>regions</name><operator>.</operator><name>close</name></name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><name>channel</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><call><name><name>channel</name><operator>.</operator><name>close</name></name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+            <return>return <expr><name>accumulate</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>maybeFail</name><argument_list>(<argument><expr><call><name>close</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>RebuffererFactory</name></type> <name>maybeCached</name><parameter_list>(<parameter><decl><type><name>ChunkReader</name></type> <name>reader</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>chunkCache</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>chunkCache</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><call><name><name>chunkCache</name><operator>.</operator><name>maybeWrap</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+            <return>return <expr><name>reader</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>updateRegions</name><parameter_list>(<parameter><decl><type><name>ChannelProxy</name></type> <name>channel</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>length</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>regions</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>regions</name><operator>.</operator><name>isValid</name></name><argument_list>(<argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>Throwable</name></type> <name>err</name> <init>= <expr><call><name><name>regions</name><operator>.</operator><name>close</name></name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>err</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"Failed to close mapped regions"</literal></expr></argument>, <argument><expr><name>err</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                <expr_stmt><expr><name>regions</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>regions</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>regions</name> <operator>=</operator> <call><name><name>MmappedRegions</name><operator>.</operator><name>map</name></name><argument_list>(<argument><expr><name>channel</name></expr></argument>, <argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>regions</name><operator>.</operator><name>extend</name></name><argument_list>(<argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>getClass</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getSimpleName</name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="string">"(path='"</literal> <operator>+</operator> <call><name>path</name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="char">'\''</literal> <operator>+</operator>
+               <literal type="string">", length="</literal> <operator>+</operator> <call><name><name>rebuffererFactory</name><operator>.</operator><name>fileLength</name></name><argument_list>()</argument_list></call> <operator>+</operator>
+               <literal type="char">')'</literal></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

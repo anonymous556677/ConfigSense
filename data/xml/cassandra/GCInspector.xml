@@ -1,0 +1,384 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/service/GCInspector.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>management</name><operator>.</operator><name>GarbageCollectorMXBean</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>management</name><operator>.</operator><name>ManagementFactory</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>management</name><operator>.</operator><name>MemoryUsage</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>reflect</name><operator>.</operator><name>Field</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Arrays</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>HashMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicReference</name></name>;</import>
+
+<import>import <name><name>javax</name><operator>.</operator><name>management</name><operator>.</operator><name>InstanceAlreadyExistsException</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>management</name><operator>.</operator><name>MBeanRegistrationException</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>management</name><operator>.</operator><name>MBeanServer</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>management</name><operator>.</operator><name>MalformedObjectNameException</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>management</name><operator>.</operator><name>NotCompliantMBeanException</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>management</name><operator>.</operator><name>Notification</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>management</name><operator>.</operator><name>NotificationListener</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>management</name><operator>.</operator><name>ObjectName</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>management</name><operator>.</operator><name>openmbean</name><operator>.</operator><name>CompositeData</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>sun</name><operator>.</operator><name>management</name><operator>.</operator><name>GarbageCollectionNotificationInfo</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>sun</name><operator>.</operator><name>management</name><operator>.</operator><name>GcInfo</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>lifecycle</name><operator>.</operator><name>LifecycleTransaction</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>MBeanWrapper</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>StatusLogger</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>GCInspector</name> <super_list><implements>implements <super><name>NotificationListener</name></super>, <super><name>GCInspectorMXBean</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>MBEAN_NAME</name> <init>= <expr><literal type="string">"org.apache.cassandra.service:type=GCInspector"</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>GCInspector</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>long</name></type> <name>gcLogThreshholdInMs</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getGCLogThreshold</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>long</name></type> <name>gcWarnThreasholdInMs</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getGCWarnThreshold</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block">/*
+     * The field from java.nio.Bits that tracks the total number of allocated
+     * bytes of direct memory requires via ByteBuffer.allocateDirect that have not been GCed.
+     */</comment>
+    <decl_stmt><decl><type><specifier>final</specifier> <specifier>static</specifier> <name>Field</name></type> <name>BITS_TOTAL_CAPACITY</name></decl>;</decl_stmt>
+
+    
+    <static>static
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Field</name></type> <name>temp</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Class</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>bitsClass</name> <init>= <expr><call><name><name>Class</name><operator>.</operator><name>forName</name></name><argument_list>(<argument><expr><literal type="string">"java.nio.Bits"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Field</name></type> <name>f</name></decl>;</decl_stmt>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><name>f</name> <operator>=</operator> <call><name><name>bitsClass</name><operator>.</operator><name>getDeclaredField</name></name><argument_list>(<argument><expr><literal type="string">"totalCapacity"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>NoSuchFieldException</name></type> <name>ex</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <comment type="line">// in Java11 it changed name to "TOTAL_CAPACITY"</comment>
+                <expr_stmt><expr><name>f</name> <operator>=</operator> <call><name><name>bitsClass</name><operator>.</operator><name>getDeclaredField</name></name><argument_list>(<argument><expr><literal type="string">"TOTAL_CAPACITY"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch></try>
+            <expr_stmt><expr><call><name><name>f</name><operator>.</operator><name>setAccessible</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>temp</name> <operator>=</operator> <name>f</name></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Error accessing field of java.nio.Bits"</literal></expr></argument>, <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <comment type="line">//Don't care, will just return the dummy value -1 if we can't get at the field in this JVM</comment>
+        </block_content>}</block></catch></try>
+        <expr_stmt><expr><name>BITS_TOTAL_CAPACITY</name> <operator>=</operator> <name>temp</name></expr>;</expr_stmt>
+    </block_content>}</block></static>
+
+    <class><specifier>static</specifier> <specifier>final</specifier> class <name>State</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>final</specifier> <name>double</name></type> <name>maxRealTimeElapsed</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>double</name></type> <name>totalRealTimeElapsed</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>double</name></type> <name>sumSquaresRealTimeElapsed</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>double</name></type> <name>totalBytesReclaimed</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>double</name></type> <name>count</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>startNanos</name></decl>;</decl_stmt>
+
+        <constructor><name>State</name><parameter_list>(<parameter><decl><type><name>double</name></type> <name>extraElapsed</name></decl></parameter>, <parameter><decl><type><name>double</name></type> <name>extraBytes</name></decl></parameter>, <parameter><decl><type><name>State</name></type> <name>prev</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>totalRealTimeElapsed</name></name> <operator>=</operator> <name><name>prev</name><operator>.</operator><name>totalRealTimeElapsed</name></name> <operator>+</operator> <name>extraElapsed</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>totalBytesReclaimed</name></name> <operator>=</operator> <name><name>prev</name><operator>.</operator><name>totalBytesReclaimed</name></name> <operator>+</operator> <name>extraBytes</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>sumSquaresRealTimeElapsed</name></name> <operator>=</operator> <name><name>prev</name><operator>.</operator><name>sumSquaresRealTimeElapsed</name></name> <operator>+</operator> <operator>(</operator><name>extraElapsed</name> <operator>*</operator> <name>extraElapsed</name><operator>)</operator></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>startNanos</name></name> <operator>=</operator> <name><name>prev</name><operator>.</operator><name>startNanos</name></name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>count</name></name> <operator>=</operator> <name><name>prev</name><operator>.</operator><name>count</name></name> <operator>+</operator> <literal type="number">1</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>maxRealTimeElapsed</name></name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name><name>prev</name><operator>.</operator><name>maxRealTimeElapsed</name></name></expr></argument>, <argument><expr><name>extraElapsed</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><name>State</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name>count</name> <operator>=</operator> <name>maxRealTimeElapsed</name> <operator>=</operator> <name>sumSquaresRealTimeElapsed</name> <operator>=</operator> <name>totalRealTimeElapsed</name> <operator>=</operator> <name>totalBytesReclaimed</name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><name>startNanos</name> <operator>=</operator> <call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+    }</block></class>
+
+    <class><specifier>static</specifier> <specifier>final</specifier> class <name>GCState</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>final</specifier> <name>GarbageCollectorMXBean</name></type> <name>gcBean</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>boolean</name></type> <name>assumeGCIsPartiallyConcurrent</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>boolean</name></type> <name>assumeGCIsOldGen</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name><name>String</name><index>[]</index></name></type> <name>keys</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>lastGcTotalDuration</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+
+        <constructor><name>GCState</name><parameter_list>(<parameter><decl><type><name>GarbageCollectorMXBean</name></type> <name>gcBean</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>assumeGCIsPartiallyConcurrent</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>assumeGCIsOldGen</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>gcBean</name></name> <operator>=</operator> <name>gcBean</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>assumeGCIsPartiallyConcurrent</name></name> <operator>=</operator> <name>assumeGCIsPartiallyConcurrent</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>assumeGCIsOldGen</name></name> <operator>=</operator> <name>assumeGCIsOldGen</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><name><name>String</name><index>[]</index></name></type> <name>keys</name><parameter_list>(<parameter><decl><type><name>GarbageCollectionNotificationInfo</name></type> <name>info</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>keys</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name>keys</name></expr>;</return></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><name>keys</name> <operator>=</operator> <call><name><name>info</name><operator>.</operator><name>getGcInfo</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getMemoryUsageBeforeGc</name><argument_list>()</argument_list></call><operator>.</operator><call><name>keySet</name><argument_list>()</argument_list></call><operator>.</operator><call><name>toArray</name><argument_list>(<argument><expr><operator>new</operator> <name><name>String</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>Arrays</name><operator>.</operator><name>sort</name></name><argument_list>(<argument><expr><name>keys</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <return>return <expr><name>keys</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <decl_stmt><decl><type><specifier>final</specifier> <name><name>AtomicReference</name><argument_list type="generic">&lt;<argument><name>State</name></argument>&gt;</argument_list></name></type> <name>state</name> <init>= <expr><operator>new</operator> <call><name><name>AtomicReference</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><operator>new</operator> <call><name>State</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>final</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>GCState</name></argument>&gt;</argument_list></name></type> <name>gcStates</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>GCInspector</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>MBeanServer</name></type> <name>mbs</name> <init>= <expr><call><name><name>ManagementFactory</name><operator>.</operator><name>getPlatformMBeanServer</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <try>try
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ObjectName</name></type> <name>gcName</name> <init>= <expr><operator>new</operator> <call><name>ObjectName</name><argument_list>(<argument><expr><name><name>ManagementFactory</name><operator>.</operator><name>GARBAGE_COLLECTOR_MXBEAN_DOMAIN_TYPE</name></name> <operator>+</operator> <literal type="string">",*"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>ObjectName</name></type> <name>name</name> <range>: <expr><call><name><name>mbs</name><operator>.</operator><name>queryNames</name></name><argument_list>(<argument><expr><name>gcName</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>GarbageCollectorMXBean</name></type> <name>gc</name> <init>= <expr><call><name><name>ManagementFactory</name><operator>.</operator><name>newPlatformMXBeanProxy</name></name><argument_list>(<argument><expr><name>mbs</name></expr></argument>, <argument><expr><call><name><name>name</name><operator>.</operator><name>getCanonicalName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>GarbageCollectorMXBean</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>gcStates</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>gc</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><operator>new</operator> <call><name>GCState</name><argument_list>(<argument><expr><name>gc</name></expr></argument>, <argument><expr><call><name>assumeGCIsPartiallyConcurrent</name><argument_list>(<argument><expr><name>gc</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name>assumeGCIsOldGen</name><argument_list>(<argument><expr><name>gc</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <decl_stmt><decl><type><name>ObjectName</name></type> <name>me</name> <init>= <expr><operator>new</operator> <call><name>ObjectName</name><argument_list>(<argument><expr><name>MBEAN_NAME</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>mbs</name><operator>.</operator><name>isRegistered</name></name><argument_list>(<argument><expr><name>me</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>MBeanWrapper</name><operator>.</operator><name>instance</name><operator>.</operator><name>registerMBean</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>ObjectName</name><argument_list>(<argument><expr><name>MBEAN_NAME</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>MalformedObjectNameException</name></type> | <type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>register</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>Exception</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>GCInspector</name></type> <name>inspector</name> <init>= <expr><operator>new</operator> <call><name>GCInspector</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>MBeanServer</name></type> <name>server</name> <init>= <expr><call><name><name>ManagementFactory</name><operator>.</operator><name>getPlatformMBeanServer</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ObjectName</name></type> <name>gcName</name> <init>= <expr><operator>new</operator> <call><name>ObjectName</name><argument_list>(<argument><expr><name><name>ManagementFactory</name><operator>.</operator><name>GARBAGE_COLLECTOR_MXBEAN_DOMAIN_TYPE</name></name> <operator>+</operator> <literal type="string">",*"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>ObjectName</name></type> <name>name</name> <range>: <expr><call><name><name>server</name><operator>.</operator><name>queryNames</name></name><argument_list>(<argument><expr><name>gcName</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>server</name><operator>.</operator><name>addNotificationListener</name></name><argument_list>(<argument><expr><name>name</name></expr></argument>, <argument><expr><name>inspector</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <comment type="block">/*
+     * Assume that a GC type is at least partially concurrent and so a side channel method
+     * should be used to calculate application stopped time due to the GC.
+     *
+     * If the GC isn't recognized then assume that is concurrent and we need to do our own calculation
+     * via the the side channel.
+     */</comment>
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>assumeGCIsPartiallyConcurrent</name><parameter_list>(<parameter><decl><type><name>GarbageCollectorMXBean</name></type> <name>gc</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <switch>switch <condition>(<expr><call><name><name>gc</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+                <comment type="line">//First two are from the serial collector</comment>
+            <case>case <expr><literal type="string">"Copy"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"MarkSweepCompact"</literal></expr>:</case>
+                <comment type="line">//Parallel collector</comment>
+            <case>case <expr><literal type="string">"PS MarkSweep"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"PS Scavenge"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"G1 Young Generation"</literal></expr>:</case>
+                <comment type="line">//CMS young generation collector</comment>
+            <case>case <expr><literal type="string">"ParNew"</literal></expr>:</case>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            <case>case <expr><literal type="string">"ConcurrentMarkSweep"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"G1 Old Generation"</literal></expr>:</case>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+            <default>default:</default>
+                <comment type="line">//Assume possibly concurrent if unsure</comment>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <comment type="block">/*
+     * Assume that a GC type is an old generation collection so TransactionLogs.rescheduleFailedTasks()
+     * should be invoked.
+     *
+     * Defaults to not invoking TransactionLogs.rescheduleFailedTasks() on unrecognized GC names
+     */</comment>
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>assumeGCIsOldGen</name><parameter_list>(<parameter><decl><type><name>GarbageCollectorMXBean</name></type> <name>gc</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <switch>switch <condition>(<expr><call><name><name>gc</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><literal type="string">"Copy"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"PS Scavenge"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"G1 Young Generation"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"ParNew"</literal></expr>:</case>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            <case>case <expr><literal type="string">"MarkSweepCompact"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"PS MarkSweep"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"ConcurrentMarkSweep"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"G1 Old Generation"</literal></expr>:</case>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+            <default>default:</default>
+                <comment type="line">//Assume not old gen otherwise, don't call</comment>
+                <comment type="line">//TransactionLogs.rescheduleFailedTasks()</comment>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>handleNotification</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>Notification</name></type> <name>notification</name></decl></parameter>, <parameter><decl><type><specifier>final</specifier> <name>Object</name></type> <name>handback</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>type</name> <init>= <expr><call><name><name>notification</name><operator>.</operator><name>getType</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>type</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>GarbageCollectionNotificationInfo</name><operator>.</operator><name>GARBAGE_COLLECTION_NOTIFICATION</name></name></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// retrieve the garbage collection notification information</comment>
+            <decl_stmt><decl><type><name>CompositeData</name></type> <name>cd</name> <init>= <expr><operator>(</operator><name>CompositeData</name><operator>)</operator> <call><name><name>notification</name><operator>.</operator><name>getUserData</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>GarbageCollectionNotificationInfo</name></type> <name>info</name> <init>= <expr><call><name><name>GarbageCollectionNotificationInfo</name><operator>.</operator><name>from</name></name><argument_list>(<argument><expr><name>cd</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>String</name></type> <name>gcName</name> <init>= <expr><call><name><name>info</name><operator>.</operator><name>getGcName</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>GcInfo</name></type> <name>gcInfo</name> <init>= <expr><call><name><name>info</name><operator>.</operator><name>getGcInfo</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>long</name></type> <name>duration</name> <init>= <expr><call><name><name>gcInfo</name><operator>.</operator><name>getDuration</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <comment type="block">/*
+             * The duration supplied in the notification info includes more than just
+             * application stopped time for concurrent GCs. Try and do a better job coming up with a good stopped time
+             * value by asking for and tracking cumulative time spent blocked in GC.
+             */</comment>
+            <decl_stmt><decl><type><name>GCState</name></type> <name>gcState</name> <init>= <expr><call><name><name>gcStates</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>gcName</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name><name>gcState</name><operator>.</operator><name>assumeGCIsPartiallyConcurrent</name></name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>long</name></type> <name>previousTotal</name> <init>= <expr><name><name>gcState</name><operator>.</operator><name>lastGcTotalDuration</name></name></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>long</name></type> <name>total</name> <init>= <expr><call><name><name>gcState</name><operator>.</operator><name>gcBean</name><operator>.</operator><name>getCollectionTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><name><name>gcState</name><operator>.</operator><name>lastGcTotalDuration</name></name> <operator>=</operator> <name>total</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name>duration</name> <operator>=</operator> <name>total</name> <operator>-</operator> <name>previousTotal</name></expr>;</expr_stmt> <comment type="line">// may be zero for a really fast collection</comment>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>StringBuilder</name></type> <name>sb</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><call><name><name>info</name><operator>.</operator><name>getGcName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">" GC in "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>duration</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">"ms.  "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>bytes</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>MemoryUsage</name></argument>&gt;</argument_list></name></type> <name>beforeMemoryUsage</name> <init>= <expr><call><name><name>gcInfo</name><operator>.</operator><name>getMemoryUsageBeforeGc</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>MemoryUsage</name></argument>&gt;</argument_list></name></type> <name>afterMemoryUsage</name> <init>= <expr><call><name><name>gcInfo</name><operator>.</operator><name>getMemoryUsageAfterGc</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>String</name></type> <name>key</name> <range>: <expr><call><name><name>gcState</name><operator>.</operator><name>keys</name></name><argument_list>(<argument><expr><name>info</name></expr></argument>)</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>MemoryUsage</name></type> <name>before</name> <init>= <expr><call><name><name>beforeMemoryUsage</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>MemoryUsage</name></type> <name>after</name> <init>= <expr><call><name><name>afterMemoryUsage</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>after</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>after</name><operator>.</operator><name>getUsed</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <call><name><name>before</name><operator>.</operator><name>getUsed</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">": "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><call><name><name>before</name><operator>.</operator><name>getUsed</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" -&gt; "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><call><name><name>after</name><operator>.</operator><name>getUsed</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>key</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>gcState</name><operator>.</operator><name>keys</name><index>[<expr><name><name>gcState</name><operator>.</operator><name>keys</name><operator>.</operator><name>length</name></name> <operator>-</operator> <literal type="number">1</literal></expr>]</index></name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"; "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                    <expr_stmt><expr><name>bytes</name> <operator>+=</operator> <call><name><name>before</name><operator>.</operator><name>getUsed</name></name><argument_list>()</argument_list></call> <operator>-</operator> <call><name><name>after</name><operator>.</operator><name>getUsed</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></for>
+
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>State</name></type> <name>prev</name> <init>= <expr><call><name><name>state</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>state</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>prev</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>State</name><argument_list>(<argument><expr><name>duration</name></expr></argument>, <argument><expr><name>bytes</name></expr></argument>, <argument><expr><name>prev</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <break>break;</break></block_content></block></if></if_stmt>
+            </block_content>}</block></while>
+            
+            <if_stmt><if>if <condition>(<expr><name>gcWarnThreasholdInMs</name> <operator>!=</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>duration</name> <operator>&gt;</operator> <name>gcWarnThreasholdInMs</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><call><name><name>sb</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <if type="elseif">else if <condition>(<expr><name>duration</name> <operator>&gt;</operator> <name>gcLogThreshholdInMs</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><call><name><name>sb</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <if type="elseif">else if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><call><name><name>sb</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>duration</name> <operator>&gt;</operator> <call><name><name>this</name><operator>.</operator><name>getStatusThresholdInMs</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>StatusLogger</name><operator>.</operator><name>log</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <comment type="line">// if we just finished an old gen collection and we're still using a lot of memory, try to reduce the pressure</comment>
+            <if_stmt><if>if <condition>(<expr><name><name>gcState</name><operator>.</operator><name>assumeGCIsOldGen</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>LifecycleTransaction</name><operator>.</operator><name>rescheduleFailedDeletions</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>State</name></type> <name>getTotalSinceLastCheck</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>state</name><operator>.</operator><name>getAndSet</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>State</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>double</name><index>[]</index></name></type> <name>getAndResetStats</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>State</name></type> <name>state</name> <init>= <expr><call><name>getTotalSinceLastCheck</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>double</name><index>[]</index></name></type> <name>r</name> <init>= <expr><operator>new</operator> <name><name>double</name><index>[<expr><literal type="number">7</literal></expr>]</index></name></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name><name>r</name><index>[<expr><literal type="number">0</literal></expr>]</index></name> <operator>=</operator> <call><name><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name><operator>.</operator><name>toMillis</name></name><argument_list>(<argument><expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name><name>state</name><operator>.</operator><name>startNanos</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>r</name><index>[<expr><literal type="number">1</literal></expr>]</index></name> <operator>=</operator> <name><name>state</name><operator>.</operator><name>maxRealTimeElapsed</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>r</name><index>[<expr><literal type="number">2</literal></expr>]</index></name> <operator>=</operator> <name><name>state</name><operator>.</operator><name>totalRealTimeElapsed</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>r</name><index>[<expr><literal type="number">3</literal></expr>]</index></name> <operator>=</operator> <name><name>state</name><operator>.</operator><name>sumSquaresRealTimeElapsed</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>r</name><index>[<expr><literal type="number">4</literal></expr>]</index></name> <operator>=</operator> <name><name>state</name><operator>.</operator><name>totalBytesReclaimed</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>r</name><index>[<expr><literal type="number">5</literal></expr>]</index></name> <operator>=</operator> <name><name>state</name><operator>.</operator><name>count</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>r</name><index>[<expr><literal type="number">6</literal></expr>]</index></name> <operator>=</operator> <call><name>getAllocatedDirectMemory</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <return>return <expr><name>r</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>long</name></type> <name>getAllocatedDirectMemory</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>BITS_TOTAL_CAPACITY</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content> <return>return <expr><operator>-</operator><literal type="number">1</literal></expr>;</return></block_content></block></if></if_stmt>
+        <try>try
+        <block>{<block_content>
+            <return>return <expr><call><name><name>BITS_TOTAL_CAPACITY</name><operator>.</operator><name>getLong</name></name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Error accessing field of java.nio.Bits"</literal></expr></argument>, <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <comment type="line">//Don't care how or why we failed to get the value in this JVM. Return -1 to indicate failure</comment>
+            <return>return <expr><operator>-</operator><literal type="number">1</literal></expr>;</return>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setGcWarnThresholdInMs</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>threshold</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>threshold</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Threshold must be greater than or equal to 0"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>threshold</name> <operator>!=</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>threshold</name> <operator>&lt;=</operator> <name>gcLogThreshholdInMs</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Threshold must be greater than gcLogTreasholdInMs which is currently "</literal> 
+                    <operator>+</operator> <name>gcLogThreshholdInMs</name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <expr_stmt><expr><name>gcWarnThreasholdInMs</name> <operator>=</operator> <name>threshold</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getGcWarnThresholdInMs</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>gcWarnThreasholdInMs</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setGcLogThresholdInMs</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>threshold</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>threshold</name> <operator>&lt;=</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Threashold must be greater than 0"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>gcWarnThreasholdInMs</name> <operator>!=</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>threshold</name> <operator>&gt;</operator> <name>gcWarnThreasholdInMs</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Threashold must be less than gcWarnTreasholdInMs which is currently "</literal> 
+                    <operator>+</operator> <name>gcWarnThreasholdInMs</name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <expr_stmt><expr><name>gcLogThreshholdInMs</name> <operator>=</operator> <name>threshold</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getGcLogThresholdInMs</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>gcLogThreshholdInMs</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getStatusThresholdInMs</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>gcWarnThreasholdInMs</name> <operator>!=</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><name>gcWarnThreasholdInMs</name></expr> </then><else>: <expr><name>gcLogThreshholdInMs</name></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

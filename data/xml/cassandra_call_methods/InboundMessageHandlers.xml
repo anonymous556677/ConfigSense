@@ -1,0 +1,457 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/net/InboundMessageHandlers.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Collection</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>CopyOnWriteArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicLongFieldUpdater</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Consumer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>ToLongFunction</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>Channel</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>InternodeInboundMetrics</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>Message</name><operator>.</operator><name>Header</name></name>;</import>
+
+<import>import static <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>MonotonicClock</name><operator>.</operator><name>approxTime</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * An aggregation of {@link InboundMessageHandler}s for all connections from a peer.
+ *
+ * Manages metrics and shared resource limits. Can have multiple connections of a single
+ * type open simultaneousely (legacy in particular).
+ */</comment>
+<class><specifier>public</specifier> <specifier>final</specifier> class <name>InboundMessageHandlers</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>self</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>peer</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>queueCapacity</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ResourceLimits</name><operator>.</operator><name>Limit</name></name></type> <name>endpointReserveCapacity</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ResourceLimits</name><operator>.</operator><name>Limit</name></name></type> <name>globalReserveCapacity</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>InboundMessageHandler</name><operator>.</operator><name>WaitQueue</name></name></type> <name>endpointWaitQueue</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>InboundMessageHandler</name><operator>.</operator><name>WaitQueue</name></name></type> <name>globalWaitQueue</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>InboundCounters</name></type> <name>urgentCounters</name> <init>= <expr><operator>new</operator> <call><name>InboundCounters</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>InboundCounters</name></type> <name>smallCounters</name>  <init>= <expr><operator>new</operator> <call><name>InboundCounters</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>InboundCounters</name></type> <name>largeCounters</name>  <init>= <expr><operator>new</operator> <call><name>InboundCounters</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>InboundCounters</name></type> <name>legacyCounters</name> <init>= <expr><operator>new</operator> <call><name>InboundCounters</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>InboundMessageCallbacks</name></type> <name>urgentCallbacks</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>InboundMessageCallbacks</name></type> <name>smallCallbacks</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>InboundMessageCallbacks</name></type> <name>largeCallbacks</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>InboundMessageCallbacks</name></type> <name>legacyCallbacks</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>InternodeInboundMetrics</name></type> <name>metrics</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>MessageConsumer</name></type> <name>messageConsumer</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>HandlerProvider</name></type> <name>handlerProvider</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>InboundMessageHandler</name></argument>&gt;</argument_list></name></type> <name>handlers</name> <init>= <expr><operator>new</operator> <call><name><name>CopyOnWriteArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <class><specifier>static</specifier> class <name>GlobalResourceLimits</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>ResourceLimits</name><operator>.</operator><name>Limit</name></name></type> <name>reserveCapacity</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>InboundMessageHandler</name><operator>.</operator><name>WaitQueue</name></name></type> <name>waitQueue</name></decl>;</decl_stmt>
+
+        <constructor><name>GlobalResourceLimits</name><parameter_list>(<parameter><decl><type><name><name>ResourceLimits</name><operator>.</operator><name>Limit</name></name></type> <name>reserveCapacity</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>reserveCapacity</name></name> <operator>=</operator> <name>reserveCapacity</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>waitQueue</name></name> <operator>=</operator> <call><name><name>InboundMessageHandler</name><operator>.</operator><name>WaitQueue</name><operator>.</operator><name>global</name></name><argument_list>(<argument><expr><name>reserveCapacity</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+    }</block></class>
+
+    <interface><specifier>public</specifier> interface <name>MessageConsumer</name> <super_list><extends>extends <super><name><name>Consumer</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></super></extends></super_list>
+    <block>{
+        <function_decl><type><name>void</name></type> <name>fail</name><parameter_list>(<parameter><decl><type><name><name>Message</name><operator>.</operator><name>Header</name></name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>Throwable</name></type> <name>failure</name></decl></parameter>)</parameter_list>;</function_decl>
+    }</block></interface>
+
+    <interface><specifier>public</specifier> interface <name>GlobalMetricCallbacks</name>
+    <block>{
+        <function_decl><type><name>LatencyConsumer</name></type> <name>internodeLatencyRecorder</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>to</name></decl></parameter>)</parameter_list>;</function_decl>
+        <function_decl><type><name>void</name></type> <name>recordInternalLatency</name><parameter_list>(<parameter><decl><type><name>Verb</name></type> <name>verb</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timeElapsed</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>timeUnit</name></decl></parameter>)</parameter_list>;</function_decl>
+        <function_decl><type><name>void</name></type> <name>recordInternodeDroppedMessage</name><parameter_list>(<parameter><decl><type><name>Verb</name></type> <name>verb</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timeElapsed</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>timeUnit</name></decl></parameter>)</parameter_list>;</function_decl>
+    }</block></interface>
+
+    <constructor><specifier>public</specifier> <name>InboundMessageHandlers</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>self</name></decl></parameter>,
+                                  <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>,
+                                  <parameter><decl><type><name>int</name></type> <name>queueCapacity</name></decl></parameter>,
+                                  <parameter><decl><type><name>long</name></type> <name>endpointReserveCapacity</name></decl></parameter>,
+                                  <parameter><decl><type><name>GlobalResourceLimits</name></type> <name>globalResourceLimits</name></decl></parameter>,
+                                  <parameter><decl><type><name>GlobalMetricCallbacks</name></type> <name>globalMetricCallbacks</name></decl></parameter>,
+                                  <parameter><decl><type><name>MessageConsumer</name></type> <name>messageConsumer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>self</name></expr></argument>, <argument><expr><name>peer</name></expr></argument>, <argument><expr><name>queueCapacity</name></expr></argument>, <argument><expr><name>endpointReserveCapacity</name></expr></argument>, <argument><expr><name>globalResourceLimits</name></expr></argument>, <argument><expr><name>globalMetricCallbacks</name></expr></argument>, <argument><expr><name>messageConsumer</name></expr></argument>, <argument><expr><name>InboundMessageHandler</name><operator>::</operator><operator>new</operator></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>public</specifier> <name>InboundMessageHandlers</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>self</name></decl></parameter>,
+                                  <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>,
+                                  <parameter><decl><type><name>int</name></type> <name>queueCapacity</name></decl></parameter>,
+                                  <parameter><decl><type><name>long</name></type> <name>endpointReserveCapacity</name></decl></parameter>,
+                                  <parameter><decl><type><name>GlobalResourceLimits</name></type> <name>globalResourceLimits</name></decl></parameter>,
+                                  <parameter><decl><type><name>GlobalMetricCallbacks</name></type> <name>globalMetricCallbacks</name></decl></parameter>,
+                                  <parameter><decl><type><name>MessageConsumer</name></type> <name>messageConsumer</name></decl></parameter>,
+                                  <parameter><decl><type><name>HandlerProvider</name></type> <name>handlerProvider</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>self</name></name> <operator>=</operator> <name>self</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>peer</name></name> <operator>=</operator> <name>peer</name></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>queueCapacity</name></name> <operator>=</operator> <name>queueCapacity</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>endpointReserveCapacity</name></name> <operator>=</operator> <operator>new</operator> <call><name><name>ResourceLimits</name><operator>.</operator><name>Concurrent</name></name><argument_list>(<argument><expr><name>endpointReserveCapacity</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>globalReserveCapacity</name></name> <operator>=</operator> <name><name>globalResourceLimits</name><operator>.</operator><name>reserveCapacity</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>endpointWaitQueue</name></name> <operator>=</operator> <call><name><name>InboundMessageHandler</name><operator>.</operator><name>WaitQueue</name><operator>.</operator><name>endpoint</name></name><argument_list>(<argument><expr><name><name>this</name><operator>.</operator><name>endpointReserveCapacity</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>globalWaitQueue</name></name> <operator>=</operator> <name><name>globalResourceLimits</name><operator>.</operator><name>waitQueue</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>messageConsumer</name></name> <operator>=</operator> <name>messageConsumer</name></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>handlerProvider</name></name> <operator>=</operator> <name>handlerProvider</name></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name>urgentCallbacks</name> <operator>=</operator> <call><name>makeMessageCallbacks</name><argument_list>(<argument><expr><name>peer</name></expr></argument>, <argument><expr><name>urgentCounters</name></expr></argument>, <argument><expr><name>globalMetricCallbacks</name></expr></argument>, <argument><expr><name>messageConsumer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>smallCallbacks</name>  <operator>=</operator> <call><name>makeMessageCallbacks</name><argument_list>(<argument><expr><name>peer</name></expr></argument>, <argument><expr><name>smallCounters</name></expr></argument>,  <argument><expr><name>globalMetricCallbacks</name></expr></argument>, <argument><expr><name>messageConsumer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>largeCallbacks</name>  <operator>=</operator> <call><name>makeMessageCallbacks</name><argument_list>(<argument><expr><name>peer</name></expr></argument>, <argument><expr><name>largeCounters</name></expr></argument>,  <argument><expr><name>globalMetricCallbacks</name></expr></argument>, <argument><expr><name>messageConsumer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>legacyCallbacks</name> <operator>=</operator> <call><name>makeMessageCallbacks</name><argument_list>(<argument><expr><name>peer</name></expr></argument>, <argument><expr><name>legacyCounters</name></expr></argument>, <argument><expr><name>globalMetricCallbacks</name></expr></argument>, <argument><expr><name>messageConsumer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name>metrics</name> <operator>=</operator> <operator>new</operator> <call><name>InternodeInboundMetrics</name><argument_list>(<argument><expr><name>peer</name></expr></argument>, <argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><name>InboundMessageHandler</name></type> <name>createHandler</name><parameter_list>(<parameter><decl><type><name>FrameDecoder</name></type> <name>frameDecoder</name></decl></parameter>, <parameter><decl><type><name>ConnectionType</name></type> <name>type</name></decl></parameter>, <parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>InboundMessageHandler</name></type> <name>handler</name> <init>=
+            <expr><call><name><name>handlerProvider</name><operator>.</operator><name>provide</name></name><argument_list>(<argument><expr><name>frameDecoder</name></expr></argument>,
+
+                                    <argument><expr><name>type</name></expr></argument>,
+                                    <argument><expr><name>channel</name></expr></argument>,
+                                    <argument><expr><name>self</name></expr></argument>,
+                                    <argument><expr><name>peer</name></expr></argument>,
+                                    <argument><expr><name>version</name></expr></argument>,
+                                    <argument><expr><name><name>OutboundConnections</name><operator>.</operator><name>LARGE_MESSAGE_THRESHOLD</name></name></expr></argument>,
+
+                                    <argument><expr><name>queueCapacity</name></expr></argument>,
+                                    <argument><expr><name>endpointReserveCapacity</name></expr></argument>,
+                                    <argument><expr><name>globalReserveCapacity</name></expr></argument>,
+                                    <argument><expr><name>endpointWaitQueue</name></expr></argument>,
+                                    <argument><expr><name>globalWaitQueue</name></expr></argument>,
+
+                                    <argument><expr><name>this</name><operator>::</operator><name>onHandlerClosed</name></expr></argument>,
+                                    <argument><expr><call><name>callbacksFor</name><argument_list>(<argument><expr><name>type</name></expr></argument>)</argument_list></call></expr></argument>,
+                                    <argument><expr><name>messageConsumer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>handlers</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>handler</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>handler</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>releaseMetrics</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>onHandlerClosed</name><parameter_list>(<parameter><decl><type><name>AbstractMessageHandler</name></type> <name>handler</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><name>handler</name> <operator>instanceof</operator> <name>InboundMessageHandler</name></expr>;</assert>
+        <expr_stmt><expr><call><name><name>handlers</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>handler</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>absorbCounters</name><argument_list>(<argument><expr><operator>(</operator><name>InboundMessageHandler</name><operator>)</operator><name>handler</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>count</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>handlers</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block">/*
+     * Message callbacks
+     */</comment>
+
+    <function><type><specifier>private</specifier> <name>InboundMessageCallbacks</name></type> <name>callbacksFor</name><parameter_list>(<parameter><decl><type><name>ConnectionType</name></type> <name>type</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <switch>switch <condition>(<expr><name>type</name></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><name>URGENT_MESSAGES</name></expr>:</case> <return>return <expr><name>urgentCallbacks</name></expr>;</return>
+            <case>case  <expr><name>SMALL_MESSAGES</name></expr>:</case> <return>return <expr><name>smallCallbacks</name></expr>;</return>
+            <case>case  <expr><name>LARGE_MESSAGES</name></expr>:</case> <return>return <expr><name>largeCallbacks</name></expr>;</return>
+            <case>case <expr><name>LEGACY_MESSAGES</name></expr>:</case> <return>return <expr><name>legacyCallbacks</name></expr>;</return>
+        </block_content>}</block></switch>
+
+        <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>()</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>InboundMessageCallbacks</name></type> <name>makeMessageCallbacks</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>, <parameter><decl><type><name>InboundCounters</name></type> <name>counters</name></decl></parameter>, <parameter><decl><type><name>GlobalMetricCallbacks</name></type> <name>globalMetrics</name></decl></parameter>, <parameter><decl><type><name>MessageConsumer</name></type> <name>messageConsumer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>LatencyConsumer</name></type> <name>internodeLatency</name> <init>= <expr><call><name><name>globalMetrics</name><operator>.</operator><name>internodeLatencyRecorder</name></name><argument_list>(<argument><expr><name>peer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <return>return <expr><operator>new</operator> <class><super><name>InboundMessageCallbacks</name></super><argument_list>()</argument_list>
+        <block>{
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onHeaderArrived</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>messageSize</name></decl></parameter>, <parameter><decl><type><name>Header</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timeElapsed</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>unit</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <comment type="line">// do not log latency if we are within error bars of zero</comment>
+                <if_stmt><if>if <condition>(<expr><name>timeElapsed</name> <operator>&gt;</operator> <call><name><name>unit</name><operator>.</operator><name>convert</name></name><argument_list>(<argument><expr><call><name><name>approxTime</name><operator>.</operator><name>error</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>NANOSECONDS</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>internodeLatency</name><operator>.</operator><name>accept</name></name><argument_list>(<argument><expr><name>timeElapsed</name></expr></argument>, <argument><expr><name>unit</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onArrived</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>messageSize</name></decl></parameter>, <parameter><decl><type><name>Header</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timeElapsed</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>unit</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onArrivedExpired</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>messageSize</name></decl></parameter>, <parameter><decl><type><name>Header</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>wasCorrupt</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timeElapsed</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>unit</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>counters</name><operator>.</operator><name>addExpired</name></name><argument_list>(<argument><expr><name>messageSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <expr_stmt><expr><call><name><name>globalMetrics</name><operator>.</operator><name>recordInternodeDroppedMessage</name></name><argument_list>(<argument><expr><name><name>header</name><operator>.</operator><name>verb</name></name></expr></argument>, <argument><expr><name>timeElapsed</name></expr></argument>, <argument><expr><name>unit</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onArrivedCorrupt</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>messageSize</name></decl></parameter>, <parameter><decl><type><name>Header</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timeElapsed</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>unit</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>counters</name><operator>.</operator><name>addError</name></name><argument_list>(<argument><expr><name>messageSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <expr_stmt><expr><call><name><name>messageConsumer</name><operator>.</operator><name>fail</name></name><argument_list>(<argument><expr><name>header</name></expr></argument>, <argument><expr><operator>new</operator> <call><name><name>Crc</name><operator>.</operator><name>InvalidCrc</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt> <comment type="line">// could use one of the original exceptions?</comment>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onClosedBeforeArrival</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>messageSize</name></decl></parameter>, <parameter><decl><type><name>Header</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>bytesReceived</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>wasCorrupt</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>wasExpired</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>counters</name><operator>.</operator><name>addError</name></name><argument_list>(<argument><expr><name>messageSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <expr_stmt><expr><call><name><name>messageConsumer</name><operator>.</operator><name>fail</name></name><argument_list>(<argument><expr><name>header</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>InvalidSerializedSizeException</name><argument_list>(<argument><expr><name><name>header</name><operator>.</operator><name>verb</name></name></expr></argument>, <argument><expr><name>messageSize</name></expr></argument>, <argument><expr><name>bytesReceived</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onExpired</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>messageSize</name></decl></parameter>, <parameter><decl><type><name>Header</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timeElapsed</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>unit</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>counters</name><operator>.</operator><name>addExpired</name></name><argument_list>(<argument><expr><name>messageSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <expr_stmt><expr><call><name><name>globalMetrics</name><operator>.</operator><name>recordInternodeDroppedMessage</name></name><argument_list>(<argument><expr><name><name>header</name><operator>.</operator><name>verb</name></name></expr></argument>, <argument><expr><name>timeElapsed</name></expr></argument>, <argument><expr><name>unit</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onFailedDeserialize</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>messageSize</name></decl></parameter>, <parameter><decl><type><name>Header</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>counters</name><operator>.</operator><name>addError</name></name><argument_list>(<argument><expr><name>messageSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <comment type="block">/*
+                 * If an exception is caught during deser, return a failure response immediately
+                 * instead of waiting for the callback on the other end to expire.
+                 */</comment>
+                <expr_stmt><expr><call><name><name>messageConsumer</name><operator>.</operator><name>fail</name></name><argument_list>(<argument><expr><name>header</name></expr></argument>, <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onDispatched</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>messageSize</name></decl></parameter>, <parameter><decl><type><name>Header</name></type> <name>header</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>counters</name><operator>.</operator><name>addPending</name></name><argument_list>(<argument><expr><name>messageSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onExecuting</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>messageSize</name></decl></parameter>, <parameter><decl><type><name>Header</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timeElapsed</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>unit</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>globalMetrics</name><operator>.</operator><name>recordInternalLatency</name></name><argument_list>(<argument><expr><name><name>header</name><operator>.</operator><name>verb</name></name></expr></argument>, <argument><expr><name>timeElapsed</name></expr></argument>, <argument><expr><name>unit</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onExecuted</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>messageSize</name></decl></parameter>, <parameter><decl><type><name>Header</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timeElapsed</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>unit</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>counters</name><operator>.</operator><name>removePending</name></name><argument_list>(<argument><expr><name>messageSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onProcessed</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>messageSize</name></decl></parameter>, <parameter><decl><type><name>Header</name></type> <name>header</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>counters</name><operator>.</operator><name>addProcessed</name></name><argument_list>(<argument><expr><name>messageSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+        }</block></class></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block">/*
+     * Aggregated counters
+     */</comment>
+
+    <function><type><name>InboundCounters</name></type> <name>countersFor</name><parameter_list>(<parameter><decl><type><name>ConnectionType</name></type> <name>type</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <switch>switch <condition>(<expr><name>type</name></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><name>URGENT_MESSAGES</name></expr>:</case> <return>return <expr><name>urgentCounters</name></expr>;</return>
+            <case>case  <expr><name>SMALL_MESSAGES</name></expr>:</case> <return>return <expr><name>smallCounters</name></expr>;</return>
+            <case>case  <expr><name>LARGE_MESSAGES</name></expr>:</case> <return>return <expr><name>largeCounters</name></expr>;</return>
+            <case>case <expr><name>LEGACY_MESSAGES</name></expr>:</case> <return>return <expr><name>legacyCounters</name></expr>;</return>
+        </block_content>}</block></switch>
+
+        <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>()</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>receivedCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumHandlers</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>h</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name><name>h</name><operator>.</operator><name>receivedCount</name></name></expr></block_content></block></lambda></expr></argument>)</argument_list></call> <operator>+</operator> <name>closedReceivedCount</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>receivedBytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumHandlers</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>h</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name><name>h</name><operator>.</operator><name>receivedBytes</name></name></expr></block_content></block></lambda></expr></argument>)</argument_list></call> <operator>+</operator> <name>closedReceivedBytes</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>throttledCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumHandlers</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>h</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name><name>h</name><operator>.</operator><name>throttledCount</name></name></expr></block_content></block></lambda></expr></argument>)</argument_list></call> <operator>+</operator> <name>closedThrottledCount</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>throttledNanos</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumHandlers</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>h</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name><name>h</name><operator>.</operator><name>throttledNanos</name></name></expr></block_content></block></lambda></expr></argument>)</argument_list></call> <operator>+</operator> <name>closedThrottledNanos</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>usingCapacity</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumHandlers</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>h</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name><name>h</name><operator>.</operator><name>queueSize</name></name></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>usingEndpointReserveCapacity</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>endpointReserveCapacity</name><operator>.</operator><name>using</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>corruptFramesRecovered</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumHandlers</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>h</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name><name>h</name><operator>.</operator><name>corruptFramesRecovered</name></name></expr></block_content></block></lambda></expr></argument>)</argument_list></call> <operator>+</operator> <name>closedCorruptFramesRecovered</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>corruptFramesUnrecovered</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumHandlers</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>h</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name><name>h</name><operator>.</operator><name>corruptFramesUnrecovered</name></name></expr></block_content></block></lambda></expr></argument>)</argument_list></call> <operator>+</operator> <name>closedCorruptFramesUnrecovered</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>errorCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumCounters</name><argument_list>(<argument><expr><name>InboundCounters</name><operator>::</operator><name>errorCount</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>errorBytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumCounters</name><argument_list>(<argument><expr><name>InboundCounters</name><operator>::</operator><name>errorBytes</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>expiredCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumCounters</name><argument_list>(<argument><expr><name>InboundCounters</name><operator>::</operator><name>expiredCount</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>expiredBytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumCounters</name><argument_list>(<argument><expr><name>InboundCounters</name><operator>::</operator><name>expiredBytes</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>processedCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumCounters</name><argument_list>(<argument><expr><name>InboundCounters</name><operator>::</operator><name>processedCount</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>processedBytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumCounters</name><argument_list>(<argument><expr><name>InboundCounters</name><operator>::</operator><name>processedBytes</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>scheduledCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumCounters</name><argument_list>(<argument><expr><name>InboundCounters</name><operator>::</operator><name>scheduledCount</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>scheduledBytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>sumCounters</name><argument_list>(<argument><expr><name>InboundCounters</name><operator>::</operator><name>scheduledBytes</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block">/*
+     * 'Archived' counter values, combined for all connections that have been closed.
+     */</comment>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>long</name></type> <name>closedReceivedCount</name></decl>, <decl><type ref="prev"/><name>closedReceivedBytes</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicLongFieldUpdater</name><argument_list type="generic">&lt;<argument><name>InboundMessageHandlers</name></argument>&gt;</argument_list></name></type> <name>closedReceivedCountUpdater</name> <init>=
+        <expr><call><name><name>AtomicLongFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>InboundMessageHandlers</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"closedReceivedCount"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicLongFieldUpdater</name><argument_list type="generic">&lt;<argument><name>InboundMessageHandlers</name></argument>&gt;</argument_list></name></type> <name>closedReceivedBytesUpdater</name> <init>=
+        <expr><call><name><name>AtomicLongFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>InboundMessageHandlers</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"closedReceivedBytes"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>long</name></type> <name>closedThrottledCount</name></decl>, <decl><type ref="prev"/><name>closedThrottledNanos</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicLongFieldUpdater</name><argument_list type="generic">&lt;<argument><name>InboundMessageHandlers</name></argument>&gt;</argument_list></name></type> <name>closedThrottledCountUpdater</name> <init>=
+        <expr><call><name><name>AtomicLongFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>InboundMessageHandlers</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"closedThrottledCount"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicLongFieldUpdater</name><argument_list type="generic">&lt;<argument><name>InboundMessageHandlers</name></argument>&gt;</argument_list></name></type> <name>closedThrottledNanosUpdater</name> <init>=
+        <expr><call><name><name>AtomicLongFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>InboundMessageHandlers</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"closedThrottledNanos"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>long</name></type> <name>closedCorruptFramesRecovered</name></decl>, <decl><type ref="prev"/><name>closedCorruptFramesUnrecovered</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicLongFieldUpdater</name><argument_list type="generic">&lt;<argument><name>InboundMessageHandlers</name></argument>&gt;</argument_list></name></type> <name>closedCorruptFramesRecoveredUpdater</name> <init>=
+        <expr><call><name><name>AtomicLongFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>InboundMessageHandlers</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"closedCorruptFramesRecovered"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicLongFieldUpdater</name><argument_list type="generic">&lt;<argument><name>InboundMessageHandlers</name></argument>&gt;</argument_list></name></type> <name>closedCorruptFramesUnrecoveredUpdater</name> <init>=
+        <expr><call><name><name>AtomicLongFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>InboundMessageHandlers</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"closedCorruptFramesUnrecovered"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>absorbCounters</name><parameter_list>(<parameter><decl><type><name>InboundMessageHandler</name></type> <name>handler</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>closedReceivedCountUpdater</name><operator>.</operator><name>addAndGet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name><name>handler</name><operator>.</operator><name>receivedCount</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>closedReceivedBytesUpdater</name><operator>.</operator><name>addAndGet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name><name>handler</name><operator>.</operator><name>receivedBytes</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>closedThrottledCountUpdater</name><operator>.</operator><name>addAndGet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name><name>handler</name><operator>.</operator><name>throttledCount</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>closedThrottledNanosUpdater</name><operator>.</operator><name>addAndGet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name><name>handler</name><operator>.</operator><name>throttledNanos</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>closedCorruptFramesRecoveredUpdater</name><operator>.</operator><name>addAndGet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name><name>handler</name><operator>.</operator><name>corruptFramesRecovered</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>closedCorruptFramesUnrecoveredUpdater</name><operator>.</operator><name>addAndGet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name><name>handler</name><operator>.</operator><name>corruptFramesUnrecovered</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>long</name></type> <name>sumHandlers</name><parameter_list>(<parameter><decl><type><name><name>ToLongFunction</name><argument_list type="generic">&lt;<argument><name>InboundMessageHandler</name></argument>&gt;</argument_list></name></type> <name>counter</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>sum</name> <init>= <expr><literal type="number">0L</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>InboundMessageHandler</name></type> <name>h</name> <range>: <expr><name>handlers</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>sum</name> <operator>+=</operator> <call><name><name>counter</name><operator>.</operator><name>applyAsLong</name></name><argument_list>(<argument><expr><name>h</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <return>return <expr><name>sum</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>long</name></type> <name>sumCounters</name><parameter_list>(<parameter><decl><type><name><name>ToLongFunction</name><argument_list type="generic">&lt;<argument><name>InboundCounters</name></argument>&gt;</argument_list></name></type> <name>mapping</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>mapping</name><operator>.</operator><name>applyAsLong</name></name><argument_list>(<argument><expr><name>urgentCounters</name></expr></argument>)</argument_list></call>
+             <operator>+</operator> <call><name><name>mapping</name><operator>.</operator><name>applyAsLong</name></name><argument_list>(<argument><expr><name>smallCounters</name></expr></argument>)</argument_list></call>
+             <operator>+</operator> <call><name><name>mapping</name><operator>.</operator><name>applyAsLong</name></name><argument_list>(<argument><expr><name>largeCounters</name></expr></argument>)</argument_list></call>
+             <operator>+</operator> <call><name><name>mapping</name><operator>.</operator><name>applyAsLong</name></name><argument_list>(<argument><expr><name>legacyCounters</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <interface>interface <name>HandlerProvider</name>
+    <block>{
+        <function_decl><type><name>InboundMessageHandler</name></type> <name>provide</name><parameter_list>(<parameter><decl><type><name>FrameDecoder</name></type> <name>decoder</name></decl></parameter>,
+
+                                      <parameter><decl><type><name>ConnectionType</name></type> <name>type</name></decl></parameter>,
+                                      <parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>,
+                                      <parameter><decl><type><name>InetAddressAndPort</name></type> <name>self</name></decl></parameter>,
+                                      <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>,
+                                      <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>,
+                                      <parameter><decl><type><name>int</name></type> <name>largeMessageThreshold</name></decl></parameter>,
+
+                                      <parameter><decl><type><name>int</name></type> <name>queueCapacity</name></decl></parameter>,
+                                      <parameter><decl><type><name><name>ResourceLimits</name><operator>.</operator><name>Limit</name></name></type> <name>endpointReserveCapacity</name></decl></parameter>,
+                                      <parameter><decl><type><name><name>ResourceLimits</name><operator>.</operator><name>Limit</name></name></type> <name>globalReserveCapacity</name></decl></parameter>,
+                                      <parameter><decl><type><name><name>InboundMessageHandler</name><operator>.</operator><name>WaitQueue</name></name></type> <name>endpointWaitQueue</name></decl></parameter>,
+                                      <parameter><decl><type><name><name>InboundMessageHandler</name><operator>.</operator><name>WaitQueue</name></name></type> <name>globalWaitQueue</name></decl></parameter>,
+
+                                      <parameter><decl><type><name><name>InboundMessageHandler</name><operator>.</operator><name>OnHandlerClosed</name></name></type> <name>onClosed</name></decl></parameter>,
+                                      <parameter><decl><type><name>InboundMessageCallbacks</name></type> <name>callbacks</name></decl></parameter>,
+                                      <parameter><decl><type><name><name>Consumer</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>consumer</name></decl></parameter>)</parameter_list>;</function_decl>
+    }</block></interface>
+}</block></class>
+</unit>

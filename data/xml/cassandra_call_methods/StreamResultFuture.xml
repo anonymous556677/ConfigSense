@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/streaming/StreamResultFuture.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>streaming</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Collection</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>UUID</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentLinkedQueue</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>AbstractFuture</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Futures</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>MoreExecutors</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>Channel</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A future on the result ({@link StreamState}) of a streaming plan.
+ *
+ * In practice, this object also groups all the {@link StreamSession} for the streaming job
+ * involved. One StreamSession will be created for every peer involved and said session will
+ * handle every streaming (outgoing and incoming) to that peer for this job.
+ * &lt;p&gt;
+ * The future will return a result once every session is completed (successfully or not). If
+ * any session ended up with an error, the future will throw a StreamException.
+ * &lt;p&gt;
+ * You can attach {@link StreamEventHandler} to this object to listen on {@link StreamEvent}s to
+ * track progress of the streaming.
+ */</comment>
+<class><specifier>public</specifier> <specifier>final</specifier> class <name>StreamResultFuture</name> <super_list><extends>extends <super><name><name>AbstractFuture</name><argument_list type="generic">&lt;<argument><name>StreamState</name></argument>&gt;</argument_list></name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>StreamResultFuture</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>UUID</name></type> <name>planId</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>StreamOperation</name></type> <name>streamOperation</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>StreamCoordinator</name></type> <name>coordinator</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>StreamEventHandler</name></argument>&gt;</argument_list></name></type> <name>eventListeners</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentLinkedQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Create new StreamResult of given {@code planId} and streamOperation.
+     *
+     * Constructor is package private. You need to use {@link StreamPlan#execute()} to get the instance.
+     *
+     * @param planId Stream plan ID
+     * @param streamOperation Stream streamOperation
+     */</comment>
+    <constructor><specifier>private</specifier> <name>StreamResultFuture</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>planId</name></decl></parameter>, <parameter><decl><type><name>StreamOperation</name></type> <name>streamOperation</name></decl></parameter>, <parameter><decl><type><name>StreamCoordinator</name></type> <name>coordinator</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>planId</name></name> <operator>=</operator> <name>planId</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>streamOperation</name></name> <operator>=</operator> <name>streamOperation</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>coordinator</name></name> <operator>=</operator> <name>coordinator</name></expr>;</expr_stmt>
+
+        <comment type="line">// if there is no session to listen to, we immediately set result for returning</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>coordinator</name><operator>.</operator><name>isFollower</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>coordinator</name><operator>.</operator><name>hasActiveSessions</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>set</name><argument_list>(<argument><expr><call><name>getCurrentState</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>private</specifier> <name>StreamResultFuture</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>planId</name></decl></parameter>, <parameter><decl><type><name>StreamOperation</name></type> <name>streamOperation</name></decl></parameter>, <parameter><decl><type><name>UUID</name></type> <name>pendingRepair</name></decl></parameter>, <parameter><decl><type><name>PreviewKind</name></type> <name>previewKind</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>planId</name></expr></argument>, <argument><expr><name>streamOperation</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>StreamCoordinator</name><argument_list>(<argument><expr><name>streamOperation</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><operator>new</operator> <call><name>DefaultConnectionFactory</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><name>pendingRepair</name></expr></argument>, <argument><expr><name>previewKind</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>StreamResultFuture</name></type> <name>createInitiator</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>planId</name></decl></parameter>, <parameter><decl><type><name>StreamOperation</name></type> <name>streamOperation</name></decl></parameter>, <parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>StreamEventHandler</name></argument>&gt;</argument_list></name></type> <name>listeners</name></decl></parameter>,
+                                                     <parameter><decl><type><name>StreamCoordinator</name></type> <name>coordinator</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>StreamResultFuture</name></type> <name>future</name> <init>= <expr><call><name>createAndRegisterInitiator</name><argument_list>(<argument><expr><name>planId</name></expr></argument>, <argument><expr><name>streamOperation</name></expr></argument>, <argument><expr><name>coordinator</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>listeners</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>StreamEventHandler</name></type> <name>listener</name> <range>: <expr><name>listeners</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>future</name><operator>.</operator><name>addEventListener</name></name><argument_list>(<argument><expr><name>listener</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"[Stream #{}] Executing streaming plan for {}"</literal></expr></argument>, <argument><expr><name>planId</name></expr></argument>,  <argument><expr><call><name><name>streamOperation</name><operator>.</operator><name>getDescription</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// Initialize and start all sessions</comment>
+        <for>for <control>(<init><decl><type><specifier>final</specifier> <name>StreamSession</name></type> <name>session</name> <range>: <expr><call><name><name>coordinator</name><operator>.</operator><name>getAllStreamSessions</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>init</name></name><argument_list>(<argument><expr><name>future</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <expr_stmt><expr><call><name><name>coordinator</name><operator>.</operator><name>connect</name></name><argument_list>(<argument><expr><name>future</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <return>return <expr><name>future</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <specifier>synchronized</specifier> <name>StreamResultFuture</name></type> <name>createFollower</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>sessionIndex</name></decl></parameter>,
+                                                                 <parameter><decl><type><name>UUID</name></type> <name>planId</name></decl></parameter>,
+                                                                 <parameter><decl><type><name>StreamOperation</name></type> <name>streamOperation</name></decl></parameter>,
+                                                                 <parameter><decl><type><name>InetAddressAndPort</name></type> <name>from</name></decl></parameter>,
+                                                                 <parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>,
+                                                                 <parameter><decl><type><name>UUID</name></type> <name>pendingRepair</name></decl></parameter>,
+                                                                 <parameter><decl><type><name>PreviewKind</name></type> <name>previewKind</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>StreamResultFuture</name></type> <name>future</name> <init>= <expr><call><name><name>StreamManager</name><operator>.</operator><name>instance</name><operator>.</operator><name>getReceivingStream</name></name><argument_list>(<argument><expr><name>planId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>future</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"[Stream #{} ID#{}] Creating new streaming plan for {} from {} channel.remote {} channel.local {}"</literal> <operator>+</operator>
+                        <literal type="string">" channel.id {}"</literal></expr></argument>, <argument><expr><name>planId</name></expr></argument>, <argument><expr><name>sessionIndex</name></expr></argument>, <argument><expr><call><name><name>streamOperation</name><operator>.</operator><name>getDescription</name></name><argument_list>()</argument_list></call></expr></argument>,
+                        <argument><expr><name>from</name></expr></argument>, <argument><expr><call><name><name>channel</name><operator>.</operator><name>remoteAddress</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>channel</name><operator>.</operator><name>localAddress</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>channel</name><operator>.</operator><name>id</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <comment type="line">// The main reason we create a StreamResultFuture on the receiving side is for JMX exposure.</comment>
+            <expr_stmt><expr><name>future</name> <operator>=</operator> <operator>new</operator> <call><name>StreamResultFuture</name><argument_list>(<argument><expr><name>planId</name></expr></argument>, <argument><expr><name>streamOperation</name></expr></argument>, <argument><expr><name>pendingRepair</name></expr></argument>, <argument><expr><name>previewKind</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>StreamManager</name><operator>.</operator><name>instance</name><operator>.</operator><name>registerFollower</name></name><argument_list>(<argument><expr><name>future</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>future</name><operator>.</operator><name>attachConnection</name></name><argument_list>(<argument><expr><name>from</name></expr></argument>, <argument><expr><name>sessionIndex</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"[Stream #{}, ID#{}] Received streaming plan for {} from {} channel.remote {} channel.local {} channel.id {}"</literal></expr></argument>,
+                    <argument><expr><name>planId</name></expr></argument>, <argument><expr><name>sessionIndex</name></expr></argument>, <argument><expr><call><name><name>streamOperation</name><operator>.</operator><name>getDescription</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><call><name><name>channel</name><operator>.</operator><name>remoteAddress</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>channel</name><operator>.</operator><name>localAddress</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>channel</name><operator>.</operator><name>id</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>future</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>StreamResultFuture</name></type> <name>createAndRegisterInitiator</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>planId</name></decl></parameter>, <parameter><decl><type><name>StreamOperation</name></type> <name>streamOperation</name></decl></parameter>, <parameter><decl><type><name>StreamCoordinator</name></type> <name>coordinator</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>StreamResultFuture</name></type> <name>future</name> <init>= <expr><operator>new</operator> <call><name>StreamResultFuture</name><argument_list>(<argument><expr><name>planId</name></expr></argument>, <argument><expr><name>streamOperation</name></expr></argument>, <argument><expr><name>coordinator</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>StreamManager</name><operator>.</operator><name>instance</name><operator>.</operator><name>registerInitiator</name></name><argument_list>(<argument><expr><name>future</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>future</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>StreamCoordinator</name></type> <name>getCoordinator</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>coordinator</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>attachConnection</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>from</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>sessionIndex</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>StreamSession</name></type> <name>session</name> <init>= <expr><call><name><name>coordinator</name><operator>.</operator><name>getOrCreateSessionById</name></name><argument_list>(<argument><expr><name>from</name></expr></argument>, <argument><expr><name>sessionIndex</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>init</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"UnstableApiUsage"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>addEventListener</name><parameter_list>(<parameter><decl><type><name>StreamEventHandler</name></type> <name>listener</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>Futures</name><operator>.</operator><name>addCallback</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>listener</name></expr></argument>, <argument><expr><call><name><name>MoreExecutors</name><operator>.</operator><name>directExecutor</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>eventListeners</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>listener</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return Current snapshot of streaming progress.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>StreamState</name></type> <name>getCurrentState</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>StreamState</name><argument_list>(<argument><expr><name>planId</name></expr></argument>, <argument><expr><name>streamOperation</name></expr></argument>, <argument><expr><call><name><name>coordinator</name><operator>.</operator><name>getAllSessionInfo</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>o</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>this</name> <operator>==</operator> <name>o</name></expr>)</condition><block type="pseudo"><block_content> <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>o</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name>getClass</name><argument_list>()</argument_list></call> <operator>!=</operator> <call><name><name>o</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content> <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+        <decl_stmt><decl><type><name>StreamResultFuture</name></type> <name>that</name> <init>= <expr><operator>(</operator><name>StreamResultFuture</name><operator>)</operator> <name>o</name></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>planId</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>that</name><operator>.</operator><name>planId</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>hashCode</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>planId</name><operator>.</operator><name>hashCode</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>handleSessionPrepared</name><parameter_list>(<parameter><decl><type><name>StreamSession</name></type> <name>session</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>SessionInfo</name></type> <name>sessionInfo</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>getSessionInfo</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"[Stream #{} ID#{}] Prepare completed. Receiving {} files({}), sending {} files({})"</literal></expr></argument>,
+                              <argument><expr><call><name><name>session</name><operator>.</operator><name>planId</name></name><argument_list>()</argument_list></call></expr></argument>,
+                              <argument><expr><call><name><name>session</name><operator>.</operator><name>sessionIndex</name></name><argument_list>()</argument_list></call></expr></argument>,
+                              <argument><expr><call><name><name>sessionInfo</name><operator>.</operator><name>getTotalFilesToReceive</name></name><argument_list>()</argument_list></call></expr></argument>,
+                              <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name><argument_list>(<argument><expr><call><name><name>sessionInfo</name><operator>.</operator><name>getTotalSizeToReceive</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                              <argument><expr><call><name><name>sessionInfo</name><operator>.</operator><name>getTotalFilesToSend</name></name><argument_list>()</argument_list></call></expr></argument>,
+                              <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name><argument_list>(<argument><expr><call><name><name>sessionInfo</name><operator>.</operator><name>getTotalSizeToSend</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name><name>StreamEvent</name><operator>.</operator><name>SessionPreparedEvent</name></name></type> <name>event</name> <init>= <expr><operator>new</operator> <call><name><name>StreamEvent</name><operator>.</operator><name>SessionPreparedEvent</name></name><argument_list>(<argument><expr><name>planId</name></expr></argument>, <argument><expr><name>sessionInfo</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>coordinator</name><operator>.</operator><name>addSessionInfo</name></name><argument_list>(<argument><expr><name>sessionInfo</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>fireStreamEvent</name><argument_list>(<argument><expr><name>event</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>handleSessionComplete</name><parameter_list>(<parameter><decl><type><name>StreamSession</name></type> <name>session</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"[Stream #{}] Session with {} is complete"</literal></expr></argument>, <argument><expr><call><name><name>session</name><operator>.</operator><name>planId</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>session</name><operator>.</operator><name>peer</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>fireStreamEvent</name><argument_list>(<argument><expr><operator>new</operator> <call><name><name>StreamEvent</name><operator>.</operator><name>SessionCompleteEvent</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>SessionInfo</name></type> <name>sessionInfo</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>getSessionInfo</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>coordinator</name><operator>.</operator><name>addSessionInfo</name></name><argument_list>(<argument><expr><name>sessionInfo</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>maybeComplete</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>handleProgress</name><parameter_list>(<parameter><decl><type><name>ProgressInfo</name></type> <name>progress</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>coordinator</name><operator>.</operator><name>updateProgress</name></name><argument_list>(<argument><expr><name>progress</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>fireStreamEvent</name><argument_list>(<argument><expr><operator>new</operator> <call><name><name>StreamEvent</name><operator>.</operator><name>ProgressEvent</name></name><argument_list>(<argument><expr><name>planId</name></expr></argument>, <argument><expr><name>progress</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>synchronized</specifier> <name>void</name></type> <name>fireStreamEvent</name><parameter_list>(<parameter><decl><type><name>StreamEvent</name></type> <name>event</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// delegate to listener</comment>
+        <for>for <control>(<init><decl><type><name>StreamEventHandler</name></type> <name>listener</name> <range>: <expr><name>eventListeners</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>listener</name><operator>.</operator><name>handleStreamEvent</name></name><argument_list>(<argument><expr><name>event</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>maybeComplete</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name>finishedAllSessions</name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>StreamState</name></type> <name>finalState</name> <init>= <expr><call><name>getCurrentState</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>finalState</name><operator>.</operator><name>hasFailedSession</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"[Stream #{}] Stream failed"</literal></expr></argument>, <argument><expr><name>planId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name>setException</name><argument_list>(<argument><expr><operator>new</operator> <call><name>StreamException</name><argument_list>(<argument><expr><name>finalState</name></expr></argument>, <argument><expr><literal type="string">"Stream failed"</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><call><name><name>finalState</name><operator>.</operator><name>hasAbortedSession</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"[Stream #{}] Stream aborted"</literal></expr></argument>, <argument><expr><name>planId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name>set</name><argument_list>(<argument><expr><name>finalState</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"[Stream #{}] All sessions completed"</literal></expr></argument>, <argument><expr><name>planId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name>set</name><argument_list>(<argument><expr><name>finalState</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>StreamSession</name></type> <name>getSession</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>sessionIndex</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>coordinator</name><operator>.</operator><name>getSessionById</name></name><argument_list>(<argument><expr><name>peer</name></expr></argument>, <argument><expr><name>sessionIndex</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * We can't use {@link StreamCoordinator#hasActiveSessions()} directly because {@link this#maybeComplete()}
+     * relies on the snapshotted state from {@link StreamCoordinator} and not the {@link StreamSession} state
+     * directly (CASSANDRA-15667), otherwise inconsistent snapshotted states may lead to completion races.
+     */</comment>
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>finishedAllSessions</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>coordinator</name><operator>.</operator><name>getAllSessionInfo</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>stream</name><argument_list>()</argument_list></call><operator>.</operator><call><name>allMatch</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>s</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>s</name><operator>.</operator><name>state</name><operator>.</operator><name>isFinalState</name></name><argument_list>()</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

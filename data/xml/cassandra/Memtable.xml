@@ -1,0 +1,669 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/Memtable.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>ArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Collections</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>HashMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Iterator</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Callable</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentNavigableMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentSkipListMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentSkipListSet</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicBoolean</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicLong</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicReference</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Throwables</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name><operator>.</operator><name>CommitLog</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name><operator>.</operator><name>CommitLogPosition</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name><operator>.</operator><name>IntervalSet</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name><operator>.</operator><name>ClusteringIndexFilter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name><operator>.</operator><name>ColumnFilter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>lifecycle</name><operator>.</operator><name>LifecycleTransaction</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>AbstractBTreePartition</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>AbstractUnfilteredPartitionIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>AtomicBTreePartition</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>Partition</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>PartitionUpdate</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>EncodingStats</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>UnfilteredRowIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>AbstractBounds</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>Bounds</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>IncludingExcludingBounds</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>Murmur3Partitioner</name><operator>.</operator><name>LongToken</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>Range</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>index</name><operator>.</operator><name>transactions</name><operator>.</operator><name>UpdateTransaction</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>Descriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>SSTableMultiWriter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>metadata</name><operator>.</operator><name>MetadataCollector</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>ColumnMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>SchemaConstants</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>ActiveRepairService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ByteBufferUtil</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ObjectSizes</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>OpOrder</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>Cloner</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>HeapPool</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>MemtableAllocator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>MemtableCleaner</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>MemtablePool</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>NativePool</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>SlabPool</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>Memtable</name> <super_list><implements>implements <super><name><name>Comparable</name><argument_list type="generic">&lt;<argument><name>Memtable</name></argument>&gt;</argument_list></name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>Memtable</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>MemtablePool</name></type> <name>MEMORY_POOL</name> <init>= <expr><call><name>createMemtableAllocatorPool</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>MemtablePool</name></type> <name>createMemtableAllocatorPool</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>heapLimit</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getMemtableHeapSpaceInMb</name></name><argument_list>()</argument_list></call> <operator>&lt;&lt;</operator> <literal type="number">20</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>offHeapLimit</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getMemtableOffheapSpaceInMb</name></name><argument_list>()</argument_list></call> <operator>&lt;&lt;</operator> <literal type="number">20</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>float</name></type> <name>cleaningThreshold</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getMemtableCleanupThreshold</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>MemtableCleaner</name></type> <name>cleaner</name> <init>= <expr><name>ColumnFamilyStore</name><operator>::</operator><name>flushLargestMemtable</name></expr></init></decl>;</decl_stmt>
+        <switch>switch <condition>(<expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getMemtableAllocationType</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><name>unslabbed_heap_buffers</name></expr>:</case>
+                <return>return <expr><operator>new</operator> <call><name>HeapPool</name><argument_list>(<argument><expr><name>heapLimit</name></expr></argument>, <argument><expr><name>cleaningThreshold</name></expr></argument>, <argument><expr><name>cleaner</name></expr></argument>)</argument_list></call></expr>;</return>
+            <case>case <expr><name>heap_buffers</name></expr>:</case>
+                <return>return <expr><operator>new</operator> <call><name>SlabPool</name><argument_list>(<argument><expr><name>heapLimit</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>cleaningThreshold</name></expr></argument>, <argument><expr><name>cleaner</name></expr></argument>)</argument_list></call></expr>;</return>
+            <case>case <expr><name>offheap_buffers</name></expr>:</case>
+                <return>return <expr><operator>new</operator> <call><name>SlabPool</name><argument_list>(<argument><expr><name>heapLimit</name></expr></argument>, <argument><expr><name>offHeapLimit</name></expr></argument>, <argument><expr><name>cleaningThreshold</name></expr></argument>, <argument><expr><name>cleaner</name></expr></argument>)</argument_list></call></expr>;</return>
+            <case>case <expr><name>offheap_objects</name></expr>:</case>
+                <return>return <expr><operator>new</operator> <call><name>NativePool</name><argument_list>(<argument><expr><name>heapLimit</name></expr></argument>, <argument><expr><name>offHeapLimit</name></expr></argument>, <argument><expr><name>cleaningThreshold</name></expr></argument>, <argument><expr><name>cleaner</name></expr></argument>)</argument_list></call></expr>;</return>
+            <default>default:</default>
+                <throw>throw <expr><operator>new</operator> <call><name>AssertionError</name><argument_list>()</argument_list></call></expr>;</throw>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>ROW_OVERHEAD_HEAP_SIZE</name> <init>= <expr><call><name>estimateRowOverhead</name><argument_list>(<argument><expr><call><name><name>Integer</name><operator>.</operator><name>parseInt</name></name><argument_list>(<argument><expr><call><name><name>System</name><operator>.</operator><name>getProperty</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.memtable_row_overhead_computation_step"</literal></expr></argument>, <argument><expr><literal type="string">"100000"</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>MemtableAllocator</name></type> <name>allocator</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>AtomicLong</name></type> <name>liveDataSize</name> <init>= <expr><operator>new</operator> <call><name>AtomicLong</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>AtomicLong</name></type> <name>currentOperations</name> <init>= <expr><operator>new</operator> <call><name>AtomicLong</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// the write barrier for directing writes to this memtable or the next during a switch</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name><name>OpOrder</name><operator>.</operator><name>Barrier</name></name></type> <name>writeBarrier</name></decl>;</decl_stmt>
+    <comment type="line">// the precise upper bound of CommitLogPosition owned by this memtable</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name><name>AtomicReference</name><argument_list type="generic">&lt;<argument><name>CommitLogPosition</name></argument>&gt;</argument_list></name></type> <name>commitLogUpperBound</name></decl>;</decl_stmt>
+    <comment type="line">// the precise lower bound of CommitLogPosition owned by this memtable; equal to its predecessor's commitLogUpperBound</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>AtomicReference</name><argument_list type="generic">&lt;<argument><name>CommitLogPosition</name></argument>&gt;</argument_list></name></type> <name>commitLogLowerBound</name></decl>;</decl_stmt>
+
+    <comment type="line">// The approximate lower bound by this memtable; must be &lt;= commitLogLowerBound once our predecessor</comment>
+    <comment type="line">// has been finalised, and this is enforced in the ColumnFamilyStore.setCommitLogUpperBound</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>CommitLogPosition</name></type> <name>approximateCommitLogLowerBound</name> <init>= <expr><call><name><name>CommitLog</name><operator>.</operator><name>instance</name><operator>.</operator><name>getCurrentPosition</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>compareTo</name><parameter_list>(<parameter><decl><type><name>Memtable</name></type> <name>that</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>this</name><operator>.</operator><name>approximateCommitLogLowerBound</name><operator>.</operator><name>compareTo</name></name><argument_list>(<argument><expr><name><name>that</name><operator>.</operator><name>approximateCommitLogLowerBound</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>LastCommitLogPosition</name> <super_list><extends>extends <super><name>CommitLogPosition</name></super></extends></super_list>
+    <block>{
+        <constructor><specifier>public</specifier> <name>LastCommitLogPosition</name><parameter_list>(<parameter><decl><type><name>CommitLogPosition</name></type> <name>copy</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name><name>copy</name><operator>.</operator><name>segmentId</name></name></expr></argument>, <argument><expr><name><name>copy</name><operator>.</operator><name>position</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+    }</block></class>
+
+    <comment type="line">// We index the memtable by PartitionPosition only for the purpose of being able</comment>
+    <comment type="line">// to select key range using Token.KeyBound. However put() ensures that we</comment>
+    <comment type="line">// actually only store DecoratedKey.</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ConcurrentNavigableMap</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>, <argument><name>AtomicBTreePartition</name></argument>&gt;</argument_list></name></type> <name>partitions</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentSkipListMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>ColumnFamilyStore</name></type> <name>cfs</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>creationNano</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// The smallest timestamp for all partitions stored in this memtable</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>minTimestamp</name> <init>= <expr><name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// Record the comparator of the CFS at the creation of the memtable. This</comment>
+    <comment type="line">// is only used when a user update the CF comparator, to know if the</comment>
+    <comment type="line">// memtable was created with the new or old comparator.</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>ClusteringComparator</name></type> <name>initialComparator</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ColumnsCollector</name></type> <name>columnsCollector</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>StatsCollector</name></type> <name>statsCollector</name> <init>= <expr><operator>new</operator> <call><name>StatsCollector</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// only to be used by init(), to setup the very first memtable for the cfs</comment>
+    <constructor><specifier>public</specifier> <name>Memtable</name><parameter_list>(<parameter><decl><type><name><name>AtomicReference</name><argument_list type="generic">&lt;<argument><name>CommitLogPosition</name></argument>&gt;</argument_list></name></type> <name>commitLogLowerBound</name></decl></parameter>, <parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cfs</name></name> <operator>=</operator> <name>cfs</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>commitLogLowerBound</name></name> <operator>=</operator> <name>commitLogLowerBound</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>allocator</name></name> <operator>=</operator> <call><name><name>MEMORY_POOL</name><operator>.</operator><name>newAllocator</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>initialComparator</name></name> <operator>=</operator> <call><name><name>cfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>comparator</name></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>this</name><operator>.</operator><name>cfs</name><operator>.</operator><name>scheduleFlush</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columnsCollector</name></name> <operator>=</operator> <operator>new</operator> <call><name>ColumnsCollector</name><argument_list>(<argument><expr><call><name><name>cfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>regularAndStaticColumns</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="line">// ONLY to be used for testing, to create a mock Memtable</comment>
+    <constructor><annotation>@<name>VisibleForTesting</name></annotation>
+    <specifier>public</specifier> <name>Memtable</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>initialComparator</name></name> <operator>=</operator> <name><name>metadata</name><operator>.</operator><name>comparator</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cfs</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>allocator</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columnsCollector</name></name> <operator>=</operator> <operator>new</operator> <call><name>ColumnsCollector</name><argument_list>(<argument><expr><call><name><name>metadata</name><operator>.</operator><name>regularAndStaticColumns</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>MemtableAllocator</name></type> <name>getAllocator</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>allocator</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getLiveDataSize</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>liveDataSize</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getOperations</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>currentOperations</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>setDiscarding</name><parameter_list>(<parameter><decl><type><name><name>OpOrder</name><operator>.</operator><name>Barrier</name></name></type> <name>writeBarrier</name></decl></parameter>, <parameter><decl><type><name><name>AtomicReference</name><argument_list type="generic">&lt;<argument><name>CommitLogPosition</name></argument>&gt;</argument_list></name></type> <name>commitLogUpperBound</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><name><name>this</name><operator>.</operator><name>writeBarrier</name></name> <operator>==</operator> <literal type="null">null</literal></expr>;</assert>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>commitLogUpperBound</name></name> <operator>=</operator> <name>commitLogUpperBound</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>writeBarrier</name></name> <operator>=</operator> <name>writeBarrier</name></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>allocator</name><operator>.</operator><name>setDiscarding</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>setDiscarded</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>allocator</name><operator>.</operator><name>setDiscarded</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="line">// decide if this memtable should take the write, or if it should go to the next memtable</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>accepts</name><parameter_list>(<parameter><decl><type><name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>opGroup</name></decl></parameter>, <parameter><decl><type><name>CommitLogPosition</name></type> <name>commitLogPosition</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// if the barrier hasn't been set yet, then this memtable is still taking ALL writes</comment>
+        <decl_stmt><decl><type><name><name>OpOrder</name><operator>.</operator><name>Barrier</name></name></type> <name>barrier</name> <init>= <expr><name><name>this</name><operator>.</operator><name>writeBarrier</name></name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>barrier</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+        <comment type="line">// if the barrier has been set, but is in the past, we are definitely destined for a future memtable</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>barrier</name><operator>.</operator><name>isAfter</name></name><argument_list>(<argument><expr><name>opGroup</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+        <comment type="line">// if we aren't durable we are directed only by the barrier</comment>
+        <if_stmt><if>if <condition>(<expr><name>commitLogPosition</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+        <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// otherwise we check if we are in the past/future wrt the CL boundary;</comment>
+            <comment type="line">// if the boundary hasn't been finalised yet, we simply update it to the max of</comment>
+            <comment type="line">// its current value and ours; if it HAS been finalised, we simply accept its judgement</comment>
+            <comment type="line">// this permits us to coordinate a safe boundary, as the boundary choice is made</comment>
+            <comment type="line">// atomically wrt our max() maintenance, so an operation cannot sneak into the past</comment>
+            <decl_stmt><decl><type><name>CommitLogPosition</name></type> <name>currentLast</name> <init>= <expr><call><name><name>commitLogUpperBound</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>currentLast</name> <operator>instanceof</operator> <name>LastCommitLogPosition</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><call><name><name>currentLast</name><operator>.</operator><name>compareTo</name></name><argument_list>(<argument><expr><name>commitLogPosition</name></expr></argument>)</argument_list></call> <operator>&gt;=</operator> <literal type="number">0</literal></expr>;</return></block_content></block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><name>currentLast</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>currentLast</name><operator>.</operator><name>compareTo</name></name><argument_list>(<argument><expr><name>commitLogPosition</name></expr></argument>)</argument_list></call> <operator>&gt;=</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>commitLogUpperBound</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>currentLast</name></expr></argument>, <argument><expr><name>commitLogPosition</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>CommitLogPosition</name></type> <name>getCommitLogLowerBound</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>commitLogLowerBound</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>CommitLogPosition</name></type> <name>getCommitLogUpperBound</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>commitLogUpperBound</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isLive</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>allocator</name><operator>.</operator><name>isLive</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isClean</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>partitions</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>mayContainDataBefore</name><parameter_list>(<parameter><decl><type><name>CommitLogPosition</name></type> <name>position</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>approximateCommitLogLowerBound</name><operator>.</operator><name>compareTo</name></name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call> <operator>&lt;</operator> <literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return true if this memtable is expired. Expiration time is determined by CF's memtable_flush_period_in_ms.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isExpired</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>period</name> <init>= <expr><call><name><name>cfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name><name>params</name><operator>.</operator><name>memtableFlushPeriodInMs</name></name></expr></init></decl>;</decl_stmt>
+        <return>return <expr><name>period</name> <operator>&gt;</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <operator>(</operator><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>creationNano</name> <operator>&gt;=</operator> <call><name><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name><operator>.</operator><name>toNanos</name></name><argument_list>(<argument><expr><name>period</name></expr></argument>)</argument_list></call><operator>)</operator></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Should only be called by ColumnFamilyStore.apply via Keyspace.apply, which supplies the appropriate
+     * OpOrdering.
+     *
+     * commitLogSegmentPosition should only be null if this is a secondary index, in which case it is *expected* to be null
+     */</comment>
+    <function><type><name>long</name></type> <name>put</name><parameter_list>(<parameter><decl><type><name>PartitionUpdate</name></type> <name>update</name></decl></parameter>, <parameter><decl><type><name>UpdateTransaction</name></type> <name>indexer</name></decl></parameter>, <parameter><decl><type><name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>opGroup</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Cloner</name></type> <name>cloner</name> <init>= <expr><call><name><name>allocator</name><operator>.</operator><name>cloner</name></name><argument_list>(<argument><expr><name>opGroup</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>AtomicBTreePartition</name></type> <name>previous</name> <init>= <expr><call><name><name>partitions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>initialSize</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>previous</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>DecoratedKey</name></type> <name>cloneKey</name> <init>= <expr><call><name><name>cloner</name><operator>.</operator><name>clone</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>AtomicBTreePartition</name></type> <name>empty</name> <init>= <expr><operator>new</operator> <call><name>AtomicBTreePartition</name><argument_list>(<argument><expr><name><name>cfs</name><operator>.</operator><name>metadata</name></name></expr></argument>, <argument><expr><name>cloneKey</name></expr></argument>, <argument><expr><name>allocator</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <comment type="line">// We'll add the columns later. This avoids wasting works if we get beaten in the putIfAbsent</comment>
+            <expr_stmt><expr><name>previous</name> <operator>=</operator> <call><name><name>partitions</name><operator>.</operator><name>putIfAbsent</name></name><argument_list>(<argument><expr><name>cloneKey</name></expr></argument>, <argument><expr><name>empty</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>previous</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>previous</name> <operator>=</operator> <name>empty</name></expr>;</expr_stmt>
+                <comment type="line">// allocate the row overhead after the fact; this saves over allocating and having to free after, but</comment>
+                <comment type="line">// means we can overshoot our declared limit.</comment>
+                <decl_stmt><decl><type><name>int</name></type> <name>overhead</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><call><name><name>cloneKey</name><operator>.</operator><name>getToken</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getHeapSize</name><argument_list>()</argument_list></call> <operator>+</operator> <name>ROW_OVERHEAD_HEAP_SIZE</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>allocator</name><operator>.</operator><name>onHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>allocate</name><argument_list>(<argument><expr><name>overhead</name></expr></argument>, <argument><expr><name>opGroup</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>initialSize</name> <operator>=</operator> <literal type="number">8</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>long</name><index>[]</index></name></type> <name>pair</name> <init>= <expr><call><name><name>previous</name><operator>.</operator><name>addAllWithSizeDelta</name></name><argument_list>(<argument><expr><name>update</name></expr></argument>, <argument><expr><name>cloner</name></expr></argument>, <argument><expr><name>opGroup</name></expr></argument>, <argument><expr><name>indexer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name>minTimestamp</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>minTimestamp</name></expr></argument>, <argument><expr><call><name><name>previous</name><operator>.</operator><name>stats</name></name><argument_list>()</argument_list></call><operator>.</operator><name>minTimestamp</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>liveDataSize</name><operator>.</operator><name>addAndGet</name></name><argument_list>(<argument><expr><name>initialSize</name> <operator>+</operator> <name><name>pair</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>columnsCollector</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>columns</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>statsCollector</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>stats</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>currentOperations</name><operator>.</operator><name>addAndGet</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>operationCount</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name><name>pair</name><index>[<expr><literal type="number">1</literal></expr>]</index></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>partitionCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>partitions</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>FlushRunnable</name></argument>&gt;</argument_list></name></type> <name>flushRunnables</name><parameter_list>(<parameter><decl><type><name>LifecycleTransaction</name></type> <name>txn</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>createFlushRunnables</name><argument_list>(<argument><expr><name>txn</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>FlushRunnable</name></argument>&gt;</argument_list></name></type> <name>createFlushRunnables</name><parameter_list>(<parameter><decl><type><name>LifecycleTransaction</name></type> <name>txn</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>DiskBoundaries</name></type> <name>diskBoundaries</name> <init>= <expr><call><name><name>cfs</name><operator>.</operator><name>getDiskBoundaries</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>&gt;</argument_list></name></type> <name>boundaries</name> <init>= <expr><name><name>diskBoundaries</name><operator>.</operator><name>positions</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>Directories</name><operator>.</operator><name>DataDirectory</name></name></argument>&gt;</argument_list></name></type> <name>locations</name> <init>= <expr><name><name>diskBoundaries</name><operator>.</operator><name>directories</name></name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>boundaries</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>Collections</name><operator>.</operator><name>singletonList</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>FlushRunnable</name><argument_list>(<argument><expr><name>txn</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>FlushRunnable</name></argument>&gt;</argument_list></name></type> <name>runnables</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>boundaries</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>PartitionPosition</name></type> <name>rangeStart</name> <init>= <expr><call><name><name>cfs</name><operator>.</operator><name>getPartitioner</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getMinimumToken</name><argument_list>()</argument_list></call><operator>.</operator><call><name>minKeyBound</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>boundaries</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>PartitionPosition</name></type> <name>t</name> <init>= <expr><call><name><name>boundaries</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>runnables</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>FlushRunnable</name><argument_list>(<argument><expr><name>rangeStart</name></expr></argument>, <argument><expr><name>t</name></expr></argument>, <argument><expr><call><name><name>locations</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>txn</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>rangeStart</name> <operator>=</operator> <name>t</name></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <return>return <expr><name>runnables</name></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><call><name><name>Throwables</name><operator>.</operator><name>propagate</name></name><argument_list>(<argument><expr><call><name>abortRunnables</name><argument_list>(<argument><expr><name>runnables</name></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Throwable</name></type> <name>abortRunnables</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>FlushRunnable</name></argument>&gt;</argument_list></name></type> <name>runnables</name></decl></parameter>, <parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>runnables</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <for>for <control>(<init><decl><type><name>FlushRunnable</name></type> <name>runnable</name> <range>: <expr><name>runnables</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>t</name> <operator>=</operator> <call><name><name>runnable</name><operator>.</operator><name>writer</name><operator>.</operator><name>abort</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for></block_content></block></if></if_stmt>
+        <return>return <expr><name>t</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Memtable-%s@%s(%s serialized bytes, %s ops, %.0f%%/%.0f%% of on/off-heap limit)"</literal></expr></argument>,
+                             <argument><expr><name><name>cfs</name><operator>.</operator><name>name</name></name></expr></argument>, <argument><expr><call><name>hashCode</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name><argument_list>(<argument><expr><call><name><name>liveDataSize</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>currentOperations</name></expr></argument>,
+                             <argument><expr><literal type="number">100</literal> <operator>*</operator> <call><name><name>allocator</name><operator>.</operator><name>onHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>ownershipRatio</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="number">100</literal> <operator>*</operator> <call><name><name>allocator</name><operator>.</operator><name>offHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>ownershipRatio</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>MemtableUnfilteredPartitionIterator</name></type> <name>makePartitionIterator</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>ColumnFilter</name></type> <name>columnFilter</name></decl></parameter>, <parameter><decl><type><specifier>final</specifier> <name>DataRange</name></type> <name>dataRange</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>AbstractBounds</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>&gt;</argument_list></name></type> <name>keyRange</name> <init>= <expr><call><name><name>dataRange</name><operator>.</operator><name>keyRange</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>boolean</name></type> <name>startIsMin</name> <init>= <expr><call><name><name>keyRange</name><operator>.</operator><name>left</name><operator>.</operator><name>isMinimum</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>stopIsMin</name> <init>= <expr><call><name><name>keyRange</name><operator>.</operator><name>right</name><operator>.</operator><name>isMinimum</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>boolean</name></type> <name>isBound</name> <init>= <expr><name>keyRange</name> <operator>instanceof</operator> <name>Bounds</name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>includeStart</name> <init>= <expr><name>isBound</name> <operator>||</operator> <name>keyRange</name> <operator>instanceof</operator> <name>IncludingExcludingBounds</name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>includeStop</name> <init>= <expr><name>isBound</name> <operator>||</operator> <name>keyRange</name> <operator>instanceof</operator> <name>Range</name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>, <argument><name>AtomicBTreePartition</name></argument>&gt;</argument_list></name></type> <name>subMap</name></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>startIsMin</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>subMap</name> <operator>=</operator> <ternary><condition><expr><name>stopIsMin</name></expr> ?</condition><then> <expr><name>partitions</name></expr> </then><else>: <expr><call><name><name>partitions</name><operator>.</operator><name>headMap</name></name><argument_list>(<argument><expr><name><name>keyRange</name><operator>.</operator><name>right</name></name></expr></argument>, <argument><expr><name>includeStop</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><name>subMap</name> <operator>=</operator> <ternary><condition><expr><name>stopIsMin</name></expr>
+                   ?</condition><then> <expr><call><name><name>partitions</name><operator>.</operator><name>tailMap</name></name><argument_list>(<argument><expr><name><name>keyRange</name><operator>.</operator><name>left</name></name></expr></argument>, <argument><expr><name>includeStart</name></expr></argument>)</argument_list></call></expr>
+                   </then><else>: <expr><call><name><name>partitions</name><operator>.</operator><name>subMap</name></name><argument_list>(<argument><expr><name><name>keyRange</name><operator>.</operator><name>left</name></name></expr></argument>, <argument><expr><name>includeStart</name></expr></argument>, <argument><expr><name><name>keyRange</name><operator>.</operator><name>right</name></name></expr></argument>, <argument><expr><name>includeStop</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</expr_stmt></block_content></block></else></if_stmt>
+
+        <decl_stmt><decl><type><name>int</name></type> <name>minLocalDeletionTime</name> <init>= <expr><name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// avoid iterating over the memtable if we purge all tombstones</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>cfs</name><operator>.</operator><name>getCompactionStrategyManager</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>onlyPurgeRepairedTombstones</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>minLocalDeletionTime</name> <operator>=</operator> <call><name>findMinLocalDeletionTime</name><argument_list>(<argument><expr><call><name><name>subMap</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>iterator</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>Iterator</name><argument_list type="generic">&lt;<argument><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>, <argument><name>AtomicBTreePartition</name></argument>&gt;</argument_list></name></name></argument>&gt;</argument_list></name></type> <name>iter</name> <init>= <expr><call><name><name>subMap</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>iterator</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <return>return <expr><operator>new</operator> <call><name>MemtableUnfilteredPartitionIterator</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><name>iter</name></expr></argument>, <argument><expr><name>minLocalDeletionTime</name></expr></argument>, <argument><expr><name>columnFilter</name></expr></argument>, <argument><expr><name>dataRange</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>int</name></type> <name>findMinLocalDeletionTime</name><parameter_list>(<parameter><decl><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>, <argument><name>AtomicBTreePartition</name></argument>&gt;</argument_list></name></name></argument>&gt;</argument_list></name></type> <name>iterator</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>minLocalDeletionTime</name> <init>= <expr><name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr></init></decl>;</decl_stmt>
+        <while>while <condition>(<expr><call><name><name>iterator</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>, <argument><name>AtomicBTreePartition</name></argument>&gt;</argument_list></name></name></type> <name>entry</name> <init>= <expr><call><name><name>iterator</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>minLocalDeletionTime</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>minLocalDeletionTime</name></expr></argument>, <argument><expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>stats</name><argument_list>()</argument_list></call><operator>.</operator><name>minLocalDeletionTime</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></while>
+        <return>return <expr><name>minLocalDeletionTime</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Partition</name></type> <name>getPartition</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>partitions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getMinTimestamp</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>minTimestamp</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * For testing only. Give this memtable too big a size to make it always fail flushing.
+     */</comment>
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>makeUnflushable</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>liveDataSize</name><operator>.</operator><name>addAndGet</name></name><argument_list>(<argument><expr><operator>(</operator><name>long</name><operator>)</operator> <literal type="number">1024</literal> <operator>*</operator> <literal type="number">1024</literal> <operator>*</operator> <literal type="number">1024</literal> <operator>*</operator> <literal type="number">1024</literal> <operator>*</operator> <literal type="number">1024</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <class>class <name>FlushRunnable</name> <super_list><implements>implements <super><name><name>Callable</name><argument_list type="generic">&lt;<argument><name>SSTableMultiWriter</name></argument>&gt;</argument_list></name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>estimatedSize</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ConcurrentNavigableMap</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>, <argument><name>AtomicBTreePartition</name></argument>&gt;</argument_list></name></type> <name>toFlush</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>isBatchLogTable</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>SSTableMultiWriter</name></type> <name>writer</name></decl>;</decl_stmt>
+
+        <comment type="line">// keeping these to be able to log what we are actually flushing</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>PartitionPosition</name></type> <name>from</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>PartitionPosition</name></type> <name>to</name></decl>;</decl_stmt>
+
+        <constructor><name>FlushRunnable</name><parameter_list>(<parameter><decl><type><name>PartitionPosition</name></type> <name>from</name></decl></parameter>, <parameter><decl><type><name>PartitionPosition</name></type> <name>to</name></decl></parameter>, <parameter><decl><type><name><name>Directories</name><operator>.</operator><name>DataDirectory</name></name></type> <name>flushLocation</name></decl></parameter>, <parameter><decl><type><name>LifecycleTransaction</name></type> <name>txn</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><call><name><name>partitions</name><operator>.</operator><name>subMap</name></name><argument_list>(<argument><expr><name>from</name></expr></argument>, <argument><expr><name>to</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>flushLocation</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>txn</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><name>FlushRunnable</name><parameter_list>(<parameter><decl><type><name>LifecycleTransaction</name></type> <name>txn</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>partitions</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>txn</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><name>FlushRunnable</name><parameter_list>(<parameter><decl><type><name><name>ConcurrentNavigableMap</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>, <argument><name>AtomicBTreePartition</name></argument>&gt;</argument_list></name></type> <name>toFlush</name></decl></parameter>, <parameter><decl><type><name><name>Directories</name><operator>.</operator><name>DataDirectory</name></name></type> <name>flushLocation</name></decl></parameter>, <parameter><decl><type><name>PartitionPosition</name></type> <name>from</name></decl></parameter>, <parameter><decl><type><name>PartitionPosition</name></type> <name>to</name></decl></parameter>, <parameter><decl><type><name>LifecycleTransaction</name></type> <name>txn</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>toFlush</name></name> <operator>=</operator> <name>toFlush</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>from</name></name> <operator>=</operator> <name>from</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>to</name></name> <operator>=</operator> <name>to</name></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>keySize</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>PartitionPosition</name></type> <name>key</name> <range>: <expr><call><name><name>toFlush</name><operator>.</operator><name>keySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <comment type="line">//  make sure we don't write non-sensical keys</comment>
+                <assert>assert <expr><name>key</name> <operator>instanceof</operator> <name>DecoratedKey</name></expr>;</assert>
+                <expr_stmt><expr><name>keySize</name> <operator>+=</operator> <operator>(</operator><operator>(</operator><name>DecoratedKey</name><operator>)</operator> <name>key</name><operator>)</operator><operator>.</operator><call><name>getKey</name><argument_list>()</argument_list></call><operator>.</operator><call><name>remaining</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <expr_stmt><expr><name>estimatedSize</name> <operator>=</operator> <operator>(</operator><name>long</name><operator>)</operator> <operator>(</operator><operator>(</operator><name>keySize</name> <comment type="line">// index entries</comment>
+                                    <operator>+</operator> <name>keySize</name> <comment type="line">// keys in data file</comment>
+                                    <operator>+</operator> <call><name><name>liveDataSize</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call><operator>)</operator> <comment type="line">// data</comment>
+                                    <operator>*</operator> <literal type="number">1.2</literal><operator>)</operator></expr>;</expr_stmt> <comment type="line">// bloom filter and row index overhead</comment>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>isBatchLogTable</name></name> <operator>=</operator> <call><name><name>cfs</name><operator>.</operator><name>name</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>SystemKeyspace</name><operator>.</operator><name>BATCHES</name></name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>cfs</name><operator>.</operator><name>keyspace</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>SYSTEM_KEYSPACE_NAME</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>flushLocation</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>writer</name> <operator>=</operator> <call><name>createFlushWriter</name><argument_list>(<argument><expr><name>txn</name></expr></argument>, <argument><expr><call><name><name>cfs</name><operator>.</operator><name>newSSTableDescriptor</name></name><argument_list>(<argument><expr><call><name>getDirectories</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getWriteableLocationAsFile</name><argument_list>(<argument><expr><name>estimatedSize</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>columnsCollector</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>statsCollector</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><name>writer</name> <operator>=</operator> <call><name>createFlushWriter</name><argument_list>(<argument><expr><name>txn</name></expr></argument>, <argument><expr><call><name><name>cfs</name><operator>.</operator><name>newSSTableDescriptor</name></name><argument_list>(<argument><expr><call><name>getDirectories</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getLocationForDisk</name><argument_list>(<argument><expr><name>flushLocation</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>columnsCollector</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>statsCollector</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>protected</specifier> <name>Directories</name></type> <name>getDirectories</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>cfs</name><operator>.</operator><name>getDirectories</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>writeSortedContents</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Writing {}, flushed range = ({}, {}]"</literal></expr></argument>, <argument><expr><call><name><name>Memtable</name><operator>.</operator><name>this</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>to</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <decl_stmt><decl><type><name>boolean</name></type> <name>trackContention</name> <init>= <expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>heavilyContendedRowCount</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <comment type="line">// (we can't clear out the map as-we-go to free up memory,</comment>
+            <comment type="line">//  since the memtable is being used for queries in the "pending flush" category)</comment>
+            <for>for <control>(<init><decl><type><name>AtomicBTreePartition</name></type> <name>partition</name> <range>: <expr><call><name><name>toFlush</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <comment type="line">// Each batchlog partition is a separate entry in the log. And for an entry, we only do 2</comment>
+                <comment type="line">// operations: 1) we insert the entry and 2) we delete it. Further, BL data is strictly local,</comment>
+                <comment type="line">// we don't need to preserve tombstones for repair. So if both operation are in this</comment>
+                <comment type="line">// memtable (which will almost always be the case if there is no ongoing failure), we can</comment>
+                <comment type="line">// just skip the entry (CASSANDRA-4667).</comment>
+                <if_stmt><if>if <condition>(<expr><name>isBatchLogTable</name> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>partition</name><operator>.</operator><name>partitionLevelDeletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isLive</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>partition</name><operator>.</operator><name>hasRows</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>trackContention</name> <operator>&amp;&amp;</operator> <call><name><name>partition</name><operator>.</operator><name>useLock</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>heavilyContendedRowCount</name><operator>++</operator></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>partition</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <try>try <init>(<decl><type><name>UnfilteredRowIterator</name></type> <name>iter</name> <init>= <expr><call><name><name>partition</name><operator>.</operator><name>unfilteredIterator</name></name><argument_list>()</argument_list></call></expr></init></decl>)</init>
+                    <block>{<block_content>
+                        <expr_stmt><expr><call><name><name>writer</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name>iter</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></try>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></for>
+
+            <decl_stmt><decl><type><name>long</name></type> <name>bytesFlushed</name> <init>= <expr><call><name><name>writer</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Completed flushing {} ({}) for commitlog position {}"</literal></expr></argument>,
+                         <argument><expr><call><name><name>writer</name><operator>.</operator><name>getFilename</name></name><argument_list>()</argument_list></call></expr></argument>,
+                         <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name><argument_list>(<argument><expr><name>bytesFlushed</name></expr></argument>)</argument_list></call></expr></argument>,
+                         <argument><expr><name>commitLogUpperBound</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <comment type="line">// Update the metrics</comment>
+            <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>bytesFlushed</name><operator>.</operator><name>inc</name></name><argument_list>(<argument><expr><name>bytesFlushed</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>heavilyContendedRowCount</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"High update contention in {}/{} partitions of {} "</literal></expr></argument>, <argument><expr><name>heavilyContendedRowCount</name></expr></argument>, <argument><expr><call><name><name>toFlush</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>Memtable</name><operator>.</operator><name>this</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>SSTableMultiWriter</name></type> <name>createFlushWriter</name><parameter_list>(<parameter><decl><type><name>LifecycleTransaction</name></type> <name>txn</name></decl></parameter>,
+                                                    <parameter><decl><type><name>Descriptor</name></type> <name>descriptor</name></decl></parameter>,
+                                                    <parameter><decl><type><name>RegularAndStaticColumns</name></type> <name>columns</name></decl></parameter>,
+                                                    <parameter><decl><type><name>EncodingStats</name></type> <name>stats</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>MetadataCollector</name></type> <name>sstableMetadataCollector</name> <init>= <expr><operator>new</operator> <call><name>MetadataCollector</name><argument_list>(<argument><expr><call><name><name>cfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>comparator</name></expr></argument>)</argument_list></call>
+                    <operator>.</operator><call><name>commitLogIntervals</name><argument_list>(<argument><expr><operator>new</operator> <call><name><name>IntervalSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>commitLogLowerBound</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>commitLogUpperBound</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <return>return <expr><call><name><name>cfs</name><operator>.</operator><name>createSSTableMultiWriter</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>,
+                                                <argument><expr><call><name><name>toFlush</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                <argument><expr><name><name>ActiveRepairService</name><operator>.</operator><name>UNREPAIRED_SSTABLE</name></name></expr></argument>,
+                                                <argument><expr><name><name>ActiveRepairService</name><operator>.</operator><name>NO_PENDING_REPAIR</name></name></expr></argument>,
+                                                <argument><expr><literal type="boolean">false</literal></expr></argument>,
+                                                <argument><expr><name>sstableMetadataCollector</name></expr></argument>,
+                                                <argument><expr><operator>new</operator> <call><name>SerializationHeader</name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><call><name><name>cfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><name>stats</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>txn</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>SSTableMultiWriter</name></type> <name>call</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>writeSortedContents</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>writer</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>int</name></type> <name>estimateRowOverhead</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>int</name></type> <name>count</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// calculate row overhead</comment>
+        <try>try <init>(<decl><type><specifier>final</specifier> <name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>group</name> <init>= <expr><operator>new</operator> <call><name>OpOrder</name><argument_list>()</argument_list></call><operator>.</operator><call><name>start</name><argument_list>()</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>rowOverhead</name></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>MemtableAllocator</name></type> <name>allocator</name> <init>= <expr><call><name><name>MEMORY_POOL</name><operator>.</operator><name>newAllocator</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Cloner</name></type> <name>cloner</name> <init>= <expr><call><name><name>allocator</name><operator>.</operator><name>cloner</name></name><argument_list>(<argument><expr><name>group</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>ConcurrentNavigableMap</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>, <argument><name>Object</name></argument>&gt;</argument_list></name></type> <name>partitions</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentSkipListMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>Object</name></type> <name>val</name> <init>= <expr><operator>new</operator> <call><name>Object</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl> ;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>count</name></expr> ;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>partitions</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>cloner</name><operator>.</operator><name>clone</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>BufferDecoratedKey</name><argument_list>(<argument><expr><operator>new</operator> <call><name>LongToken</name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>ByteBufferUtil</name><operator>.</operator><name>EMPTY_BYTE_BUFFER</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>val</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            <decl_stmt><decl><type><name>double</name></type> <name>avgSize</name> <init>= <expr><call><name><name>ObjectSizes</name><operator>.</operator><name>measureDeep</name></name><argument_list>(<argument><expr><name>partitions</name></expr></argument>)</argument_list></call> <operator>/</operator> <operator>(</operator><name>double</name><operator>)</operator> <name>count</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>rowOverhead</name> <operator>=</operator> <operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><ternary><condition><expr><operator>(</operator><name>avgSize</name> <operator>-</operator> <call><name><name>Math</name><operator>.</operator><name>floor</name></name><argument_list>(<argument><expr><name>avgSize</name></expr></argument>)</argument_list></call><operator>)</operator> <operator>&lt;</operator> <literal type="number">0.05</literal></expr> ?</condition><then> <expr><call><name><name>Math</name><operator>.</operator><name>floor</name></name><argument_list>(<argument><expr><name>avgSize</name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><call><name><name>Math</name><operator>.</operator><name>ceil</name></name><argument_list>(<argument><expr><name>avgSize</name></expr></argument>)</argument_list></call></expr></else></ternary><operator>)</operator></expr>;</expr_stmt>
+            <expr_stmt><expr><name>rowOverhead</name> <operator>-=</operator> <call><name><name>ObjectSizes</name><operator>.</operator><name>measureDeep</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>LongToken</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>rowOverhead</name> <operator>+=</operator> <name><name>AtomicBTreePartition</name><operator>.</operator><name>EMPTY_SIZE</name></name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>rowOverhead</name> <operator>+=</operator> <name><name>AbstractBTreePartition</name><operator>.</operator><name>HOLDER_UNSHARED_HEAP_SIZE</name></name></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>allocator</name><operator>.</operator><name>setDiscarding</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>allocator</name><operator>.</operator><name>setDiscarded</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>rowOverhead</name></expr>;</return>
+        </block_content>}</block></try>
+    </block_content>}</block></function>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>MemtableUnfilteredPartitionIterator</name> <super_list><extends>extends <super><name>AbstractUnfilteredPartitionIterator</name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ColumnFamilyStore</name></type> <name>cfs</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Iterator</name><argument_list type="generic">&lt;<argument><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>, <argument><name>AtomicBTreePartition</name></argument>&gt;</argument_list></name></name></argument>&gt;</argument_list></name></type> <name>iter</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>minLocalDeletionTime</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ColumnFilter</name></type> <name>columnFilter</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>DataRange</name></type> <name>dataRange</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>MemtableUnfilteredPartitionIterator</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>, <parameter><decl><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>, <argument><name>AtomicBTreePartition</name></argument>&gt;</argument_list></name></name></argument>&gt;</argument_list></name></type> <name>iter</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>minLocalDeletionTime</name></decl></parameter>, <parameter><decl><type><name>ColumnFilter</name></type> <name>columnFilter</name></decl></parameter>, <parameter><decl><type><name>DataRange</name></type> <name>dataRange</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cfs</name></name> <operator>=</operator> <name>cfs</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>iter</name></name> <operator>=</operator> <name>iter</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>minLocalDeletionTime</name></name> <operator>=</operator> <name>minLocalDeletionTime</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columnFilter</name></name> <operator>=</operator> <name>columnFilter</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>dataRange</name></name> <operator>=</operator> <name>dataRange</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>int</name></type> <name>getMinLocalDeletionTime</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>minLocalDeletionTime</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>TableMetadata</name></type> <name>metadata</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>cfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>hasNext</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>iter</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>UnfilteredRowIterator</name></type> <name>next</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>PartitionPosition</name></argument>, <argument><name>AtomicBTreePartition</name></argument>&gt;</argument_list></name></name></type> <name>entry</name> <init>= <expr><call><name><name>iter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <comment type="line">// Actual stored key should be true DecoratedKey</comment>
+            <assert>assert <expr><call><name><name>entry</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call> <operator>instanceof</operator> <name>DecoratedKey</name></expr>;</assert>
+            <decl_stmt><decl><type><name>DecoratedKey</name></type> <name>key</name> <init>= <expr><operator>(</operator><name>DecoratedKey</name><operator>)</operator><call><name><name>entry</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>ClusteringIndexFilter</name></type> <name>filter</name> <init>= <expr><call><name><name>dataRange</name><operator>.</operator><name>clusteringIndexFilter</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <return>return <expr><call><name><name>filter</name><operator>.</operator><name>getUnfilteredRowIterator</name></name><argument_list>(<argument><expr><name>columnFilter</name></expr></argument>, <argument><expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>ColumnsCollector</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>HashMap</name><argument_list type="generic">&lt;<argument><name>ColumnMetadata</name></argument>, <argument><name>AtomicBoolean</name></argument>&gt;</argument_list></name></type> <name>predefined</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ConcurrentSkipListSet</name><argument_list type="generic">&lt;<argument><name>ColumnMetadata</name></argument>&gt;</argument_list></name></type> <name>extra</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentSkipListSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <constructor><name>ColumnsCollector</name><parameter_list>(<parameter><decl><type><name>RegularAndStaticColumns</name></type> <name>columns</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>ColumnMetadata</name></type> <name>def</name> <range>: <expr><name><name>columns</name><operator>.</operator><name>statics</name></name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>predefined</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>def</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>AtomicBoolean</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            <for>for <control>(<init><decl><type><name>ColumnMetadata</name></type> <name>def</name> <range>: <expr><name><name>columns</name><operator>.</operator><name>regulars</name></name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>predefined</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>def</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>AtomicBoolean</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>update</name><parameter_list>(<parameter><decl><type><name>RegularAndStaticColumns</name></type> <name>columns</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>ColumnMetadata</name></type> <name>s</name> <range>: <expr><name><name>columns</name><operator>.</operator><name>statics</name></name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>update</name><argument_list>(<argument><expr><name>s</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            <for>for <control>(<init><decl><type><name>ColumnMetadata</name></type> <name>r</name> <range>: <expr><name><name>columns</name><operator>.</operator><name>regulars</name></name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>update</name><argument_list>(<argument><expr><name>r</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>update</name><parameter_list>(<parameter><decl><type><name>ColumnMetadata</name></type> <name>definition</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>AtomicBoolean</name></type> <name>present</name> <init>= <expr><call><name><name>predefined</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>definition</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>present</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>present</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>present</name><operator>.</operator><name>set</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>extra</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>definition</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>RegularAndStaticColumns</name></type> <name>get</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>RegularAndStaticColumns</name><operator>.</operator><name>Builder</name></name></type> <name>builder</name> <init>= <expr><call><name><name>RegularAndStaticColumns</name><operator>.</operator><name>builder</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>ColumnMetadata</name></argument>, <argument><name>AtomicBoolean</name></argument>&gt;</argument_list></name></name></type> <name>e</name> <range>: <expr><call><name><name>predefined</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>e</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>e</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt></block_content></block></for>
+            <return>return <expr><call><name><name>builder</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><name>extra</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>build</name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>StatsCollector</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>AtomicReference</name><argument_list type="generic">&lt;<argument><name>EncodingStats</name></argument>&gt;</argument_list></name></type> <name>stats</name> <init>= <expr><operator>new</operator> <call><name><name>AtomicReference</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name><name>EncodingStats</name><operator>.</operator><name>NO_STATS</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>update</name><parameter_list>(<parameter><decl><type><name>EncodingStats</name></type> <name>newStats</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>EncodingStats</name></type> <name>current</name> <init>= <expr><call><name><name>stats</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>EncodingStats</name></type> <name>updated</name> <init>= <expr><call><name><name>current</name><operator>.</operator><name>mergeWith</name></name><argument_list>(<argument><expr><name>newStats</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>stats</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>current</name></expr></argument>, <argument><expr><name>updated</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return;</return></block_content></block></if></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>EncodingStats</name></type> <name>get</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>stats</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

@@ -1,0 +1,496 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/auth/jmx/AuthorizationProxy.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>auth</name><operator>.</operator><name>jmx</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>reflect</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>security</name><operator>.</operator><name>AccessControlContext</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>security</name><operator>.</operator><name>AccessController</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>security</name><operator>.</operator><name>Principal</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Set</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>BooleanSupplier</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Function</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Predicate</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>stream</name><operator>.</operator><name>Collectors</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>management</name><operator>.</operator><name>MBeanServer</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>management</name><operator>.</operator><name>MalformedObjectNameException</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>management</name><operator>.</operator><name>ObjectName</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>security</name><operator>.</operator><name>auth</name><operator>.</operator><name>Subject</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>ImmutableSet</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>auth</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>StorageService</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Provides a proxy interface to the platform's MBeanServer instance to perform
+ * role-based authorization on method invocation.
+ *
+ * When used in conjunction with a suitable JMXAuthenticator, which attaches a CassandraPrincipal
+ * to authenticated Subjects, this class uses the configured IAuthorizer to verify that the
+ * subject has the required permissions to execute methods on the MBeanServer and the MBeans it
+ * manages.
+ *
+ * Because an ObjectName may contain wildcards, meaning it represents a set of individual MBeans,
+ * JMX resources don't fit well with the hierarchical approach modelled by other IResource
+ * implementations and utilised by ClientState::ensurePermission etc. To enable grants to use
+ * pattern-type ObjectNames, this class performs its own custom matching and filtering of resources
+ * rather than pushing that down to the configured IAuthorizer. To that end, during authorization
+ * it pulls back all permissions for the active subject, filtering them to retain only grants on
+ * JMXResources. It then uses ObjectName::apply to assert whether the target MBeans are wholly
+ * represented by the resources with permissions. This means that it cannot use the PermissionsCache
+ * as IAuthorizer can, so it manages its own cache locally.
+ *
+ * Methods are split into 2 categories; those which are to be invoked on the MBeanServer itself
+ * and those which apply to MBean instances. Actually, this is somewhat of a construct as in fact
+ * *all* invocations are performed on the MBeanServer instance, the distinction is made here on
+ * those methods which take an ObjectName as their first argument and those which do not.
+ * Invoking a method of the former type, e.g. MBeanServer::getAttribute(ObjectName name, String attribute),
+ * implies that the caller is concerned with a specific MBean. Conversely, invoking a method such as
+ * MBeanServer::getDomains is primarily a function of the MBeanServer itself. This class makes
+ * such a distinction in order to identify which JMXResource the subject requires permissions on.
+ *
+ * Certain operations are never allowed for users and these are recorded in a deny list so that we
+ * can short circuit authorization process if one is attempted by a remote subject.
+ *
+ */</comment>
+<class><specifier>public</specifier> class <name>AuthorizationProxy</name> <super_list><implements>implements <super><name>InvocationHandler</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>AuthorizationProxy</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block">/*
+     A list of permitted methods on the MBeanServer interface which *do not* take an ObjectName
+     as their first argument. These methods can be thought of as relating to the MBeanServer itself,
+     rather than to the MBeans it manages. All of the allowed methods are essentially descriptive,
+     hence they require the Subject to have the DESCRIBE permission on the root JMX resource.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>MBEAN_SERVER_ALLOWED_METHODS</name> <init>= <expr><call><name><name>ImmutableSet</name><operator>.</operator><name>of</name></name><argument_list>(<argument><expr><literal type="string">"getDefaultDomain"</literal></expr></argument>,
+                                                                                    <argument><expr><literal type="string">"getDomains"</literal></expr></argument>,
+                                                                                    <argument><expr><literal type="string">"getMBeanCount"</literal></expr></argument>,
+                                                                                    <argument><expr><literal type="string">"hashCode"</literal></expr></argument>,
+                                                                                    <argument><expr><literal type="string">"queryMBeans"</literal></expr></argument>,
+                                                                                    <argument><expr><literal type="string">"queryNames"</literal></expr></argument>,
+                                                                                    <argument><expr><literal type="string">"toString"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block">/*
+     A list of method names which are never permitted to be executed by a remote user,
+     regardless of privileges they may be granted.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>DENIED_METHODS</name> <init>= <expr><call><name><name>ImmutableSet</name><operator>.</operator><name>of</name></name><argument_list>(<argument><expr><literal type="string">"createMBean"</literal></expr></argument>,
+                                                                      <argument><expr><literal type="string">"deserialize"</literal></expr></argument>,
+                                                                      <argument><expr><literal type="string">"getClassLoader"</literal></expr></argument>,
+                                                                      <argument><expr><literal type="string">"getClassLoaderFor"</literal></expr></argument>,
+                                                                      <argument><expr><literal type="string">"instantiate"</literal></expr></argument>,
+                                                                      <argument><expr><literal type="string">"registerMBean"</literal></expr></argument>,
+                                                                      <argument><expr><literal type="string">"unregisterMBean"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>JMXPermissionsCache</name></type> <name>permissionsCache</name> <init>= <expr><operator>new</operator> <call><name>JMXPermissionsCache</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>MBeanServer</name></type> <name>mbs</name></decl>;</decl_stmt>
+
+    <comment type="block">/*
+     Used to check whether the Role associated with the authenticated Subject has superuser
+     status. By default, just delegates to Roles::hasSuperuserStatus, but can be overridden for testing.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name><name>Predicate</name><argument_list type="generic">&lt;<argument><name>RoleResource</name></argument>&gt;</argument_list></name></type> <name>isSuperuser</name> <init>= <expr><name>Roles</name><operator>::</operator><name>hasSuperuserStatus</name></expr></init></decl>;</decl_stmt>
+
+    <comment type="block">/*
+     Used to retrieve the set of all permissions granted to a given role. By default, this fetches
+     the permissions from the local cache, which in turn loads them from the configured IAuthorizer
+     but can be overridden for testing.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name><name>Function</name><argument_list type="generic">&lt;<argument><name>RoleResource</name></argument>, <argument><name><name>Set</name><argument_list type="generic">&lt;<argument><name>PermissionDetails</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>getPermissions</name> <init>= <expr><name>permissionsCache</name><operator>::</operator><name>get</name></expr></init></decl>;</decl_stmt>
+
+    <comment type="block">/*
+     Used to decide whether authorization is enabled or not, usually this depends on the configured
+     IAuthorizer, but can be overridden for testing.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>BooleanSupplier</name></type> <name>isAuthzRequired</name> <init>= <expr><lambda><parameter_list>()</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getAuthorizer</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>requireAuthorization</name><argument_list>()</argument_list></call></expr></block_content></block></lambda></expr></init></decl>;</decl_stmt>
+
+    <comment type="block">/*
+     Used to find matching MBeans when the invocation target is a pattern type ObjectName.
+     Defaults to querying the MBeanServer but can be overridden for testing. See checkPattern for usage.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name><name>Function</name><argument_list type="generic">&lt;<argument><name>ObjectName</name></argument>, <argument><name><name>Set</name><argument_list type="generic">&lt;<argument><name>ObjectName</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>queryNames</name> <init>= <expr><lambda><parameter_list>(<parameter><decl><name>name</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>mbs</name><operator>.</operator><name>queryNames</name></name><argument_list>(<argument><expr><name>name</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></init></decl>;</decl_stmt>
+
+    <comment type="block">/*
+     Used to determine whether auth setup has completed so we know whether the expect the IAuthorizer
+     to be ready. Can be overridden for testing.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>BooleanSupplier</name></type> <name>isAuthSetupComplete</name> <init>= <expr><lambda><parameter_list>()</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>isAuthSetupComplete</name></name><argument_list>()</argument_list></call></expr></block_content></block></lambda></expr></init></decl>;</decl_stmt>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Object</name></type> <name>invoke</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>proxy</name></decl></parameter>, <parameter><decl><type><name>Method</name></type> <name>method</name></decl></parameter>, <parameter><decl><type><name><name>Object</name><index>[]</index></name></type> <name>args</name></decl></parameter>)</parameter_list>
+            <throws>throws <argument><expr><name>Throwable</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>methodName</name> <init>= <expr><call><name><name>method</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><literal type="string">"getMBeanServer"</literal><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name>methodName</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>SecurityException</name><argument_list>(<argument><expr><literal type="string">"Access denied"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <comment type="line">// Retrieve Subject from current AccessControlContext</comment>
+        <decl_stmt><decl><type><name>AccessControlContext</name></type> <name>acc</name> <init>= <expr><call><name><name>AccessController</name><operator>.</operator><name>getContext</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Subject</name></type> <name>subject</name> <init>= <expr><call><name><name>Subject</name><operator>.</operator><name>getSubject</name></name><argument_list>(<argument><expr><name>acc</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// Allow setMBeanServer iff performed on behalf of the connector server itself</comment>
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><literal type="string">"setMBeanServer"</literal><operator>)</operator><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name>methodName</name></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>subject</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>SecurityException</name><argument_list>(<argument><expr><literal type="string">"Access denied"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name><name>args</name><index>[<expr><literal type="number">0</literal></expr>]</index></name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Null MBeanServer"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>mbs</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"MBeanServer already initialized"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><name>mbs</name> <operator>=</operator> <operator>(</operator><name>MBeanServer</name><operator>)</operator> <name><name>args</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr>;</expr_stmt>
+            <return>return <expr><literal type="null">null</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name>authorize</name><argument_list>(<argument><expr><name>subject</name></expr></argument>, <argument><expr><name>methodName</name></expr></argument>, <argument><expr><name>args</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>invoke</name><argument_list>(<argument><expr><name>method</name></expr></argument>, <argument><expr><name>args</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <throw>throw <expr><operator>new</operator> <call><name>SecurityException</name><argument_list>(<argument><expr><literal type="string">"Access Denied"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Performs the actual authorization of an identified subject to execute a remote method invocation.
+     * @param subject The principal making the execution request. A null value represents a local invocation
+     *                from the JMX connector itself
+     * @param methodName Name of the method being invoked
+     * @param args Array containing invocation argument. If the first element is an ObjectName instance, for
+     *             authz purposes we consider this an invocation of an MBean method, otherwise it is treated
+     *             as an invocation of a method on the MBeanServer.
+     */</comment>
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><name>boolean</name></type> <name>authorize</name><parameter_list>(<parameter><decl><type><name>Subject</name></type> <name>subject</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>methodName</name></decl></parameter>, <parameter><decl><type><name><name>Object</name><index>[]</index></name></type> <name>args</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Authorizing JMX method invocation {} for {}"</literal></expr></argument>,
+                     <argument><expr><name>methodName</name></expr></argument>,
+                     <argument><expr><ternary><condition><expr><name>subject</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="string">""</literal></expr> </then><else>:<expr><call><name><name>subject</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>replaceAll</name><argument_list>(<argument><expr><literal type="string">"\\n"</literal></expr></argument>, <argument><expr><literal type="string">" "</literal></expr></argument>)</argument_list></call></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>isAuthSetupComplete</name><operator>.</operator><name>getAsBoolean</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Auth setup is not complete, refusing access"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <comment type="line">// Permissive authorization is enabled</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>isAuthzRequired</name><operator>.</operator><name>getAsBoolean</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// Allow operations performed locally on behalf of the connector server itself</comment>
+        <if_stmt><if>if <condition>(<expr><name>subject</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// Restrict access to certain methods by any remote user</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>DENIED_METHODS</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>methodName</name></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Access denied to restricted method {}"</literal></expr></argument>, <argument><expr><name>methodName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <comment type="line">// Reject if the user has not authenticated</comment>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>Principal</name></argument>&gt;</argument_list></name></type> <name>principals</name> <init>= <expr><call><name><name>subject</name><operator>.</operator><name>getPrincipals</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>principals</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>principals</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// Currently, we assume that the first Principal returned from the Subject</comment>
+        <comment type="line">// is the one to use for authorization. It would be good to make this more</comment>
+        <comment type="line">// robust, but we have no control over which Principals a given LoginModule</comment>
+        <comment type="line">// might choose to associate with the Subject following successful authentication</comment>
+        <decl_stmt><decl><type><name>RoleResource</name></type> <name>userResource</name> <init>= <expr><call><name><name>RoleResource</name><operator>.</operator><name>role</name></name><argument_list>(<argument><expr><call><name><name>principals</name><operator>.</operator><name>iterator</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>next</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getName</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// A role with superuser status can do anything</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>isSuperuser</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name>userResource</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// The method being invoked may be a method on an MBean, or it could belong</comment>
+        <comment type="line">// to the MBeanServer itself</comment>
+        <if_stmt><if>if <condition>(<expr><name>args</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name><name>args</name><index>[<expr><literal type="number">0</literal></expr>]</index></name> <operator>instanceof</operator> <name>ObjectName</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>authorizeMBeanMethod</name><argument_list>(<argument><expr><name>userResource</name></expr></argument>, <argument><expr><name>methodName</name></expr></argument>, <argument><expr><name>args</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <return>return <expr><call><name>authorizeMBeanServerMethod</name><argument_list>(<argument><expr><name>userResource</name></expr></argument>, <argument><expr><name>methodName</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Authorize execution of a method on the MBeanServer which does not take an MBean ObjectName
+     * as its first argument. The allowed methods that match this criteria are generally
+     * descriptive methods concerned with the MBeanServer itself, rather than with any particular
+     * set of MBeans managed by the server and so we check the DESCRIBE permission on the root
+     * JMXResource (representing the MBeanServer)
+     *
+     * @param subject
+     * @param methodName
+     * @return the result of the method invocation, if authorized
+     * @throws Throwable
+     * @throws SecurityException if authorization fails
+     */</comment>
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>authorizeMBeanServerMethod</name><parameter_list>(<parameter><decl><type><name>RoleResource</name></type> <name>subject</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>methodName</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"JMX invocation of {} on MBeanServer requires permission {}"</literal></expr></argument>, <argument><expr><name>methodName</name></expr></argument>, <argument><expr><name><name>Permission</name><operator>.</operator><name>DESCRIBE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><operator>(</operator><call><name><name>MBEAN_SERVER_ALLOWED_METHODS</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>methodName</name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator>
+                <call><name>hasPermission</name><argument_list>(<argument><expr><name>subject</name></expr></argument>, <argument><expr><name><name>Permission</name><operator>.</operator><name>DESCRIBE</name></name></expr></argument>, <argument><expr><call><name><name>JMXResource</name><operator>.</operator><name>root</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>)</operator></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Authorize execution of a method on an MBean (or set of MBeans) which may be
+     * managed by the MBeanServer. Note that this also includes the queryMBeans and queryNames
+     * methods of MBeanServer as those both take an ObjectName (possibly a pattern containing
+     * wildcards) as their first argument. They both of those methods also accept null arguments,
+     * in which case they will be handled by authorizedMBeanServerMethod
+     *
+     * @param role
+     * @param methodName
+     * @param args
+     * @return the result of the method invocation, if authorized
+     * @throws Throwable
+     * @throws SecurityException if authorization fails
+     */</comment>
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>authorizeMBeanMethod</name><parameter_list>(<parameter><decl><type><name>RoleResource</name></type> <name>role</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>methodName</name></decl></parameter>, <parameter><decl><type><name><name>Object</name><index>[]</index></name></type> <name>args</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ObjectName</name></type> <name>targetBean</name> <init>= <expr><operator>(</operator><name>ObjectName</name><operator>)</operator><name><name>args</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// work out which permission we need to execute the method being called on the mbean</comment>
+        <decl_stmt><decl><type><name>Permission</name></type> <name>requiredPermission</name> <init>= <expr><call><name>getRequiredPermission</name><argument_list>(<argument><expr><name>methodName</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><literal type="null">null</literal> <operator>==</operator> <name>requiredPermission</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"JMX invocation of {} on {} requires permission {}"</literal></expr></argument>, <argument><expr><name>methodName</name></expr></argument>, <argument><expr><name>targetBean</name></expr></argument>, <argument><expr><name>requiredPermission</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// find any JMXResources upon which the authenticated subject has been granted the</comment>
+        <comment type="line">// reqired permission. We'll do ObjectName-specific filtering &amp; matching of resources later</comment>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>JMXResource</name></argument>&gt;</argument_list></name></type> <name>permittedResources</name> <init>= <expr><call><name>getPermittedResources</name><argument_list>(<argument><expr><name>role</name></expr></argument>, <argument><expr><name>requiredPermission</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>permittedResources</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// finally, check the JMXResource from the grants to see if we have either</comment>
+        <comment type="line">// an exact match or a wildcard match for the target resource, whichever is</comment>
+        <comment type="line">// applicable</comment>
+        <return>return <expr><ternary><condition><expr><call><name><name>targetBean</name><operator>.</operator><name>isPattern</name></name><argument_list>()</argument_list></call></expr>
+                ?</condition><then> <expr><call><name>checkPattern</name><argument_list>(<argument><expr><name>targetBean</name></expr></argument>, <argument><expr><name>permittedResources</name></expr></argument>)</argument_list></call></expr>
+                </then><else>: <expr><call><name>checkExact</name><argument_list>(<argument><expr><name>targetBean</name></expr></argument>, <argument><expr><name>permittedResources</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get any grants of the required permission for the authenticated subject, regardless
+     * of the resource the permission applies to as we'll do the filtering &amp; matching in
+     * the calling method
+     * @param subject
+     * @param required
+     * @return the set of JMXResources upon which the subject has been granted the required permission
+     */</comment>
+    <function><type><specifier>private</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>JMXResource</name></argument>&gt;</argument_list></name></type> <name>getPermittedResources</name><parameter_list>(<parameter><decl><type><name>RoleResource</name></type> <name>subject</name></decl></parameter>, <parameter><decl><type><name>Permission</name></type> <name>required</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>getPermissions</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><name>subject</name></expr></argument>)</argument_list></call>
+               <operator>.</operator><call><name>stream</name><argument_list>()</argument_list></call>
+               <operator>.</operator><call><name>filter</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>details</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name><name>details</name><operator>.</operator><name>permission</name></name> <operator>==</operator> <name>required</name></expr></block_content></block></lambda></expr></argument>)</argument_list></call>
+               <operator>.</operator><call><name>map</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>details</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><operator>(</operator><name>JMXResource</name><operator>)</operator><name><name>details</name><operator>.</operator><name>resource</name></name></expr></block_content></block></lambda></expr></argument>)</argument_list></call>
+               <operator>.</operator><call><name>collect</name><argument_list>(<argument><expr><call><name><name>Collectors</name><operator>.</operator><name>toSet</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check whether a required permission has been granted to the authenticated subject on a specific resource
+     * @param subject
+     * @param permission
+     * @param resource
+     * @return true if the Subject has been granted the required permission on the specified resource; false otherwise
+     */</comment>
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>hasPermission</name><parameter_list>(<parameter><decl><type><name>RoleResource</name></type> <name>subject</name></decl></parameter>, <parameter><decl><type><name>Permission</name></type> <name>permission</name></decl></parameter>, <parameter><decl><type><name>JMXResource</name></type> <name>resource</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>getPermissions</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><name>subject</name></expr></argument>)</argument_list></call>
+               <operator>.</operator><call><name>stream</name><argument_list>()</argument_list></call>
+               <operator>.</operator><call><name>anyMatch</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>details</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name><name>details</name><operator>.</operator><name>permission</name></name> <operator>==</operator> <name>permission</name> <operator>&amp;&amp;</operator> <call><name><name>details</name><operator>.</operator><name>resource</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>resource</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Given a set of JMXResources upon which the Subject has been granted a particular permission,
+     * check whether any match the pattern-type ObjectName representing the target of the method
+     * invocation. At this point, we are sure that whatever the required permission, the Subject
+     * has definitely been granted it against this set of JMXResources. The job of this method is
+     * only to verify that the target of the invocation is covered by the members of the set.
+     *
+     * @param target
+     * @param permittedResources
+     * @return true if all registered beans which match the target can also be matched by the
+     *         JMXResources the subject has been granted permissions on; false otherwise
+     */</comment>
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>checkPattern</name><parameter_list>(<parameter><decl><type><name>ObjectName</name></type> <name>target</name></decl></parameter>, <parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>JMXResource</name></argument>&gt;</argument_list></name></type> <name>permittedResources</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// if the required permission was granted on the root JMX resource, then we're done</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>permittedResources</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><call><name><name>JMXResource</name><operator>.</operator><name>root</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// Get the full set of beans which match the target pattern</comment>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>ObjectName</name></argument>&gt;</argument_list></name></type> <name>targetNames</name> <init>= <expr><call><name><name>queryNames</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><name>target</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// Iterate over the resources the permission has been granted on. Some of these may</comment>
+        <comment type="line">// be patterns, so query the server to retrieve the full list of matching names and</comment>
+        <comment type="line">// remove those from the target set. Once the target set is empty (i.e. all required</comment>
+        <comment type="line">// matches have been satisfied), the requirement is met.</comment>
+        <comment type="line">// If there are still unsatisfied targets after all the JMXResources have been processed,</comment>
+        <comment type="line">// there are insufficient grants to permit the operation.</comment>
+        <for>for <control>(<init><decl><type><name>JMXResource</name></type> <name>resource</name> <range>: <expr><name>permittedResources</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>ObjectName</name></argument>&gt;</argument_list></name></type> <name>matchingNames</name> <init>= <expr><call><name><name>queryNames</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><call><name><name>ObjectName</name><operator>.</operator><name>getInstance</name></name><argument_list>(<argument><expr><call><name><name>resource</name><operator>.</operator><name>getObjectName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>targetNames</name><operator>.</operator><name>removeAll</name></name><argument_list>(<argument><expr><name>matchingNames</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>targetNames</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>MalformedObjectNameException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"Permissions for JMX resource contains invalid ObjectName {}"</literal></expr></argument>, <argument><expr><call><name><name>resource</name><operator>.</operator><name>getObjectName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></for>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Subject does not have sufficient permissions on all MBeans matching the target pattern {}"</literal></expr></argument>, <argument><expr><name>target</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Given a set of JMXResources upon which the Subject has been granted a particular permission,
+     * check whether any match the ObjectName representing the target of the method invocation.
+     * At this point, we are sure that whatever the required permission, the Subject has definitely
+     * been granted it against this set of JMXResources. The job of this method is only to verify
+     * that the target of the invocation is matched by a member of the set.
+     *
+     * @param target
+     * @param permittedResources
+     * @return true if at least one of the permitted resources matches the target; false otherwise
+     */</comment>
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>checkExact</name><parameter_list>(<parameter><decl><type><name>ObjectName</name></type> <name>target</name></decl></parameter>, <parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>JMXResource</name></argument>&gt;</argument_list></name></type> <name>permittedResources</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// if the required permission was granted on the root JMX resource, then we're done</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>permittedResources</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><call><name><name>JMXResource</name><operator>.</operator><name>root</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <for>for <control>(<init><decl><type><name>JMXResource</name></type> <name>resource</name> <range>: <expr><name>permittedResources</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>ObjectName</name><operator>.</operator><name>getInstance</name></name><argument_list>(<argument><expr><call><name><name>resource</name><operator>.</operator><name>getObjectName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>apply</name><argument_list>(<argument><expr><name>target</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>MalformedObjectNameException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"Permissions for JMX resource contains invalid ObjectName {}"</literal></expr></argument>, <argument><expr><call><name><name>resource</name><operator>.</operator><name>getObjectName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></for>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Subject does not have sufficient permissions on target MBean {}"</literal></expr></argument>, <argument><expr><name>target</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Mapping between method names and the permission required to invoke them. Note, these
+     * names refer to methods on MBean instances invoked via the MBeanServer.
+     * @param methodName
+     * @return
+     */</comment>
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>Permission</name></type> <name>getRequiredPermission</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>methodName</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <switch>switch <condition>(<expr><name>methodName</name></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><literal type="string">"getAttribute"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"getAttributes"</literal></expr>:</case>
+                <return>return <expr><name><name>Permission</name><operator>.</operator><name>SELECT</name></name></expr>;</return>
+            <case>case <expr><literal type="string">"setAttribute"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"setAttributes"</literal></expr>:</case>
+                <return>return <expr><name><name>Permission</name><operator>.</operator><name>MODIFY</name></name></expr>;</return>
+            <case>case <expr><literal type="string">"invoke"</literal></expr>:</case>
+                <return>return <expr><name><name>Permission</name><operator>.</operator><name>EXECUTE</name></name></expr>;</return>
+            <case>case <expr><literal type="string">"getInstanceOf"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"getMBeanInfo"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"hashCode"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"isInstanceOf"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"isRegistered"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"queryMBeans"</literal></expr>:</case>
+            <case>case <expr><literal type="string">"queryNames"</literal></expr>:</case>
+                <return>return <expr><name><name>Permission</name><operator>.</operator><name>DESCRIBE</name></name></expr>;</return>
+            <default>default:</default>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Access denied, method name {} does not map to any defined permission"</literal></expr></argument>, <argument><expr><name>methodName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><literal type="null">null</literal></expr>;</return>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Invoke a method on the MBeanServer instance. This is called when authorization is not required (because
+     * AllowAllAuthorizer is configured, or because the invocation is being performed by the JMXConnector
+     * itself rather than by a connected client), and also when a call from an authenticated subject
+     * has been successfully authorized
+     *
+     * @param method
+     * @param args
+     * @return
+     * @throws Throwable
+     */</comment>
+    <function><type><specifier>private</specifier> <name>Object</name></type> <name>invoke</name><parameter_list>(<parameter><decl><type><name>Method</name></type> <name>method</name></decl></parameter>, <parameter><decl><type><name><name>Object</name><index>[]</index></name></type> <name>args</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>Throwable</name></expr></argument></throws>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <return>return <expr><call><name><name>method</name><operator>.</operator><name>invoke</name></name><argument_list>(<argument><expr><name>mbs</name></expr></argument>, <argument><expr><name>args</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>InvocationTargetException</name></type> <name>e</name></decl></parameter>)</parameter_list> <comment type="line">//Catch any exception that might have been thrown by the mbeans</comment>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Throwable</name></type> <name>t</name> <init>= <expr><call><name><name>e</name><operator>.</operator><name>getCause</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt> <comment type="line">//Throw the exception that nodetool etc expects</comment>
+            <throw>throw <expr><name>t</name></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Query the configured IAuthorizer for the set of all permissions granted on JMXResources to a specific subject
+     * @param subject
+     * @return All permissions granted to the specfied subject (including those transitively inherited from
+     *         any roles the subject has been granted), filtered to include only permissions granted on
+     *         JMXResources
+     */</comment>
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>PermissionDetails</name></argument>&gt;</argument_list></name></type> <name>loadPermissions</name><parameter_list>(<parameter><decl><type><name>RoleResource</name></type> <name>subject</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// get all permissions for the specified subject. We'll cache them as it's likely</comment>
+        <comment type="line">// we'll receive multiple lookups for the same subject (but for different resources</comment>
+        <comment type="line">// and permissions) in quick succession</comment>
+        <return>return <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getAuthorizer</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>list</name><argument_list>(<argument><expr><name><name>AuthenticatedUser</name><operator>.</operator><name>SYSTEM_USER</name></name></expr></argument>, <argument><expr><name><name>Permission</name><operator>.</operator><name>ALL</name></name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>subject</name></expr></argument>)</argument_list></call>
+                                                 <operator>.</operator><call><name>stream</name><argument_list>()</argument_list></call>
+                                                 <operator>.</operator><call><name>filter</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>details</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name><name>details</name><operator>.</operator><name>resource</name></name> <operator>instanceof</operator> <name>JMXResource</name></expr></block_content></block></lambda></expr></argument>)</argument_list></call>
+                                                 <operator>.</operator><call><name>collect</name><argument_list>(<argument><expr><call><name><name>Collectors</name><operator>.</operator><name>toSet</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>JMXPermissionsCache</name> <super_list><extends>extends <super><name><name>AuthCache</name><argument_list type="generic">&lt;<argument><name>RoleResource</name></argument>, <argument><name><name>Set</name><argument_list type="generic">&lt;<argument><name>PermissionDetails</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></super></extends></super_list>
+    <block>{
+        <constructor><specifier>protected</specifier> <name>JMXPermissionsCache</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><literal type="string">"JMXPermissionsCache"</literal></expr></argument>,
+                  <argument><expr><name>DatabaseDescriptor</name><operator>::</operator><name>setPermissionsValidity</name></expr></argument>,
+                  <argument><expr><name>DatabaseDescriptor</name><operator>::</operator><name>getPermissionsValidity</name></expr></argument>,
+                  <argument><expr><name>DatabaseDescriptor</name><operator>::</operator><name>setPermissionsUpdateInterval</name></expr></argument>,
+                  <argument><expr><name>DatabaseDescriptor</name><operator>::</operator><name>getPermissionsUpdateInterval</name></expr></argument>,
+                  <argument><expr><name>DatabaseDescriptor</name><operator>::</operator><name>setPermissionsCacheMaxEntries</name></expr></argument>,
+                  <argument><expr><name>DatabaseDescriptor</name><operator>::</operator><name>getPermissionsCacheMaxEntries</name></expr></argument>,
+                  <argument><expr><name>AuthorizationProxy</name><operator>::</operator><name>loadPermissions</name></expr></argument>,
+                  <argument><expr><lambda><parameter_list>()</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><literal type="boolean">true</literal></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+    }</block></class>
+}</block></class>
+</unit>

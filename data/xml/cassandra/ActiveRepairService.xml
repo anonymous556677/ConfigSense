@@ -1,0 +1,908 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/service/ActiveRepairService.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>UnknownHostException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicBoolean</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>management</name><operator>.</operator><name>openmbean</name><operator>.</operator><name>CompositeData</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Predicate</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>stream</name><operator>.</operator><name>Collectors</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Preconditions</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>cache</name><operator>.</operator><name>Cache</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>cache</name><operator>.</operator><name>CacheBuilder</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>ImmutableSet</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterables</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Multimap</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>AbstractFuture</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ListeningExecutorService</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>MoreExecutors</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>DebuggableThreadPoolExecutor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>compaction</name><operator>.</operator><name>CompactionManager</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>EndpointsByRange</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>EndpointsForRange</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>JMXEnabledThreadPoolExecutor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>NamedThreadFactory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ScheduledExecutors</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>Config</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ColumnFamilyStore</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Keyspace</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>Range</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>Token</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>RequestFailureReason</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>ApplicationState</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>EndpointState</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>FailureDetector</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>Gossiper</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>IEndpointStateChangeSubscriber</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>IFailureDetectionEventListener</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>IFailureDetector</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>VersionedValue</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>TokenMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>RepairMetrics</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>RequestCallback</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>Verb</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>Message</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>MessagingService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>CommonRange</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>RepairJobDesc</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>RepairParallelism</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>RepairSession</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>consistent</name><operator>.</operator><name>CoordinatorSessions</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>consistent</name><operator>.</operator><name>LocalSessions</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>consistent</name><operator>.</operator><name>admin</name><operator>.</operator><name>CleanupSummary</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>consistent</name><operator>.</operator><name>admin</name><operator>.</operator><name>PendingStats</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>consistent</name><operator>.</operator><name>admin</name><operator>.</operator><name>RepairStats</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>consistent</name><operator>.</operator><name>RepairedState</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>consistent</name><operator>.</operator><name>admin</name><operator>.</operator><name>SchemaArgsParser</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>messages</name><operator>.</operator><name>CleanupMessage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>messages</name><operator>.</operator><name>PrepareMessage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>messages</name><operator>.</operator><name>RepairMessage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>messages</name><operator>.</operator><name>RepairOption</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>messages</name><operator>.</operator><name>SyncResponse</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>messages</name><operator>.</operator><name>ValidationResponse</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableId</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>streaming</name><operator>.</operator><name>PreviewKind</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>MBeanWrapper</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>Pair</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>UUIDGen</name></name>;</import>
+
+<import>import static <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterables</name><operator>.</operator><name>concat</name></name>;</import>
+<import>import static <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterables</name><operator>.</operator><name>transform</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>Verb</name><operator>.</operator><name>PREPARE_MSG</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * ActiveRepairService is the starting point for manual "active" repairs.
+ *
+ * Each user triggered repair will correspond to one or multiple repair session,
+ * one for each token range to repair. On repair session might repair multiple
+ * column families. For each of those column families, the repair session will
+ * request merkle trees for each replica of the range being repaired, diff those
+ * trees upon receiving them, schedule the streaming ofthe parts to repair (based on
+ * the tree diffs) and wait for all those operation. See RepairSession for more
+ * details.
+ *
+ * The creation of a repair session is done through the submitRepairSession that
+ * returns a future on the completion of that session.
+ */</comment>
+<class><specifier>public</specifier> class <name>ActiveRepairService</name> <super_list><implements>implements <super><name>IEndpointStateChangeSubscriber</name></super>, <super><name>IFailureDetectionEventListener</name></super>, <super><name>ActiveRepairServiceMBean</name></super></implements></super_list>
+<block>{
+
+    <enum><specifier>public</specifier> enum <name>ParentRepairStatus</name>
+    <block>{
+        <decl><name>IN_PROGRESS</name></decl>, <decl><name>COMPLETED</name></decl>, <decl><name>FAILED</name></decl>
+    }</block></enum>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>ConsistentSessions</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>LocalSessions</name></type> <name>local</name> <init>= <expr><operator>new</operator> <call><name>LocalSessions</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>CoordinatorSessions</name></type> <name>coordinated</name> <init>= <expr><operator>new</operator> <call><name>CoordinatorSessions</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    }</block></class>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>ConsistentSessions</name></type> <name>consistent</name> <init>= <expr><operator>new</operator> <call><name>ConsistentSessions</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>registeredForEndpointChanges</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>ActiveRepairService</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <comment type="line">// singleton enforcement</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>ActiveRepairService</name></type> <name>instance</name> <init>= <expr><operator>new</operator> <call><name>ActiveRepairService</name><argument_list>(<argument><expr><name><name>FailureDetector</name><operator>.</operator><name>instance</name></name></expr></argument>, <argument><expr><name><name>Gossiper</name><operator>.</operator><name>instance</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>UNREPAIRED_SSTABLE</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>UUID</name></type> <name>NO_PENDING_REPAIR</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * A map of active coordinator session.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ConcurrentMap</name><argument_list type="generic">&lt;<argument><name>UUID</name></argument>, <argument><name>RepairSession</name></argument>&gt;</argument_list></name></type> <name>sessions</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ConcurrentMap</name><argument_list type="generic">&lt;<argument><name>UUID</name></argument>, <argument><name>ParentRepairSession</name></argument>&gt;</argument_list></name></type> <name>parentRepairSessions</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <static>static
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>RepairMetrics</name><operator>.</operator><name>init</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></static>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>RepairCommandExecutorHandle</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>ThreadPoolExecutor</name></type> <name>repairCommandExecutor</name> <init>=
+            <expr><call><name>initializeExecutor</name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getRepairCommandPoolSize</name></name><argument_list>()</argument_list></call></expr></argument>,
+                               <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getRepairCommandPoolFullStrategy</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    }</block></class>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>static</specifier> <name>ThreadPoolExecutor</name></type> <name>initializeExecutor</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>maxPoolSize</name></decl></parameter>, <parameter><decl><type><name><name>Config</name><operator>.</operator><name>RepairCommandPoolFullStrategy</name></name></type> <name>strategy</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>corePoolSize</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>BlockingQueue</name><argument_list type="generic">&lt;<argument><name>Runnable</name></argument>&gt;</argument_list></name></type> <name>queue</name></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>strategy</name> <operator>==</operator> <name><name>Config</name><operator>.</operator><name>RepairCommandPoolFullStrategy</name><operator>.</operator><name>reject</name></name></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// new threads will be created on demand up to max pool</comment>
+            <comment type="line">// size so we can leave corePoolSize at 1 to start with</comment>
+            <expr_stmt><expr><name>queue</name> <operator>=</operator> <operator>new</operator> <call><name><name>SynchronousQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <comment type="line">// new threads are only created if &gt; corePoolSize threads are running</comment>
+            <comment type="line">// and the queue is full, so set corePoolSize to the desired max as the</comment>
+            <comment type="line">// queue will _never_ be full. Idle core threads will eventually time</comment>
+            <comment type="line">// out and may be re-created if/when subsequent tasks are submitted.</comment>
+            <expr_stmt><expr><name>corePoolSize</name> <operator>=</operator> <name>maxPoolSize</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>queue</name> <operator>=</operator> <operator>new</operator> <call><name><name>LinkedBlockingQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+
+        <decl_stmt><decl><type><name>ThreadPoolExecutor</name></type> <name>executor</name> <init>= <expr><operator>new</operator> <call><name>JMXEnabledThreadPoolExecutor</name><argument_list>(<argument><expr><name>corePoolSize</name></expr></argument>,
+                                                                       <argument><expr><name>maxPoolSize</name></expr></argument>,
+                                                                       <argument><expr><literal type="number">1</literal></expr></argument>,
+                                                                       <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>HOURS</name></name></expr></argument>,
+                                                                       <argument><expr><name>queue</name></expr></argument>,
+                                                                       <argument><expr><operator>new</operator> <call><name>NamedThreadFactory</name><argument_list>(<argument><expr><literal type="string">"Repair-Task"</literal></expr></argument>)</argument_list></call></expr></argument>,
+                                                                       <argument><expr><literal type="string">"internal"</literal></expr></argument>,
+                                                                       <argument><expr><operator>new</operator> <call><name><name>ThreadPoolExecutor</name><operator>.</operator><name>AbortPolicy</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// allow idle core threads to be terminated</comment>
+        <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>allowCoreThreadTimeOut</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>executor</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>ThreadPoolExecutor</name></type> <name>repairCommandExecutor</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name><name>RepairCommandExecutorHandle</name><operator>.</operator><name>repairCommandExecutor</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>IFailureDetector</name></type> <name>failureDetector</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Gossiper</name></type> <name>gossiper</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Cache</name><argument_list type="generic">&lt;<argument><name>Integer</name></argument>, <argument><name><name>Pair</name><argument_list type="generic">&lt;<argument><name>ParentRepairStatus</name></argument>, <argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>repairStatusByCmd</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>DebuggableThreadPoolExecutor</name></type> <name>clearSnapshotExecutor</name> <init>= <expr><call><name><name>DebuggableThreadPoolExecutor</name><operator>.</operator><name>createWithMaximumPoolSize</name></name><argument_list>(<argument><expr><literal type="string">"RepairClearSnapshot"</literal></expr></argument>,
+                                                                                                                              <argument><expr><literal type="number">1</literal></expr></argument>,
+                                                                                                                              <argument><expr><literal type="number">1</literal></expr></argument>,
+                                                                                                                              <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>HOURS</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>ActiveRepairService</name><parameter_list>(<parameter><decl><type><name>IFailureDetector</name></type> <name>failureDetector</name></decl></parameter>, <parameter><decl><type><name>Gossiper</name></type> <name>gossiper</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>failureDetector</name></name> <operator>=</operator> <name>failureDetector</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>gossiper</name></name> <operator>=</operator> <name>gossiper</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>repairStatusByCmd</name></name> <operator>=</operator> <call><name><name>CacheBuilder</name><operator>.</operator><name>newBuilder</name></name><argument_list>()</argument_list></call>
+                                             <operator>.</operator><call><name>expireAfterWrite</name><argument_list>(
+                                             <argument><expr><call><name><name>Long</name><operator>.</operator><name>getLong</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.parent_repair_status_expiry_seconds"</literal></expr></argument>,
+                                                          <argument><expr><call><name><name>TimeUnit</name><operator>.</operator><name>SECONDS</name><operator>.</operator><name>convert</name></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>DAYS</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>SECONDS</name></name></expr></argument>)</argument_list></call>
+                                             <comment type="line">// using weight wouldn't work so well, since it doesn't reflect mutation of cached data</comment>
+                                             <comment type="line">// see https://github.com/google/guava/wiki/CachesExplained</comment>
+                                             <comment type="line">// We assume each entry is unlikely to be much more than 100 bytes, so bounding the size should be sufficient.</comment>
+                                             <operator>.</operator><call><name>maximumSize</name><argument_list>(<argument><expr><call><name><name>Long</name><operator>.</operator><name>getLong</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.parent_repair_status_cache_size"</literal></expr></argument>, <argument><expr><literal type="number">100_000</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call>
+                                             <operator>.</operator><call><name>build</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>MBeanWrapper</name><operator>.</operator><name>instance</name><operator>.</operator><name>registerMBean</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>MBEAN_NAME</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>start</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>consistent</name><operator>.</operator><name>local</name><operator>.</operator><name>start</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>ScheduledExecutors</name><operator>.</operator><name>optionalTasks</name><operator>.</operator><name>scheduleAtFixedRate</name></name><argument_list>(<argument><expr><name><name>consistent</name><operator>.</operator><name>local</name></name><operator>::</operator><name>cleanup</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>,
+                                                             <argument><expr><name><name>LocalSessions</name><operator>.</operator><name>CLEANUP_INTERVAL</name></name></expr></argument>,
+                                                             <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>SECONDS</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>stop</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>consistent</name><operator>.</operator><name>local</name><operator>.</operator><name>stop</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>getSessions</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>all</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>rangesStr</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>ranges</name> <init>= <expr><call><name><name>RepairOption</name><operator>.</operator><name>parseRanges</name></name><argument_list>(<argument><expr><name>rangesStr</name></expr></argument>, <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getPartitioner</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>consistent</name><operator>.</operator><name>local</name><operator>.</operator><name>sessionInfo</name></name><argument_list>(<argument><expr><name>all</name></expr></argument>, <argument><expr><name>ranges</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>failSession</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>force</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>UUID</name></type> <name>sessionID</name> <init>= <expr><call><name><name>UUID</name><operator>.</operator><name>fromString</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>consistent</name><operator>.</operator><name>local</name><operator>.</operator><name>cancelSession</name></name><argument_list>(<argument><expr><name>sessionID</name></expr></argument>, <argument><expr><name>force</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>setRepairSessionSpaceInMegabytes</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>sizeInMegabytes</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>setRepairSessionSpaceInMegabytes</name></name><argument_list>(<argument><expr><name>sizeInMegabytes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>getRepairSessionSpaceInMegabytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getRepairSessionSpaceInMegabytes</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>CompositeData</name></argument>&gt;</argument_list></name></type> <name>getRepairStats</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>schemaArgs</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>rangeString</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>CompositeData</name></argument>&gt;</argument_list></name></type> <name>stats</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>userRanges</name> <init>= <expr><ternary><condition><expr><name>rangeString</name> <operator>!=</operator> <literal type="null">null</literal></expr>
+                                              ?</condition><then> <expr><call><name><name>RepairOption</name><operator>.</operator><name>parseRanges</name></name><argument_list>(<argument><expr><name>rangeString</name></expr></argument>, <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getPartitioner</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>
+                                              </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <range>: <expr><call><name><name>SchemaArgsParser</name><operator>.</operator><name>parse</name></name><argument_list>(<argument><expr><name>schemaArgs</name></expr></argument>)</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>keyspace</name> <init>= <expr><call><name><name>cfs</name><operator>.</operator><name>keyspace</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>ranges</name> <init>= <expr><ternary><condition><expr><name>userRanges</name> <operator>!=</operator> <literal type="null">null</literal></expr>
+                                              ?</condition><then> <expr><name>userRanges</name></expr>
+                                              </then><else>: <expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>getLocalReplicas</name></name><argument_list>(<argument><expr><name>keyspace</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>ranges</name><argument_list>()</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>RepairedState</name><operator>.</operator><name>Stats</name></name></type> <name>cfStats</name> <init>= <expr><call><name><name>consistent</name><operator>.</operator><name>local</name><operator>.</operator><name>getRepairedStats</name></name><argument_list>(<argument><expr><call><name><name>cfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>id</name></expr></argument>, <argument><expr><name>ranges</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>stats</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>RepairStats</name><operator>.</operator><name>fromRepairState</name></name><argument_list>(<argument><expr><name>keyspace</name></expr></argument>, <argument><expr><name><name>cfs</name><operator>.</operator><name>name</name></name></expr></argument>, <argument><expr><name>cfStats</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>toComposite</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <return>return <expr><name>stats</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>CompositeData</name></argument>&gt;</argument_list></name></type> <name>getPendingStats</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>schemaArgs</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>rangeString</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>CompositeData</name></argument>&gt;</argument_list></name></type> <name>stats</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>userRanges</name> <init>= <expr><ternary><condition><expr><name>rangeString</name> <operator>!=</operator> <literal type="null">null</literal></expr>
+                                              ?</condition><then> <expr><call><name><name>RepairOption</name><operator>.</operator><name>parseRanges</name></name><argument_list>(<argument><expr><name>rangeString</name></expr></argument>, <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getPartitioner</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>
+                                              </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <range>: <expr><call><name><name>SchemaArgsParser</name><operator>.</operator><name>parse</name></name><argument_list>(<argument><expr><name>schemaArgs</name></expr></argument>)</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>keyspace</name> <init>= <expr><call><name><name>cfs</name><operator>.</operator><name>keyspace</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>ranges</name> <init>= <expr><ternary><condition><expr><name>userRanges</name> <operator>!=</operator> <literal type="null">null</literal></expr>
+                                              ?</condition><then> <expr><name>userRanges</name></expr>
+                                              </then><else>: <expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>getLocalReplicas</name></name><argument_list>(<argument><expr><name>keyspace</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>ranges</name><argument_list>()</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>PendingStats</name></type> <name>cfStats</name> <init>= <expr><call><name><name>consistent</name><operator>.</operator><name>local</name><operator>.</operator><name>getPendingStats</name></name><argument_list>(<argument><expr><call><name><name>cfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>id</name></expr></argument>, <argument><expr><name>ranges</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>stats</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>cfStats</name><operator>.</operator><name>toComposite</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <return>return <expr><name>stats</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>CompositeData</name></argument>&gt;</argument_list></name></type> <name>cleanupPending</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>schemaArgs</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>rangeString</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>force</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>CompositeData</name></argument>&gt;</argument_list></name></type> <name>stats</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>userRanges</name> <init>= <expr><ternary><condition><expr><name>rangeString</name> <operator>!=</operator> <literal type="null">null</literal></expr>
+                                              ?</condition><then> <expr><call><name><name>RepairOption</name><operator>.</operator><name>parseRanges</name></name><argument_list>(<argument><expr><name>rangeString</name></expr></argument>, <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getPartitioner</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>
+                                              </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <range>: <expr><call><name><name>SchemaArgsParser</name><operator>.</operator><name>parse</name></name><argument_list>(<argument><expr><name>schemaArgs</name></expr></argument>)</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>keyspace</name> <init>= <expr><call><name><name>cfs</name><operator>.</operator><name>keyspace</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>ranges</name> <init>= <expr><ternary><condition><expr><name>userRanges</name> <operator>!=</operator> <literal type="null">null</literal></expr>
+                                              ?</condition><then> <expr><name>userRanges</name></expr>
+                                              </then><else>: <expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>getLocalReplicas</name></name><argument_list>(<argument><expr><name>keyspace</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>ranges</name><argument_list>()</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>CleanupSummary</name></type> <name>summary</name> <init>= <expr><call><name><name>consistent</name><operator>.</operator><name>local</name><operator>.</operator><name>cleanup</name></name><argument_list>(<argument><expr><call><name><name>cfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>id</name></expr></argument>, <argument><expr><name>ranges</name></expr></argument>, <argument><expr><name>force</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>stats</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>summary</name><operator>.</operator><name>toComposite</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><name>stats</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>parentRepairSessionsCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>parentRepairSessions</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Requests repairs for the given keyspace and column families.
+     *
+     * @return Future for asynchronous call or null if there is no need to repair
+     */</comment>
+    <function><type><specifier>public</specifier> <name>RepairSession</name></type> <name>submitRepairSession</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>parentRepairSession</name></decl></parameter>,
+                                             <parameter><decl><type><name>CommonRange</name></type> <name>range</name></decl></parameter>,
+                                             <parameter><decl><type><name>String</name></type> <name>keyspace</name></decl></parameter>,
+                                             <parameter><decl><type><name>RepairParallelism</name></type> <name>parallelismDegree</name></decl></parameter>,
+                                             <parameter><decl><type><name>boolean</name></type> <name>isIncremental</name></decl></parameter>,
+                                             <parameter><decl><type><name>boolean</name></type> <name>pullRepair</name></decl></parameter>,
+                                             <parameter><decl><type><name>PreviewKind</name></type> <name>previewKind</name></decl></parameter>,
+                                             <parameter><decl><type><name>boolean</name></type> <name>optimiseStreams</name></decl></parameter>,
+                                             <parameter><decl><type><name>ListeningExecutorService</name></type> <name>executor</name></decl></parameter>,
+                                             <parameter><decl><type><name>String</name><modifier>...</modifier></type> <name>cfnames</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>range</name><operator>.</operator><name>endpoints</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name><name>cfnames</name><operator>.</operator><name>length</name></name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name>RepairSession</name></type> <name>session</name> <init>= <expr><operator>new</operator> <call><name>RepairSession</name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>, <argument><expr><call><name><name>UUIDGen</name><operator>.</operator><name>getTimeUUID</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>range</name></expr></argument>, <argument><expr><name>keyspace</name></expr></argument>,
+                                                        <argument><expr><name>parallelismDegree</name></expr></argument>, <argument><expr><name>isIncremental</name></expr></argument>, <argument><expr><name>pullRepair</name></expr></argument>,
+                                                        <argument><expr><name>previewKind</name></expr></argument>, <argument><expr><name>optimiseStreams</name></expr></argument>, <argument><expr><name>cfnames</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <expr_stmt><expr><call><name><name>sessions</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>session</name><operator>.</operator><name>getId</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// register listeners</comment>
+        <expr_stmt><expr><call><name>registerOnFdAndGossip</name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name><name>session</name><operator>.</operator><name>previewKind</name></name> <operator>==</operator> <name><name>PreviewKind</name><operator>.</operator><name>REPAIRED</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>LocalSessions</name><operator>.</operator><name>registerListener</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <comment type="line">// remove session at completion</comment>
+        <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>addListener</name></name><argument_list>(<argument><expr><operator>new</operator> <class><super><name>Runnable</name></super><argument_list>()</argument_list>
+        <block>{
+            <comment type="block" format="javadoc">/**
+             * When repair finished, do clean up
+             */</comment>
+            <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>sessions</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><call><name><name>session</name><operator>.</operator><name>getId</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>LocalSessions</name><operator>.</operator><name>unregisterListener</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+        }</block></class></expr></argument>, <argument><expr><call><name><name>MoreExecutors</name><operator>.</operator><name>directExecutor</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>start</name></name><argument_list>(<argument><expr><name>executor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>session</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>getUseOffheapMerkleTrees</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>useOffheapMerkleTrees</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setUseOffheapMerkleTrees</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>value</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>useOffheapMerkleTrees</name></name><argument_list>(<argument><expr><name>value</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <parameter_list type="generic">&lt;<parameter><name>T</name> <extends>extends <name>AbstractFuture</name></extends> <operator>&amp;</operator>
+               <name>IEndpointStateChangeSubscriber</name> <operator>&amp;</operator>
+               <name>IFailureDetectionEventListener</name></parameter>&gt;</parameter_list> <name>void</name></type> <name>registerOnFdAndGossip</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>T</name></type> <name>task</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>gossiper</name><operator>.</operator><name>register</name></name><argument_list>(<argument><expr><name>task</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>failureDetector</name><operator>.</operator><name>registerFailureDetectionEventListener</name></name><argument_list>(<argument><expr><name>task</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// unregister listeners at completion</comment>
+        <expr_stmt><expr><call><name><name>task</name><operator>.</operator><name>addListener</name></name><argument_list>(<argument><expr><operator>new</operator> <class><super><name>Runnable</name></super><argument_list>()</argument_list>
+        <block>{
+            <comment type="block" format="javadoc">/**
+             * When repair finished, do clean up
+             */</comment>
+            <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>failureDetector</name><operator>.</operator><name>unregisterFailureDetectionEventListener</name></name><argument_list>(<argument><expr><name>task</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>gossiper</name><operator>.</operator><name>unregister</name></name><argument_list>(<argument><expr><name>task</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+        }</block></class></expr></argument>, <argument><expr><call><name><name>MoreExecutors</name><operator>.</operator><name>directExecutor</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>terminateSessions</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Throwable</name></type> <name>cause</name> <init>= <expr><operator>new</operator> <call><name>IOException</name><argument_list>(<argument><expr><literal type="string">"Terminate session is called"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>RepairSession</name></type> <name>session</name> <range>: <expr><call><name><name>sessions</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>forceShutdown</name></name><argument_list>(<argument><expr><name>cause</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <expr_stmt><expr><call><name><name>parentRepairSessions</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>recordRepairStatus</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>cmd</name></decl></parameter>, <parameter><decl><type><name>ParentRepairStatus</name></type> <name>parentRepairStatus</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>messages</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>repairStatusByCmd</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>cmd</name></expr></argument>, <argument><expr><call><name><name>Pair</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>parentRepairStatus</name></expr></argument>, <argument><expr><name>messages</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+
+    <function><type><name><name>Pair</name><argument_list type="generic">&lt;<argument><name>ParentRepairStatus</name></argument>, <argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>getRepairStatus</name><parameter_list>(<parameter><decl><type><name>Integer</name></type> <name>cmd</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>repairStatusByCmd</name><operator>.</operator><name>getIfPresent</name></name><argument_list>(<argument><expr><name>cmd</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Return all of the neighbors with whom we share the provided range.
+     *
+     * @param keyspaceName keyspace to repair
+     * @param keyspaceLocalRanges local-range for given keyspaceName
+     * @param toRepair token to repair
+     * @param dataCenters the data centers to involve in the repair
+     *
+     * @return neighbors with whom we share the provided range
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>EndpointsForRange</name></type> <name>getNeighbors</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>keyspaceName</name></decl></parameter>, <parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>keyspaceLocalRanges</name></decl></parameter>,
+                                          <parameter><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>toRepair</name></decl></parameter>, <parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>dataCenters</name></decl></parameter>,
+                                          <parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>hosts</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>StorageService</name></type> <name>ss</name> <init>= <expr><name><name>StorageService</name><operator>.</operator><name>instance</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>EndpointsByRange</name></type> <name>replicaSets</name> <init>= <expr><call><name><name>ss</name><operator>.</operator><name>getRangeToAddressMap</name></name><argument_list>(<argument><expr><name>keyspaceName</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>rangeSuperSet</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>range</name> <range>: <expr><name>keyspaceLocalRanges</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>range</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>toRepair</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>rangeSuperSet</name> <operator>=</operator> <name>range</name></expr>;</expr_stmt>
+                <break>break;</break>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><call><name><name>range</name><operator>.</operator><name>intersects</name></name><argument_list>(<argument><expr><name>toRepair</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Requested range %s intersects a local range (%s) "</literal> <operator>+</operator>
+                                                                 <literal type="string">"but is not fully contained in one; this would lead to "</literal> <operator>+</operator>
+                                                                 <literal type="string">"imprecise repair. keyspace: %s"</literal></expr></argument>, <argument><expr><call><name><name>toRepair</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                                 <argument><expr><call><name><name>range</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>keyspaceName</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+        <if_stmt><if>if <condition>(<expr><name>rangeSuperSet</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <operator>!</operator><call><name><name>replicaSets</name><operator>.</operator><name>containsKey</name></name><argument_list>(<argument><expr><name>rangeSuperSet</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>EndpointsForRange</name><operator>.</operator><name>empty</name></name><argument_list>(<argument><expr><name>toRepair</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>EndpointsForRange</name></type> <name>neighbors</name> <init>= <expr><call><name><name>replicaSets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>rangeSuperSet</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>withoutSelf</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>dataCenters</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>dataCenters</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>TokenMetadata</name><operator>.</operator><name>Topology</name></name></type> <name>topology</name> <init>= <expr><call><name><name>ss</name><operator>.</operator><name>getTokenMetadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>cloneOnlyTokenMap</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getTopology</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Multimap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>dcEndpointsMap</name> <init>= <expr><call><name><name>topology</name><operator>.</operator><name>getDatacenterEndpoints</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>dcEndpoints</name> <init>= <expr><call><name>concat</name><argument_list>(<argument><expr><call><name>transform</name><argument_list>(<argument><expr><name>dataCenters</name></expr></argument>, <argument><expr><name>dcEndpointsMap</name><operator>::</operator><name>get</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <return>return <expr><call><name><name>neighbors</name><operator>.</operator><name>select</name></name><argument_list>(<argument><expr><name>dcEndpoints</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if>
+        <if type="elseif">else if <condition>(<expr><name>hosts</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>hosts</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>specifiedHost</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><specifier>final</specifier> <name>String</name></type> <name>host</name> <range>: <expr><name>hosts</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <try>try
+                <block>{<block_content>
+                    <decl_stmt><decl><type><specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>endpoint</name> <init>= <expr><call><name><name>InetAddressAndPort</name><operator>.</operator><name>getByName</name></name><argument_list>(<argument><expr><call><name><name>host</name><operator>.</operator><name>trim</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>endpoint</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call> <operator>||</operator> <call><name><name>neighbors</name><operator>.</operator><name>endpoints</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>contains</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name><name>specifiedHost</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                </block_content>}</block>
+                <catch>catch <parameter_list>(<parameter><decl><type><name>UnknownHostException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+                <block>{<block_content>
+                    <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Unknown host specified "</literal> <operator>+</operator> <name>host</name></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+                </block_content>}</block></catch></try>
+            </block_content>}</block></for>
+
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>specifiedHost</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"The current host must be part of the repair"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>specifiedHost</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>&lt;=</operator> <literal type="number">1</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>String</name></type> <name>msg</name> <init>= <expr><literal type="string">"Specified hosts %s do not share range %s needed for repair. Either restrict repair ranges "</literal> <operator>+</operator>
+                             <literal type="string">"with -st/-et options, or specify one of the neighbors that share this range with "</literal> <operator>+</operator>
+                             <literal type="string">"this node: %s."</literal></expr></init></decl>;</decl_stmt>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><name>msg</name></expr></argument>, <argument><expr><name>hosts</name></expr></argument>, <argument><expr><name>toRepair</name></expr></argument>, <argument><expr><name>neighbors</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>specifiedHost</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><call><name><name>neighbors</name><operator>.</operator><name>keep</name></name><argument_list>(<argument><expr><name>specifiedHost</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <return>return <expr><name>neighbors</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * we only want to set repairedAt for incremental repairs including all replicas for a token range. For non-global
+     * incremental repairs, forced incremental repairs, and full repairs, the UNREPAIRED_SSTABLE value will prevent
+     * sstables from being promoted to repaired or preserve the repairedAt/pendingRepair values, respectively.
+     */</comment>
+    <function><type><specifier>static</specifier> <name>long</name></type> <name>getRepairedAt</name><parameter_list>(<parameter><decl><type><name>RepairOption</name></type> <name>options</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>force</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// we only want to set repairedAt for incremental repairs including all replicas for a token range. For non-global incremental repairs, full repairs, the UNREPAIRED_SSTABLE value will prevent</comment>
+        <comment type="line">// sstables from being promoted to repaired or preserve the repairedAt/pendingRepair values, respectively. For forced repairs, repairedAt time is only set to UNREPAIRED_SSTABLE if we actually</comment>
+        <comment type="line">// end up skipping replicas</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>options</name><operator>.</operator><name>isIncremental</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>options</name><operator>.</operator><name>isGlobal</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator> <name>force</name></expr>)</condition>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>System</name><operator>.</operator><name>currentTimeMillis</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <return>return  <expr><name><name>ActiveRepairService</name><operator>.</operator><name>UNREPAIRED_SSTABLE</name></name></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>verifyCompactionsPendingThreshold</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>parentRepairSession</name></decl></parameter>, <parameter><decl><type><name>PreviewKind</name></type> <name>previewKind</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// Snapshot values so failure message is consistent with decision</comment>
+        <decl_stmt><decl><type><name>int</name></type> <name>pendingCompactions</name> <init>= <expr><call><name><name>CompactionManager</name><operator>.</operator><name>instance</name><operator>.</operator><name>getPendingTasks</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>pendingThreshold</name> <init>= <expr><call><name><name>ActiveRepairService</name><operator>.</operator><name>instance</name><operator>.</operator><name>getRepairPendingCompactionRejectThreshold</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>pendingCompactions</name> <operator>&gt;</operator> <name>pendingThreshold</name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"[{}] Rejecting incoming repair, pending compactions ({}) above threshold ({})"</literal></expr></argument>,
+                          <argument><expr><call><name><name>previewKind</name><operator>.</operator><name>logPrefix</name></name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>pendingCompactions</name></expr></argument>, <argument><expr><name>pendingThreshold</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>UUID</name></type> <name>prepareForRepair</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>parentRepairSession</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>coordinator</name></decl></parameter>, <parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>endpoints</name></decl></parameter>, <parameter><decl><type><name>RepairOption</name></type> <name>options</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isForcedRepair</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>ColumnFamilyStore</name></argument>&gt;</argument_list></name></type> <name>columnFamilyStores</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>verifyCompactionsPendingThreshold</name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>, <argument><expr><call><name><name>options</name><operator>.</operator><name>getPreviewKind</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>failRepair</name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>, <argument><expr><literal type="string">"Rejecting incoming repair, pending compactions above threshold"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt> <comment type="line">// failRepair throws exception</comment>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>repairedAt</name> <init>= <expr><call><name>getRepairedAt</name><argument_list>(<argument><expr><name>options</name></expr></argument>, <argument><expr><name>isForcedRepair</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>registerParentRepairSession</name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>, <argument><expr><name>coordinator</name></expr></argument>, <argument><expr><name>columnFamilyStores</name></expr></argument>, <argument><expr><call><name><name>options</name><operator>.</operator><name>getRanges</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>options</name><operator>.</operator><name>isIncremental</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>repairedAt</name></expr></argument>, <argument><expr><call><name><name>options</name><operator>.</operator><name>isGlobal</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>options</name><operator>.</operator><name>getPreviewKind</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>CountDownLatch</name></type> <name>prepareLatch</name> <init>= <expr><operator>new</operator> <call><name>CountDownLatch</name><argument_list>(<argument><expr><call><name><name>endpoints</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>AtomicBoolean</name></type> <name>status</name> <init>= <expr><operator>new</operator> <call><name>AtomicBoolean</name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>failedNodes</name> <init>= <expr><call><name><name>Collections</name><operator>.</operator><name>synchronizedSet</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>RequestCallback</name></type> <name>callback</name> <init>= <expr><operator>new</operator> <class><super><name>RequestCallback</name></super><argument_list>()</argument_list>
+        <block>{
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onResponse</name><parameter_list>(<parameter><decl><type><name>Message</name></type> <name>msg</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>prepareLatch</name><operator>.</operator><name>countDown</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onFailure</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>from</name></decl></parameter>, <parameter><decl><type><name>RequestFailureReason</name></type> <name>failureReason</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>status</name><operator>.</operator><name>set</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>failedNodes</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>from</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>prepareLatch</name><operator>.</operator><name>countDown</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>boolean</name></type> <name>invokeOnFailure</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+            </block_content>}</block></function>
+        }</block></class></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>&gt;</argument_list></name></type> <name>tableIds</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>columnFamilyStores</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <range>: <expr><name>columnFamilyStores</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>tableIds</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name><name>cfs</name><operator>.</operator><name>metadata</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+        <for>for <control>(<init><decl><type><name>InetAddressAndPort</name></type> <name>neighbour</name> <range>: <expr><name>endpoints</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>FailureDetector</name><operator>.</operator><name>instance</name><operator>.</operator><name>isAlive</name></name><argument_list>(<argument><expr><name>neighbour</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>PrepareMessage</name></type> <name>message</name> <init>= <expr><operator>new</operator> <call><name>PrepareMessage</name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>, <argument><expr><name>tableIds</name></expr></argument>, <argument><expr><call><name><name>options</name><operator>.</operator><name>getRanges</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>options</name><operator>.</operator><name>isIncremental</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>repairedAt</name></expr></argument>, <argument><expr><call><name><name>options</name><operator>.</operator><name>isGlobal</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>options</name><operator>.</operator><name>getPreviewKind</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>RepairMessage</name></argument>&gt;</argument_list></name></type> <name>msg</name> <init>= <expr><call><name><name>Message</name><operator>.</operator><name>out</name></name><argument_list>(<argument><expr><name>PREPARE_MSG</name></expr></argument>, <argument><expr><name>message</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>MessagingService</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>sendWithCallback</name><argument_list>(<argument><expr><name>msg</name></expr></argument>, <argument><expr><name>neighbour</name></expr></argument>, <argument><expr><name>callback</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <comment type="line">// we pre-filter the endpoints we want to repair for forced incremental repairs. So if any of the</comment>
+                <comment type="line">// remaining ones go down, we still want to fail so we don't create repair sessions that can't complete</comment>
+                <if_stmt><if>if <condition>(<expr><name>isForcedRepair</name> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>options</name><operator>.</operator><name>isIncremental</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>prepareLatch</name><operator>.</operator><name>countDown</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <comment type="line">// bailout early to avoid potentially waiting for a long time.</comment>
+                    <expr_stmt><expr><call><name>failRepair</name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>, <argument><expr><literal type="string">"Endpoint not alive: "</literal> <operator>+</operator> <name>neighbour</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></else></if_stmt>
+
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></for>
+        <try>try
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>prepareLatch</name><operator>.</operator><name>await</name></name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getRpcTimeout</name></name><argument_list>(<argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>failRepair</name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>, <argument><expr><literal type="string">"Did not get replies from all endpoints."</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>InterruptedException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>failRepair</name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>, <argument><expr><literal type="string">"Interrupted while waiting for prepare repair response."</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></catch></try>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>status</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>failRepair</name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>, <argument><expr><literal type="string">"Got negative replies from endpoints "</literal> <operator>+</operator> <name>failedNodes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <return>return <expr><name>parentRepairSession</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Send Verb.CLEANUP_MSG to the given endpoints. This results in removing parent session object from the
+     * endpoint's cache.
+     * This method does not throw an exception in case of a messaging failure.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>cleanUp</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>parentRepairSession</name></decl></parameter>, <parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>endpoints</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name> <range>: <expr><name>endpoints</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>FailureDetector</name><operator>.</operator><name>instance</name><operator>.</operator><name>isAlive</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>CleanupMessage</name></type> <name>message</name> <init>= <expr><operator>new</operator> <call><name>CleanupMessage</name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>CleanupMessage</name></argument>&gt;</argument_list></name></type> <name>msg</name> <init>= <expr><call><name><name>Message</name><operator>.</operator><name>out</name></name><argument_list>(<argument><expr><name><name>Verb</name><operator>.</operator><name>CLEANUP_MSG</name></name></expr></argument>, <argument><expr><name>message</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                    <decl_stmt><decl><type><name>RequestCallback</name></type> <name>loggingCallback</name> <init>= <expr><operator>new</operator> <class><super><name>RequestCallback</name></super><argument_list>()</argument_list>
+                    <block>{
+                        <function><annotation>@<name>Override</name></annotation>
+                        <type><specifier>public</specifier> <name>void</name></type> <name>onResponse</name><parameter_list>(<parameter><decl><type><name>Message</name></type> <name>msg</name></decl></parameter>)</parameter_list>
+                        <block>{<block_content>
+                            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Successfully cleaned up {} parent repair session on {}."</literal></expr></argument>, <argument><expr><name>parentRepairSession</name></expr></argument>, <argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        </block_content>}</block></function>
+
+                        <function><annotation>@<name>Override</name></annotation>
+                        <type><specifier>public</specifier> <name>void</name></type> <name>onFailure</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>from</name></decl></parameter>, <parameter><decl><type><name>RequestFailureReason</name></type> <name>failureReason</name></decl></parameter>)</parameter_list>
+                        <block>{<block_content>
+                            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Failed to clean up parent repair session {} on {}. The uncleaned sessions will "</literal> <operator>+</operator>
+                                    <literal type="string">"be removed on a node restart. This should not be a problem unless you see thousands "</literal> <operator>+</operator>
+                                    <literal type="string">"of messages like this."</literal></expr></argument>, <argument><expr><name>parentRepairSession</name></expr></argument>, <argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        </block_content>}</block></function>
+                    }</block></class></expr></init></decl>;</decl_stmt>
+
+                    <expr_stmt><expr><call><name><name>MessagingService</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>sendWithCallback</name><argument_list>(<argument><expr><name>msg</name></expr></argument>, <argument><expr><name>endpoint</name></expr></argument>, <argument><expr><name>loggingCallback</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>exc</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"Failed to send a clean up message to {}"</literal></expr></argument>, <argument><expr><name>endpoint</name></expr></argument>, <argument><expr><name>exc</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>failRepair</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>parentRepairSession</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>errorMsg</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>removeParentRepairSession</name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>errorMsg</name></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>registerParentRepairSession</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>parentRepairSession</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>coordinator</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>ColumnFamilyStore</name></argument>&gt;</argument_list></name></type> <name>columnFamilyStores</name></decl></parameter>, <parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>ranges</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isIncremental</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>repairedAt</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isGlobal</name></decl></parameter>, <parameter><decl><type><name>PreviewKind</name></type> <name>previewKind</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><name>isIncremental</name> <operator>||</operator> <name>repairedAt</name> <operator>==</operator> <name><name>ActiveRepairService</name><operator>.</operator><name>UNREPAIRED_SSTABLE</name></name></expr>;</assert>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>registeredForEndpointChanges</name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>Gossiper</name><operator>.</operator><name>instance</name><operator>.</operator><name>register</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>FailureDetector</name><operator>.</operator><name>instance</name><operator>.</operator><name>registerFailureDetectionEventListener</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>registeredForEndpointChanges</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>parentRepairSessions</name><operator>.</operator><name>containsKey</name></name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>parentRepairSessions</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>parentRepairSession</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>ParentRepairSession</name><argument_list>(<argument><expr><name>coordinator</name></expr></argument>, <argument><expr><name>columnFamilyStores</name></expr></argument>, <argument><expr><name>ranges</name></expr></argument>, <argument><expr><name>isIncremental</name></expr></argument>, <argument><expr><name>repairedAt</name></expr></argument>, <argument><expr><name>isGlobal</name></expr></argument>, <argument><expr><name>previewKind</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ParentRepairSession</name></type> <name>getParentRepairSession</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>parentSessionId</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ParentRepairSession</name></type> <name>session</name> <init>= <expr><call><name><name>parentRepairSessions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>parentSessionId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// this can happen if a node thinks that the coordinator was down, but that coordinator got back before noticing</comment>
+        <comment type="line">// that it was down itself.</comment>
+        <if_stmt><if>if <condition>(<expr><name>session</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><literal type="string">"Parent repair session with id = "</literal> <operator>+</operator> <name>parentSessionId</name> <operator>+</operator> <literal type="string">" has failed."</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <return>return <expr><name>session</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * called when the repair session is done - either failed or anticompaction has completed
+     *
+     * clears out any snapshots created by this repair
+     *
+     * @param parentSessionId
+     * @return
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>ParentRepairSession</name></type> <name>removeParentRepairSession</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>parentSessionId</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>snapshotName</name> <init>= <expr><call><name><name>parentSessionId</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ParentRepairSession</name></type> <name>session</name> <init>= <expr><call><name><name>parentRepairSessions</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>parentSessionId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>session</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name><name>session</name><operator>.</operator><name>hasSnapshots</name></name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>clearSnapshotExecutor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><lambda><parameter_list>()</parameter_list> -&gt; <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"[repair #{}] Clearing snapshots for {}"</literal></expr></argument>, <argument><expr><name>parentSessionId</name></expr></argument>,
+                            <argument><expr><call><name><name>session</name><operator>.</operator><name>columnFamilyStores</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call>
+                                                      <operator>.</operator><call><name>stream</name><argument_list>()</argument_list></call>
+                                                      <operator>.</operator><call><name>map</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>cfs</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>cfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>()</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call><operator>.</operator><call><name>collect</name><argument_list>(<argument><expr><call><name><name>Collectors</name><operator>.</operator><name>joining</name></name><argument_list>(<argument><expr><literal type="string">", "</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <decl_stmt><decl><type><name>long</name></type> <name>startNanos</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <for>for <control>(<init><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <range>: <expr><call><name><name>session</name><operator>.</operator><name>columnFamilyStores</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>cfs</name><operator>.</operator><name>snapshotExists</name></name><argument_list>(<argument><expr><name>snapshotName</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>clearSnapshot</name></name><argument_list>(<argument><expr><name>snapshotName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                </block_content>}</block></for>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"[repair #{}] Cleared snapshots in {}ms"</literal></expr></argument>, <argument><expr><name>parentSessionId</name></expr></argument>, <argument><expr><call><name><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name><operator>.</operator><name>toMillis</name></name><argument_list>(<argument><expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>startNanos</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>session</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>handleMessage</name><parameter_list>(<parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name> <extends>extends <name>RepairMessage</name></extends></argument>&gt;</argument_list></name></type> <name>message</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>RepairJobDesc</name></type> <name>desc</name> <init>= <expr><name><name>message</name><operator>.</operator><name>payload</name><operator>.</operator><name>desc</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>RepairSession</name></type> <name>session</name> <init>= <expr><call><name><name>sessions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>desc</name><operator>.</operator><name>sessionId</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>session</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+        <switch>switch <condition>(<expr><call><name><name>message</name><operator>.</operator><name>verb</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><name>VALIDATION_RSP</name></expr>:</case>
+                <decl_stmt><decl><type><name>ValidationResponse</name></type> <name>validation</name> <init>= <expr><operator>(</operator><name>ValidationResponse</name><operator>)</operator> <name><name>message</name><operator>.</operator><name>payload</name></name></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>validationComplete</name></name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><call><name><name>message</name><operator>.</operator><name>from</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>validation</name><operator>.</operator><name>trees</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <break>break;</break>
+            <case>case <expr><name>SYNC_RSP</name></expr>:</case>
+                <comment type="line">// one of replica is synced.</comment>
+                <decl_stmt><decl><type><name>SyncResponse</name></type> <name>sync</name> <init>= <expr><operator>(</operator><name>SyncResponse</name><operator>)</operator> <name><name>message</name><operator>.</operator><name>payload</name></name></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>syncComplete</name></name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><name><name>sync</name><operator>.</operator><name>nodes</name></name></expr></argument>, <argument><expr><name><name>sync</name><operator>.</operator><name>success</name></name></expr></argument>, <argument><expr><name><name>sync</name><operator>.</operator><name>summaries</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <break>break;</break>
+            <default>default:</default>
+                <break>break;</break>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * We keep a ParentRepairSession around for the duration of the entire repair, for example, on a 256 token vnode rf=3 cluster
+     * we would have 768 RepairSession but only one ParentRepairSession. We use the PRS to avoid anticompacting the sstables
+     * 768 times, instead we take all repaired ranges at the end of the repair and anticompact once.
+     */</comment>
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>ParentRepairSession</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Keyspace</name></type> <name>keyspace</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name>ColumnFamilyStore</name></argument>&gt;</argument_list></name></type> <name>columnFamilyStores</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>ranges</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>isIncremental</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>isGlobal</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>long</name></type> <name>repairedAt</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>coordinator</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>PreviewKind</name></type> <name>previewKind</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>volatile</specifier> <name>boolean</name></type> <name>hasSnapshots</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>ParentRepairSession</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>coordinator</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>ColumnFamilyStore</name></argument>&gt;</argument_list></name></type> <name>columnFamilyStores</name></decl></parameter>, <parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>ranges</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isIncremental</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>repairedAt</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isGlobal</name></decl></parameter>, <parameter><decl><type><name>PreviewKind</name></type> <name>previewKind</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>coordinator</name></name> <operator>=</operator> <name>coordinator</name></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>Keyspace</name></argument>&gt;</argument_list></name></type> <name>keyspaces</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <range>: <expr><name>columnFamilyStores</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>keyspaces</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name><name>cfs</name><operator>.</operator><name>keyspace</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>this</name><operator>.</operator><name>columnFamilyStores</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name><name>cfs</name><operator>.</operator><name>metadata</name><operator>.</operator><name>id</name></name></expr></argument>, <argument><expr><name>cfs</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+
+            <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><call><name><name>keyspaces</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">1</literal></expr></argument>, <argument><expr><literal type="string">"repair sessions cannot operate on multiple keyspaces"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>keyspace</name></name> <operator>=</operator> <call><name><name>Iterables</name><operator>.</operator><name>getOnlyElement</name></name><argument_list>(<argument><expr><name>keyspaces</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>ranges</name></name> <operator>=</operator> <name>ranges</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>repairedAt</name></name> <operator>=</operator> <name>repairedAt</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>isIncremental</name></name> <operator>=</operator> <name>isIncremental</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>isGlobal</name></name> <operator>=</operator> <name>isGlobal</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>previewKind</name></name> <operator>=</operator> <name>previewKind</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isPreview</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>previewKind</name> <operator>!=</operator> <name><name>PreviewKind</name><operator>.</operator><name>NONE</name></name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>ColumnFamilyStore</name></argument>&gt;</argument_list></name></type> <name>getColumnFamilyStores</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name><name>ImmutableSet</name><operator>.</operator></name>&lt;<name>ColumnFamilyStore</name><operator>&gt;</operator><call><name>builder</name><argument_list>()</argument_list></call><operator>.</operator><call><name>addAll</name><argument_list>(<argument><expr><call><name><name>columnFamilyStores</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>build</name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Keyspace</name></type> <name>getKeyspace</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>keyspace</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>&gt;</argument_list></name></type> <name>getTableIds</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>ImmutableSet</name><operator>.</operator><name>copyOf</name></name><argument_list>(<argument><expr><call><name>transform</name><argument_list>(<argument><expr><call><name>getColumnFamilyStores</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>cfs</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name><name>cfs</name><operator>.</operator><name>metadata</name><operator>.</operator><name>id</name></name></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>getRanges</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>ImmutableSet</name><operator>.</operator><name>copyOf</name></name><argument_list>(<argument><expr><name>ranges</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="string">"ParentRepairSession{"</literal> <operator>+</operator>
+                    <literal type="string">"columnFamilyStores="</literal> <operator>+</operator> <name>columnFamilyStores</name> <operator>+</operator>
+                    <literal type="string">", ranges="</literal> <operator>+</operator> <name>ranges</name> <operator>+</operator>
+                    <literal type="string">", repairedAt="</literal> <operator>+</operator> <name>repairedAt</name> <operator>+</operator>
+                    <literal type="char">'}'</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>setHasSnapshots</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name>hasSnapshots</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block">/*
+    If the coordinator node dies we should remove the parent repair session from the other nodes.
+    This uses the same notifications as we get in RepairSession
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>onJoin</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>, <parameter><decl><type><name>EndpointState</name></type> <name>epState</name></decl></parameter>)</parameter_list> <block>{<block_content/>}</block></function>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>beforeChange</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>, <parameter><decl><type><name>EndpointState</name></type> <name>currentState</name></decl></parameter>, <parameter><decl><type><name>ApplicationState</name></type> <name>newStateKey</name></decl></parameter>, <parameter><decl><type><name>VersionedValue</name></type> <name>newValue</name></decl></parameter>)</parameter_list> <block>{<block_content/>}</block></function>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>onChange</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>, <parameter><decl><type><name>ApplicationState</name></type> <name>state</name></decl></parameter>, <parameter><decl><type><name>VersionedValue</name></type> <name>value</name></decl></parameter>)</parameter_list> <block>{<block_content/>}</block></function>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>onAlive</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>, <parameter><decl><type><name>EndpointState</name></type> <name>state</name></decl></parameter>)</parameter_list> <block>{<block_content/>}</block></function>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>onDead</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>, <parameter><decl><type><name>EndpointState</name></type> <name>state</name></decl></parameter>)</parameter_list> <block>{<block_content/>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>onRemove</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>convict</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>, <argument><expr><name><name>Double</name><operator>.</operator><name>MAX_VALUE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>onRestart</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>, <parameter><decl><type><name>EndpointState</name></type> <name>state</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>convict</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>, <argument><expr><name><name>Double</name><operator>.</operator><name>MAX_VALUE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Something has happened to a remote node - if that node is a coordinator, we mark the parent repair session id as failed.
+     *
+     * The fail marker is kept in the map for 24h to make sure that if the coordinator does not agree
+     * that the repair failed, we need to fail the entire repair session
+     *
+     * @param ep  endpoint to be convicted
+     * @param phi the value of phi with with ep was convicted
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>convict</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>ep</name></decl></parameter>, <parameter><decl><type><name>double</name></type> <name>phi</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// We want a higher confidence in the failure detection than usual because failing a repair wrongly has a high cost.</comment>
+        <if_stmt><if>if <condition>(<expr><name>phi</name> <operator>&lt;</operator> <literal type="number">2</literal> <operator>*</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getPhiConvictThreshold</name></name><argument_list>()</argument_list></call> <operator>||</operator> <call><name><name>parentRepairSessions</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name>abort</name><argument_list>(<argument><expr><lambda><parameter_list>(<parameter><decl><name>prs</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>prs</name><operator>.</operator><name>coordinator</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>ep</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>, <argument><expr><literal type="string">"Removing {} in parent repair sessions"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getRepairPendingCompactionRejectThreshold</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getRepairPendingCompactionRejectThreshold</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setRepairPendingCompactionRejectThreshold</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>value</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>setRepairPendingCompactionRejectThreshold</name></name><argument_list>(<argument><expr><name>value</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Remove any parent repair sessions matching predicate
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>abort</name><parameter_list>(<parameter><decl><type><name><name>Predicate</name><argument_list type="generic">&lt;<argument><name>ParentRepairSession</name></argument>&gt;</argument_list></name></type> <name>predicate</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>message</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>UUID</name></argument>&gt;</argument_list></name></type> <name>parentSessionsToRemove</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>UUID</name></argument>, <argument><name>ParentRepairSession</name></argument>&gt;</argument_list></name></name></type> <name>repairSessionEntry</name> <range>: <expr><call><name><name>parentRepairSessions</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>predicate</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><call><name><name>repairSessionEntry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>parentSessionsToRemove</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>repairSessionEntry</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>parentSessionsToRemove</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><name>parentSessionsToRemove</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>parentSessionsToRemove</name><operator>.</operator><name>forEach</name></name><argument_list>(<argument><expr><name>this</name><operator>::</operator><name>removeParentRepairSession</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>parentRepairSessionCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>parentRepairSessions</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>sessionCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>sessions</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

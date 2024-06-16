@@ -1,0 +1,340 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/net/OutboundConnections.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>channels</name><operator>.</operator><name>ClosedChannelException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ScheduledExecutorService</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Function</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>ImmutableList</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>carrotsearch</name><operator>.</operator><name>hppc</name><operator>.</operator><name>ObjectObjectHashMap</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Future</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>Config</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>Gossiper</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>InternodeOutboundMetrics</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>NoSpamLogger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>SimpleCondition</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>MessagingService</name><operator>.</operator><name>current_version</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>ConnectionType</name><operator>.</operator><name>URGENT_MESSAGES</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>ConnectionType</name><operator>.</operator><name>LARGE_MESSAGES</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>ConnectionType</name><operator>.</operator><name>SMALL_MESSAGES</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Groups a set of outbound connections to a given peer, and routes outgoing messages to the appropriate connection
+ * (based upon message's type or size). Contains a {@link OutboundConnection} for each of the
+ * {@link ConnectionType} types.
+ */</comment>
+<class><specifier>public</specifier> class <name>OutboundConnections</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>OutboundConnections</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>LARGE_MESSAGE_THRESHOLD</name> <init>= <expr><call><name><name>Integer</name><operator>.</operator><name>getInteger</name></name><argument_list>(<argument><expr><name><name>Config</name><operator>.</operator><name>PROPERTY_PREFIX</name></name> <operator>+</operator> <literal type="string">"otcp_large_message_threshold"</literal></expr></argument>, <argument><expr><literal type="number">1024</literal> <operator>*</operator> <literal type="number">64</literal></expr></argument>)</argument_list></call>
+    <operator>-</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name><name>LegacyLZ4Constants</name><operator>.</operator><name>HEADER_LENGTH</name></name></expr></argument>, <argument><expr><name><name>FrameEncoderCrc</name><operator>.</operator><name>HEADER_AND_TRAILER_LENGTH</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>FrameEncoderLZ4</name><operator>.</operator><name>HEADER_AND_TRAILER_LENGTH</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>SimpleCondition</name></type> <name>metricsReady</name> <init>= <expr><operator>new</operator> <call><name>SimpleCondition</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>InternodeOutboundMetrics</name></type> <name>metrics</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ResourceLimits</name><operator>.</operator><name>Limit</name></name></type> <name>reserveCapacity</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>OutboundConnectionSettings</name></type> <name>template</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>OutboundConnection</name></type> <name>small</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>OutboundConnection</name></type> <name>large</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>OutboundConnection</name></type> <name>urgent</name></decl>;</decl_stmt>
+
+    <constructor><specifier>private</specifier> <name>OutboundConnections</name><parameter_list>(<parameter><decl><type><name>OutboundConnectionSettings</name></type> <name>template</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>template</name></name> <operator>=</operator> <name>template</name> <operator>=</operator> <call><name><name>template</name><operator>.</operator><name>withDefaultReserveLimits</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>reserveCapacity</name> <operator>=</operator> <operator>new</operator> <call><name><name>ResourceLimits</name><operator>.</operator><name>Concurrent</name></name><argument_list>(<argument><expr><name><name>template</name><operator>.</operator><name>applicationSendQueueReserveEndpointCapacityInBytes</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name><name>ResourceLimits</name><operator>.</operator><name>EndpointAndGlobal</name></name></type> <name>reserveCapacityInBytes</name> <init>= <expr><operator>new</operator> <call><name><name>ResourceLimits</name><operator>.</operator><name>EndpointAndGlobal</name></name><argument_list>(<argument><expr><name>reserveCapacity</name></expr></argument>, <argument><expr><name><name>template</name><operator>.</operator><name>applicationSendQueueReserveGlobalCapacityInBytes</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>small</name></name> <operator>=</operator> <operator>new</operator> <call><name>OutboundConnection</name><argument_list>(<argument><expr><name>SMALL_MESSAGES</name></expr></argument>, <argument><expr><name>template</name></expr></argument>, <argument><expr><name>reserveCapacityInBytes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>large</name></name> <operator>=</operator> <operator>new</operator> <call><name>OutboundConnection</name><argument_list>(<argument><expr><name>LARGE_MESSAGES</name></expr></argument>, <argument><expr><name>template</name></expr></argument>, <argument><expr><name>reserveCapacityInBytes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>urgent</name></name> <operator>=</operator> <operator>new</operator> <call><name>OutboundConnection</name><argument_list>(<argument><expr><name>URGENT_MESSAGES</name></expr></argument>, <argument><expr><name>template</name></expr></argument>, <argument><expr><name>reserveCapacityInBytes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Select the appropriate connection for the provided message and use it to send the message.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>enqueue</name><parameter_list>(<parameter><decl><type><name>Message</name></type> <name>msg</name></decl></parameter>, <parameter><decl><type><name>ConnectionType</name></type> <name>type</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>ClosedChannelException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>connectionFor</name><argument_list>(<argument><expr><name>msg</name></expr></argument>, <argument><expr><name>type</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>enqueue</name><argument_list>(<argument><expr><name>msg</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <parameter_list type="generic">&lt;<parameter><name>K</name></parameter>&gt;</parameter_list> <name>OutboundConnections</name></type> <name>tryRegister</name><parameter_list>(<parameter><decl><type><name><name>ConcurrentMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>OutboundConnections</name></argument>&gt;</argument_list></name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>K</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>OutboundConnectionSettings</name></type> <name>settings</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>OutboundConnections</name></type> <name>connections</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>connections</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>connections</name> <operator>=</operator> <operator>new</operator> <call><name>OutboundConnections</name><argument_list>(<argument><expr><name>settings</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>OutboundConnections</name></type> <name>existing</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>putIfAbsent</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><name>connections</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>existing</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name><name>connections</name><operator>.</operator><name>metrics</name></name> <operator>=</operator> <operator>new</operator> <call><name>InternodeOutboundMetrics</name><argument_list>(<argument><expr><name><name>settings</name><operator>.</operator><name>to</name></name></expr></argument>, <argument><expr><name>connections</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>connections</name><operator>.</operator><name>metricsReady</name><operator>.</operator><name>signalAll</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>connections</name><operator>.</operator><name>metricsReady</name><operator>.</operator><name>signalAll</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>connections</name><operator>.</operator><name>close</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>connections</name> <operator>=</operator> <name>existing</name></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>connections</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Reconnect to the peer using the given {@code addr}. Outstanding messages in each channel will be sent on the
+     * current channel. Typically this function is used for something like EC2 public IP addresses which need to be used
+     * for communication between EC2 regions.
+     *
+     * @param addr IP Address to use (and prefer) going forward for connecting to the peer
+     */</comment>
+    <function><type><specifier>synchronized</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></type> <name>reconnectWithNewIp</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>addr</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>template</name> <operator>=</operator> <call><name><name>template</name><operator>.</operator><name>withConnectTo</name></name><argument_list>(<argument><expr><name>addr</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><operator>new</operator> <call><name>FutureCombiner</name><argument_list>(
+            <argument><expr><call><name>apply</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>c</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>c</name><operator>.</operator><name>reconnectWith</name></name><argument_list>(<argument><expr><name>template</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr></argument>
+        )</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Close the connections permanently
+     *
+     * @param flushQueues {@code true} if existing messages in the queue should be sent before closing.
+     */</comment>
+    <function><type><specifier>synchronized</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></type> <name>scheduleClose</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>time</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>unit</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>flushQueues</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// immediately release our metrics, so that if we need to re-open immediately we can safely register a new one</comment>
+        <expr_stmt><expr><call><name>releaseMetrics</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><operator>new</operator> <call><name>FutureCombiner</name><argument_list>(
+            <argument><expr><call><name>apply</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>c</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>c</name><operator>.</operator><name>scheduleClose</name></name><argument_list>(<argument><expr><name>time</name></expr></argument>, <argument><expr><name>unit</name></expr></argument>, <argument><expr><name>flushQueues</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr></argument>
+        )</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Close the connections permanently
+     *
+     * @param flushQueues {@code true} if existing messages in the queue should be sent before closing.
+     */</comment>
+    <function><type><specifier>synchronized</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></type> <name>close</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>flushQueues</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// immediately release our metrics, so that if we need to re-open immediately we can safely register a new one</comment>
+        <expr_stmt><expr><call><name>releaseMetrics</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><operator>new</operator> <call><name>FutureCombiner</name><argument_list>(
+            <argument><expr><call><name>apply</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>c</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>c</name><operator>.</operator><name>close</name></name><argument_list>(<argument><expr><name>flushQueues</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr></argument>
+        )</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>releaseMetrics</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>metricsReady</name><operator>.</operator><name>await</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>InterruptedException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+
+        <if_stmt><if>if <condition>(<expr><name>metrics</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Close each netty channel and its socket
+     */</comment>
+    <function><type><name>void</name></type> <name>interrupt</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// must return a non-null value for ImmutableList.of()</comment>
+        <expr_stmt><expr><call><name>apply</name><argument_list>(<argument><expr><name>OutboundConnection</name><operator>::</operator><name>interrupt</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Apply the given function to each of the connections we are pooling, returning the results as a list
+     */</comment>
+    <function><type><specifier>private</specifier> <parameter_list type="generic">&lt;<parameter><name>V</name></parameter>&gt;</parameter_list> <name><name>List</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>apply</name><parameter_list>(<parameter><decl><type><name><name>Function</name><argument_list type="generic">&lt;<argument><name>OutboundConnection</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></type> <name>f</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>ImmutableList</name><operator>.</operator><name>of</name></name><argument_list>(
+            <argument><expr><call><name><name>f</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><name>urgent</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>f</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><name>small</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>f</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><name>large</name></expr></argument>)</argument_list></call></expr></argument>
+        )</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><name>OutboundConnection</name></type> <name>connectionFor</name><parameter_list>(<parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>message</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>connectionFor</name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>OutboundConnection</name></type> <name>connectionFor</name><parameter_list>(<parameter><decl><type><name>Message</name></type> <name>msg</name></decl></parameter>, <parameter><decl><type><name>ConnectionType</name></type> <name>forceConnection</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>connectionFor</name><argument_list>(<argument><expr><call><name>connectionTypeFor</name><argument_list>(<argument><expr><name>msg</name></expr></argument>, <argument><expr><name>forceConnection</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>ConnectionType</name></type> <name>connectionTypeFor</name><parameter_list>(<parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>msg</name></decl></parameter>, <parameter><decl><type><name>ConnectionType</name></type> <name>specifyConnection</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>specifyConnection</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>specifyConnection</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>msg</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><name>current_version</name></expr></argument>)</argument_list></call> <operator>&gt;</operator> <name>LARGE_MESSAGE_THRESHOLD</name></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>msg</name><operator>.</operator><name>verb</name></name><argument_list>()</argument_list></call><operator>.</operator><name>priority</name> <operator>==</operator> <name><name>Verb</name><operator>.</operator><name>Priority</name><operator>.</operator><name>P0</name></name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>NoSpamLogger</name><operator>.</operator><name>log</name></name><argument_list>(<argument><expr><name>logger</name></expr></argument>, <argument><expr><name><name>NoSpamLogger</name><operator>.</operator><name>Level</name><operator>.</operator><name>WARN</name></name></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MINUTES</name></name></expr></argument>,
+                                 <argument><expr><literal type="string">"Enqueued URGENT message which exceeds large message threshold"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"{} message with size {} exceeded large message threshold {}"</literal></expr></argument>,
+                                 <argument><expr><call><name><name>msg</name><operator>.</operator><name>verb</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                 <argument><expr><call><name><name>msg</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><name>current_version</name></expr></argument>)</argument_list></call></expr></argument>,
+                                 <argument><expr><name>LARGE_MESSAGE_THRESHOLD</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <return>return <expr><name>LARGE_MESSAGES</name></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <return>return <expr><ternary><condition><expr><call><name><name>msg</name><operator>.</operator><name>verb</name></name><argument_list>()</argument_list></call><operator>.</operator><name>priority</name> <operator>==</operator> <name><name>Verb</name><operator>.</operator><name>Priority</name><operator>.</operator><name>P0</name></name></expr>
+               ?</condition><then> <expr><name>URGENT_MESSAGES</name></expr>
+               </then><else>: <expr><name>SMALL_MESSAGES</name></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>final</specifier> <name>OutboundConnection</name></type> <name>connectionFor</name><parameter_list>(<parameter><decl><type><name>ConnectionType</name></type> <name>type</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <switch>switch <condition>(<expr><name>type</name></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><name>SMALL_MESSAGES</name></expr>:</case>
+                <return>return <expr><name>small</name></expr>;</return>
+            <case>case <expr><name>LARGE_MESSAGES</name></expr>:</case>
+                <return>return <expr><name>large</name></expr>;</return>
+            <case>case <expr><name>URGENT_MESSAGES</name></expr>:</case>
+                <return>return <expr><name>urgent</name></expr>;</return>
+            <default>default:</default>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"unsupported connection type: "</literal> <operator>+</operator> <name>type</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>usingReserveBytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>reserveCapacity</name><operator>.</operator><name>using</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>long</name></type> <name>expiredCallbacks</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>metrics</name><operator>.</operator><name>expiredCallbacks</name><operator>.</operator><name>getCount</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>incrementExpiredCallbackCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>expiredCallbacks</name><operator>.</operator><name>mark</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>OutboundConnectionSettings</name></type> <name>template</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>template</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>UnusedConnectionMonitor</name>
+    <block>{
+        <constructor><name>UnusedConnectionMonitor</name><parameter_list>(<parameter><decl><type><name>MessagingService</name></type> <name>messagingService</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>messagingService</name></name> <operator>=</operator> <name>messagingService</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <class><specifier>static</specifier> class <name>Counts</name>
+        <block>{
+            <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>small</name></decl>, <decl><type ref="prev"/><name>large</name></decl>, <decl><type ref="prev"/><name>urgent</name></decl>;</decl_stmt>
+            <constructor><name>Counts</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>small</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>large</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>urgent</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><name><name>this</name><operator>.</operator><name>small</name></name> <operator>=</operator> <name>small</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name><name>this</name><operator>.</operator><name>large</name></name> <operator>=</operator> <name>large</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name><name>this</name><operator>.</operator><name>urgent</name></name> <operator>=</operator> <name>urgent</name></expr>;</expr_stmt>
+            </block_content>}</block></constructor>
+        }</block></class>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name>MessagingService</name></type> <name>messagingService</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>ObjectObjectHashMap</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Counts</name></argument>&gt;</argument_list></name></type> <name>prevEndpointToCounts</name> <init>= <expr><operator>new</operator> <call><name><name>ObjectObjectHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>closeUnusedSinceLastRun</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>ObjectObjectHashMap</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Counts</name></argument>&gt;</argument_list></name></type> <name>curEndpointToCounts</name> <init>= <expr><operator>new</operator> <call><name><name>ObjectObjectHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>OutboundConnections</name></type> <name>connections</name> <range>: <expr><call><name><name>messagingService</name><operator>.</operator><name>channelManagers</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>Counts</name></type> <name>cur</name> <init>= <expr><operator>new</operator> <call><name>Counts</name><argument_list>(
+                    <argument><expr><call><name><name>connections</name><operator>.</operator><name>small</name><operator>.</operator><name>submittedCount</name></name><argument_list>()</argument_list></call></expr></argument>,
+                    <argument><expr><call><name><name>connections</name><operator>.</operator><name>large</name><operator>.</operator><name>submittedCount</name></name><argument_list>()</argument_list></call></expr></argument>,
+                    <argument><expr><call><name><name>connections</name><operator>.</operator><name>urgent</name><operator>.</operator><name>submittedCount</name></name><argument_list>()</argument_list></call></expr></argument>
+                )</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>curEndpointToCounts</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name><name>connections</name><operator>.</operator><name>template</name><operator>.</operator><name>to</name></name></expr></argument>, <argument><expr><name>cur</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <decl_stmt><decl><type><name>Counts</name></type> <name>prev</name> <init>= <expr><call><name><name>prevEndpointToCounts</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>connections</name><operator>.</operator><name>template</name><operator>.</operator><name>to</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>prev</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name><name>cur</name><operator>.</operator><name>small</name></name> <operator>!=</operator> <name><name>prev</name><operator>.</operator><name>small</name></name> <operator>&amp;&amp;</operator> <name><name>cur</name><operator>.</operator><name>large</name></name> <operator>!=</operator> <name><name>prev</name><operator>.</operator><name>large</name></name> <operator>&amp;&amp;</operator> <name><name>cur</name><operator>.</operator><name>urgent</name></name> <operator>!=</operator> <name><name>prev</name><operator>.</operator><name>urgent</name></name></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name><name>cur</name><operator>.</operator><name>small</name></name> <operator>==</operator> <name><name>prev</name><operator>.</operator><name>small</name></name> <operator>&amp;&amp;</operator> <name><name>cur</name><operator>.</operator><name>large</name></name> <operator>==</operator> <name><name>prev</name><operator>.</operator><name>large</name></name> <operator>&amp;&amp;</operator> <name><name>cur</name><operator>.</operator><name>urgent</name></name> <operator>==</operator> <name><name>prev</name><operator>.</operator><name>urgent</name></name>
+                    <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>Gossiper</name><operator>.</operator><name>instance</name><operator>.</operator><name>isKnownEndpoint</name></name><argument_list>(<argument><expr><name><name>connections</name><operator>.</operator><name>template</name><operator>.</operator><name>to</name></name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Closing outbound connections to {}, as inactive and not known by Gossiper"</literal></expr></argument>,
+                                <argument><expr><name><name>connections</name><operator>.</operator><name>template</name><operator>.</operator><name>to</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <comment type="line">// close entirely if no traffic and the endpoint is unknown</comment>
+                    <expr_stmt><expr><call><name><name>messagingService</name><operator>.</operator><name>closeOutboundNow</name></name><argument_list>(<argument><expr><name>connections</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <continue>continue;</continue>
+                </block_content>}</block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name><name>cur</name><operator>.</operator><name>small</name></name> <operator>==</operator> <name><name>prev</name><operator>.</operator><name>small</name></name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>connections</name><operator>.</operator><name>small</name><operator>.</operator><name>interrupt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name><name>cur</name><operator>.</operator><name>large</name></name> <operator>==</operator> <name><name>prev</name><operator>.</operator><name>large</name></name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>connections</name><operator>.</operator><name>large</name><operator>.</operator><name>interrupt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name><name>cur</name><operator>.</operator><name>urgent</name></name> <operator>==</operator> <name><name>prev</name><operator>.</operator><name>urgent</name></name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>connections</name><operator>.</operator><name>urgent</name><operator>.</operator><name>interrupt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></for>
+
+            <expr_stmt><expr><name>prevEndpointToCounts</name> <operator>=</operator> <name>curEndpointToCounts</name></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>static</specifier> <name>void</name></type> <name>scheduleUnusedConnectionMonitoring</name><parameter_list>(<parameter><decl><type><name>MessagingService</name></type> <name>messagingService</name></decl></parameter>, <parameter><decl><type><name>ScheduledExecutorService</name></type> <name>executor</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>delay</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>units</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>scheduleWithFixedDelay</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>UnusedConnectionMonitor</name><argument_list>(<argument><expr><name>messagingService</name></expr></argument>)</argument_list></call><operator>::</operator><name>closeUnusedSinceLastRun</name></expr></argument>, <argument><expr><literal type="number">0L</literal></expr></argument>, <argument><expr><name>delay</name></expr></argument>, <argument><expr><name>units</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>static</specifier> <name>OutboundConnections</name></type> <name>unsafeCreate</name><parameter_list>(<parameter><decl><type><name>OutboundConnectionSettings</name></type> <name>template</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>OutboundConnections</name></type> <name>connections</name> <init>= <expr><operator>new</operator> <call><name>OutboundConnections</name><argument_list>(<argument><expr><name>template</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>connections</name><operator>.</operator><name>metricsReady</name><operator>.</operator><name>signalAll</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>connections</name></expr>;</return>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/hints/HintsWriteExecutor.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>hints</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Iterator</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>*</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>DebuggableThreadPoolExecutor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>FSError</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>FSWriteError</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>FileUtils</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A single threaded executor that exclusively writes all the hints and otherwise manipulate the writers.
+ *
+ * Flushing demultiplexes the provided {@link HintsBuffer} and sequentially writes to each {@link HintsWriter},
+ * using the same shared write buffer. In the near future, when CASSANDRA-9428 (compression) is implemented,
+ * will also share a compression buffer.
+ */</comment>
+<class><specifier>final</specifier> class <name>HintsWriteExecutor</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>HintsWriteExecutor</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>WRITE_BUFFER_SIZE</name> <init>= <expr><literal type="number">256</literal> <operator>&lt;&lt;</operator> <literal type="number">10</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>HintsCatalog</name></type> <name>catalog</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ByteBuffer</name></type> <name>writeBuffer</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ExecutorService</name></type> <name>executor</name></decl>;</decl_stmt>
+
+    <constructor><name>HintsWriteExecutor</name><parameter_list>(<parameter><decl><type><name>HintsCatalog</name></type> <name>catalog</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>catalog</name></name> <operator>=</operator> <name>catalog</name></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name>writeBuffer</name> <operator>=</operator> <call><name><name>ByteBuffer</name><operator>.</operator><name>allocateDirect</name></name><argument_list>(<argument><expr><name>WRITE_BUFFER_SIZE</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>executor</name> <operator>=</operator> <call><name><name>DebuggableThreadPoolExecutor</name><operator>.</operator><name>createWithFixedPoolSize</name></name><argument_list>(<argument><expr><literal type="string">"HintsWriteExecutor"</literal></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block">/*
+     * Should be very fast (worst case scenario - write a few 10s of megabytes to disk).
+     */</comment>
+    <function><type><name>void</name></type> <name>shutdownBlocking</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>shutdown</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>awaitTermination</name></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MINUTES</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>InterruptedException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>AssertionError</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Flush the provided buffer, recycle it and offer it back to the pool.
+     */</comment>
+    <function><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>flushBuffer</name><parameter_list>(<parameter><decl><type><name>HintsBuffer</name></type> <name>buffer</name></decl></parameter>, <parameter><decl><type><name>HintsBufferPool</name></type> <name>bufferPool</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>executor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>FlushBufferTask</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><name>bufferPool</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Flush the current buffer, but without clearing/recycling it.
+     */</comment>
+    <function><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>flushBufferPool</name><parameter_list>(<parameter><decl><type><name>HintsBufferPool</name></type> <name>bufferPool</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>executor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>FlushBufferPoolTask</name><argument_list>(<argument><expr><name>bufferPool</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Flush the current buffer just for the specified hints stores. Without clearing/recycling it.
+     */</comment>
+    <function><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>flushBufferPool</name><parameter_list>(<parameter><decl><type><name>HintsBufferPool</name></type> <name>bufferPool</name></decl></parameter>, <parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>HintsStore</name></argument>&gt;</argument_list></name></type> <name>stores</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>executor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>PartiallyFlushBufferPoolTask</name><argument_list>(<argument><expr><name>bufferPool</name></expr></argument>, <argument><expr><name>stores</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>fsyncWritersBlockingly</name><parameter_list>(<parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>HintsStore</name></argument>&gt;</argument_list></name></type> <name>stores</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>FsyncWritersTask</name><argument_list>(<argument><expr><name>stores</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>get</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>InterruptedException</name></type> | <type><name>ExecutionException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>closeWriter</name><parameter_list>(<parameter><decl><type><name>HintsStore</name></type> <name>store</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>executor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><name>store</name><operator>::</operator><name>closeWriter</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>closeAllWriters</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>executor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><lambda><parameter_list>()</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>catalog</name><operator>.</operator><name>stores</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>forEach</name><argument_list>(<argument><expr><name>HintsStore</name><operator>::</operator><name>closeWriter</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>private</specifier> <specifier>final</specifier> class <name>FlushBufferTask</name> <super_list><implements>implements <super><name>Runnable</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>HintsBuffer</name></type> <name>buffer</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>HintsBufferPool</name></type> <name>bufferPool</name></decl>;</decl_stmt>
+
+        <constructor><name>FlushBufferTask</name><parameter_list>(<parameter><decl><type><name>HintsBuffer</name></type> <name>buffer</name></decl></parameter>, <parameter><decl><type><name>HintsBufferPool</name></type> <name>bufferPool</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>buffer</name></name> <operator>=</operator> <name>buffer</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>bufferPool</name></name> <operator>=</operator> <name>bufferPool</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>waitForModifications</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>flush</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <finally>finally
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>HintsBuffer</name></type> <name>recycledBuffer</name> <init>= <expr><call><name><name>buffer</name><operator>.</operator><name>recycle</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>bufferPool</name><operator>.</operator><name>offer</name></name><argument_list>(<argument><expr><name>recycledBuffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></finally></try>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>final</specifier> class <name>FlushBufferPoolTask</name> <super_list><implements>implements <super><name>Runnable</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>HintsBufferPool</name></type> <name>bufferPool</name></decl>;</decl_stmt>
+
+        <constructor><name>FlushBufferPoolTask</name><parameter_list>(<parameter><decl><type><name>HintsBufferPool</name></type> <name>bufferPool</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>bufferPool</name></name> <operator>=</operator> <name>bufferPool</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>HintsBuffer</name></type> <name>buffer</name> <init>= <expr><call><name><name>bufferPool</name><operator>.</operator><name>currentBuffer</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>waitForModifications</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>flush</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch<parameter_list>(<parameter><decl><type><name>FSError</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"Unable to flush hint buffer: {}"</literal></expr></argument>, <argument><expr><call><name><name>e</name><operator>.</operator><name>getLocalizedMessage</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>FileUtils</name><operator>.</operator><name>handleFSErrorAndPropagate</name></name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>final</specifier> class <name>PartiallyFlushBufferPoolTask</name> <super_list><implements>implements <super><name>Runnable</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>HintsBufferPool</name></type> <name>bufferPool</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>HintsStore</name></argument>&gt;</argument_list></name></type> <name>stores</name></decl>;</decl_stmt>
+
+        <constructor><name>PartiallyFlushBufferPoolTask</name><parameter_list>(<parameter><decl><type><name>HintsBufferPool</name></type> <name>bufferPool</name></decl></parameter>, <parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>HintsStore</name></argument>&gt;</argument_list></name></type> <name>stores</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>bufferPool</name></name> <operator>=</operator> <name>bufferPool</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>stores</name></name> <operator>=</operator> <name>stores</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>HintsBuffer</name></type> <name>buffer</name> <init>= <expr><call><name><name>bufferPool</name><operator>.</operator><name>currentBuffer</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>waitForModifications</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>stores</name><operator>.</operator><name>forEach</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>store</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name>flush</name><argument_list>(<argument><expr><call><name><name>buffer</name><operator>.</operator><name>consumingHintsIterator</name></name><argument_list>(<argument><expr><name><name>store</name><operator>.</operator><name>hostId</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>store</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>final</specifier> class <name>FsyncWritersTask</name> <super_list><implements>implements <super><name>Runnable</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>HintsStore</name></argument>&gt;</argument_list></name></type> <name>stores</name></decl>;</decl_stmt>
+
+        <constructor><name>FsyncWritersTask</name><parameter_list>(<parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>HintsStore</name></argument>&gt;</argument_list></name></type> <name>stores</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>stores</name></name> <operator>=</operator> <name>stores</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>stores</name><operator>.</operator><name>forEach</name></name><argument_list>(<argument><expr><name>HintsStore</name><operator>::</operator><name>fsyncWriter</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>catalog</name><operator>.</operator><name>fsyncDirectory</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>flush</name><parameter_list>(<parameter><decl><type><name>HintsBuffer</name></type> <name>buffer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>hostIds</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>forEach</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>hostId</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name>flush</name><argument_list>(<argument><expr><call><name><name>buffer</name><operator>.</operator><name>consumingHintsIterator</name></name><argument_list>(<argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>catalog</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>flush</name><parameter_list>(<parameter><decl><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>iterator</name></decl></parameter>, <parameter><decl><type><name>HintsStore</name></type> <name>store</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>iterator</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>flushInternal</name><argument_list>(<argument><expr><name>iterator</name></expr></argument>, <argument><expr><name>store</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>iterator</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <break>break;</break></block_content></block></if></if_stmt>
+
+            <comment type="line">// exceeded the size limit for an individual file, but still have more to write</comment>
+            <comment type="line">// close the current writer and continue flushing to a new one in the next iteration</comment>
+            <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>closeWriter</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation>   <comment type="line">// writer not closed here</comment>
+    <type><specifier>private</specifier> <name>void</name></type> <name>flushInternal</name><parameter_list>(<parameter><decl><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>iterator</name></decl></parameter>, <parameter><decl><type><name>HintsStore</name></type> <name>store</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>maxHintsFileSize</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getMaxHintsFileSize</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>HintsWriter</name></type> <name>writer</name> <init>= <expr><call><name><name>store</name><operator>.</operator><name>getOrOpenWriter</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <try>try <init>(<decl><type><name><name>HintsWriter</name><operator>.</operator><name>Session</name></name></type> <name>session</name> <init>= <expr><call><name><name>writer</name><operator>.</operator><name>newSession</name></name><argument_list>(<argument><expr><name>writeBuffer</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <while>while <condition>(<expr><call><name><name>iterator</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><call><name><name>iterator</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>session</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call> <operator>&gt;=</operator> <name>maxHintsFileSize</name></expr>)</condition><block type="pseudo"><block_content>
+                    <break>break;</break></block_content></block></if></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>FSWriteError</name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><call><name><name>writer</name><operator>.</operator><name>descriptor</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>fileName</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

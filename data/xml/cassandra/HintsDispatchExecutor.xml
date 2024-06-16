@@ -1,0 +1,321 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/hints/HintsDispatchExecutor.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>hints</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>File</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>UUID</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicBoolean</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>BooleanSupplier</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Predicate</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Supplier</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>RateLimiter</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>JMXEnabledThreadPoolExecutor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>NamedThreadFactory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>FSReadError</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>StorageService</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A multi-threaded (by default) executor for dispatching hints.
+ *
+ * Most of dispatch is triggered by {@link HintsDispatchTrigger} running every ~10 seconds.
+ */</comment>
+<class><specifier>final</specifier> class <name>HintsDispatchExecutor</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>HintsDispatchExecutor</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>File</name></type> <name>hintsDirectory</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ExecutorService</name></type> <name>executor</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>AtomicBoolean</name></type> <name>isPaused</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Predicate</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>isAlive</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>UUID</name></argument>, <argument><name>Future</name></argument>&gt;</argument_list></name></type> <name>scheduledDispatches</name></decl>;</decl_stmt>
+
+    <constructor><name>HintsDispatchExecutor</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>hintsDirectory</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>maxThreads</name></decl></parameter>, <parameter><decl><type><name>AtomicBoolean</name></type> <name>isPaused</name></decl></parameter>, <parameter><decl><type><name><name>Predicate</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>isAlive</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>hintsDirectory</name></name> <operator>=</operator> <name>hintsDirectory</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>isPaused</name></name> <operator>=</operator> <name>isPaused</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>isAlive</name></name> <operator>=</operator> <name>isAlive</name></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name>scheduledDispatches</name> <operator>=</operator> <operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>executor</name> <operator>=</operator> <operator>new</operator> <call><name>JMXEnabledThreadPoolExecutor</name><argument_list>(<argument><expr><name>maxThreads</name></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MINUTES</name></name></expr></argument>,
+                                                    <argument><expr><operator>new</operator> <call><name><name>LinkedBlockingQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></argument>,
+                                                    <argument><expr><operator>new</operator> <call><name>NamedThreadFactory</name><argument_list>(<argument><expr><literal type="string">"HintsDispatcher"</literal></expr></argument>, <argument><expr><name><name>Thread</name><operator>.</operator><name>MIN_PRIORITY</name></name></expr></argument>)</argument_list></call></expr></argument>,
+                                                    <argument><expr><literal type="string">"internal"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block">/*
+     * It's safe to terminate dispatch in process and to deschedule dispatch.
+     */</comment>
+    <function><type><name>void</name></type> <name>shutdownBlocking</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>scheduledDispatches</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>shutdownNow</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>awaitTermination</name></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MINUTES</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>InterruptedException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>AssertionError</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><name>boolean</name></type> <name>isScheduled</name><parameter_list>(<parameter><decl><type><name>HintsStore</name></type> <name>store</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>scheduledDispatches</name><operator>.</operator><name>containsKey</name></name><argument_list>(<argument><expr><name><name>store</name><operator>.</operator><name>hostId</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>Future</name></type> <name>dispatch</name><parameter_list>(<parameter><decl><type><name>HintsStore</name></type> <name>store</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>dispatch</name><argument_list>(<argument><expr><name>store</name></expr></argument>, <argument><expr><name><name>store</name><operator>.</operator><name>hostId</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>Future</name></type> <name>dispatch</name><parameter_list>(<parameter><decl><type><name>HintsStore</name></type> <name>store</name></decl></parameter>, <parameter><decl><type><name>UUID</name></type> <name>hostId</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="block">/*
+         * It is safe to perform dispatch for the same host id concurrently in two or more threads,
+         * however there is nothing to win from it - so we don't.
+         *
+         * Additionally, having just one dispatch task per host id ensures that we'll never violate our per-destination
+         * rate limit, without having to share a ratelimiter between threads.
+         *
+         * It also simplifies reasoning about dispatch sessions.
+         */</comment>
+        <return>return <expr><call><name><name>scheduledDispatches</name><operator>.</operator><name>computeIfAbsent</name></name><argument_list>(<argument><expr><name>hostId</name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>uuid</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>executor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>DispatchHintsTask</name><argument_list>(<argument><expr><name>store</name></expr></argument>, <argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>Future</name></type> <name>transfer</name><parameter_list>(<parameter><decl><type><name>HintsCatalog</name></type> <name>catalog</name></decl></parameter>, <parameter><decl><type><name><name>Supplier</name><argument_list type="generic">&lt;<argument><name>UUID</name></argument>&gt;</argument_list></name></type> <name>hostIdSupplier</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>executor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>TransferHintsTask</name><argument_list>(<argument><expr><name>catalog</name></expr></argument>, <argument><expr><name>hostIdSupplier</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>completeDispatchBlockingly</name><parameter_list>(<parameter><decl><type><name>HintsStore</name></type> <name>store</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Future</name></type> <name>future</name> <init>= <expr><call><name><name>scheduledDispatches</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>store</name><operator>.</operator><name>hostId</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>future</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>future</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>ExecutionException</name></type> | <type><name>InterruptedException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>interruptDispatch</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>hostId</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Future</name></type> <name>future</name> <init>= <expr><call><name><name>scheduledDispatches</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><literal type="null">null</literal> <operator>!=</operator> <name>future</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>future</name><operator>.</operator><name>cancel</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <class><specifier>private</specifier> <specifier>final</specifier> class <name>TransferHintsTask</name> <super_list><implements>implements <super><name>Runnable</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>HintsCatalog</name></type> <name>catalog</name></decl>;</decl_stmt>
+
+        <comment type="block">/*
+         * Supplies target hosts to stream to. Generally returns the one the DynamicSnitch thinks is closest.
+         * We use a supplier here to be able to get a new host if the current one dies during streaming.
+         */</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Supplier</name><argument_list type="generic">&lt;<argument><name>UUID</name></argument>&gt;</argument_list></name></type> <name>hostIdSupplier</name></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>TransferHintsTask</name><parameter_list>(<parameter><decl><type><name>HintsCatalog</name></type> <name>catalog</name></decl></parameter>, <parameter><decl><type><name><name>Supplier</name><argument_list type="generic">&lt;<argument><name>UUID</name></argument>&gt;</argument_list></name></type> <name>hostIdSupplier</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>catalog</name></name> <operator>=</operator> <name>catalog</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>hostIdSupplier</name></name> <operator>=</operator> <name>hostIdSupplier</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>UUID</name></type> <name>hostId</name> <init>= <expr><call><name><name>hostIdSupplier</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>address</name> <init>= <expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>getEndpointForHostId</name></name><argument_list>(<argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Transferring all hints to {}: {}"</literal></expr></argument>, <argument><expr><name>address</name></expr></argument>, <argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name>transfer</name><argument_list>(<argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"Failed to transfer all hints to {}: {}; will retry in {} seconds"</literal></expr></argument>, <argument><expr><name>address</name></expr></argument>, <argument><expr><name>hostId</name></expr></argument>, <argument><expr><literal type="number">10</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>TimeUnit</name><operator>.</operator><name>SECONDS</name><operator>.</operator><name>sleep</name></name><argument_list>(<argument><expr><literal type="number">10</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>InterruptedException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+
+            <expr_stmt><expr><name>hostId</name> <operator>=</operator> <call><name><name>hostIdSupplier</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Transferring all hints to {}: {}"</literal></expr></argument>, <argument><expr><name>address</name></expr></argument>, <argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>transfer</name><argument_list>(<argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"Failed to transfer all hints to {}: {}"</literal></expr></argument>, <argument><expr><name>address</name></expr></argument>, <argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><literal type="string">"Failed to transfer all hints to "</literal> <operator>+</operator> <name>hostId</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>boolean</name></type> <name>transfer</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>hostId</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>catalog</name><operator>.</operator><name>stores</name></name><argument_list>()</argument_list></call>
+                   <operator>.</operator><call><name>map</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>store</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><operator>new</operator> <call><name>DispatchHintsTask</name><argument_list>(<argument><expr><name>store</name></expr></argument>, <argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call>
+                   <operator>.</operator><call><name>forEach</name><argument_list>(<argument><expr><name>Runnable</name><operator>::</operator><name>run</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <return>return <expr><operator>!</operator><call><name><name>catalog</name><operator>.</operator><name>hasFiles</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>final</specifier> class <name>DispatchHintsTask</name> <super_list><implements>implements <super><name>Runnable</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>HintsStore</name></type> <name>store</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>UUID</name></type> <name>hostId</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>RateLimiter</name></type> <name>rateLimiter</name></decl>;</decl_stmt>
+
+        <constructor><name>DispatchHintsTask</name><parameter_list>(<parameter><decl><type><name>HintsStore</name></type> <name>store</name></decl></parameter>, <parameter><decl><type><name>UUID</name></type> <name>hostId</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>store</name></name> <operator>=</operator> <name>store</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>hostId</name></name> <operator>=</operator> <name>hostId</name></expr>;</expr_stmt>
+
+            <comment type="line">// rate limit is in bytes per second. Uses Double.MAX_VALUE if disabled (set to 0 in cassandra.yaml).</comment>
+            <comment type="line">// max rate is scaled by the number of nodes in the cluster (CASSANDRA-5272).</comment>
+            <comment type="line">// the goal is to bound maximum hints traffic going towards a particular node from the rest of the cluster,</comment>
+            <comment type="line">// not total outgoing hints traffic from this node - this is why the rate limiter is not shared between</comment>
+            <comment type="line">// all the dispatch tasks (as there will be at most one dispatch task for a particular host id at a time).</comment>
+            <decl_stmt><decl><type><name>int</name></type> <name>nodesCount</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>getTokenMetadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getAllEndpoints</name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>double</name></type> <name>throttleInBytes</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getHintedHandoffThrottleInKB</name></name><argument_list>()</argument_list></call> <operator>*</operator> <literal type="number">1024.0</literal> <operator>/</operator> <name>nodesCount</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>rateLimiter</name></name> <operator>=</operator> <call><name><name>RateLimiter</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><ternary><condition><expr><name>throttleInBytes</name> <operator>==</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><name><name>Double</name><operator>.</operator><name>MAX_VALUE</name></name></expr> </then><else>: <expr><name>throttleInBytes</name></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>dispatch</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <finally>finally
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>scheduledDispatches</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></finally></try>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>dispatch</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>isPaused</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <break>break;</break></block_content></block></if></if_stmt>
+
+                <decl_stmt><decl><type><name>HintsDescriptor</name></type> <name>descriptor</name> <init>= <expr><call><name><name>store</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>descriptor</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <break>break;</break></block_content></block></if></if_stmt>
+
+                <try>try
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>dispatch</name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <break>break;</break></block_content></block></if></if_stmt>
+                </block_content>}</block>
+                <catch>catch <parameter_list>(<parameter><decl><type><name>FSReadError</name></type> <name>e</name></decl></parameter>)</parameter_list>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Failed to dispatch hints file %s: file is corrupted"</literal></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>fileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>cleanUp</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>markCorrupted</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <throw>throw <expr><name>e</name></expr>;</throw>
+                </block_content>}</block></catch></try>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <comment type="block">/*
+         * Will return true if dispatch was successful, false if we hit a failure (destination node went down, for example).
+         */</comment>
+        <function><type><specifier>private</specifier> <name>boolean</name></type> <name>dispatch</name><parameter_list>(<parameter><decl><type><name>HintsDescriptor</name></type> <name>descriptor</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Dispatching hints file {}"</literal></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>fileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>address</name> <init>= <expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>getEndpointForHostId</name></name><argument_list>(<argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>address</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><call><name>deliver</name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>, <argument><expr><name>address</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+            <comment type="line">// address == null means the target no longer exist; find new home for each hint entry.</comment>
+            <expr_stmt><expr><call><name>convert</name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>boolean</name></type> <name>deliver</name><parameter_list>(<parameter><decl><type><name>HintsDescriptor</name></type> <name>descriptor</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>address</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>File</name></type> <name>file</name> <init>= <expr><operator>new</operator> <call><name>File</name><argument_list>(<argument><expr><name>hintsDirectory</name></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>fileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>InputPosition</name></type> <name>offset</name> <init>= <expr><call><name><name>store</name><operator>.</operator><name>getDispatchOffset</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>BooleanSupplier</name></type> <name>shouldAbort</name> <init>= <expr><lambda><parameter_list>()</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><operator>!</operator><call><name><name>isAlive</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name>address</name></expr></argument>)</argument_list></call> <operator>||</operator> <call><name><name>isPaused</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></block_content></block></lambda></expr></init></decl>;</decl_stmt>
+            <try>try <init>(<decl><type><name>HintsDispatcher</name></type> <name>dispatcher</name> <init>= <expr><call><name><name>HintsDispatcher</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>file</name></expr></argument>, <argument><expr><name>rateLimiter</name></expr></argument>, <argument><expr><name>address</name></expr></argument>, <argument><expr><name><name>descriptor</name><operator>.</operator><name>hostId</name></name></expr></argument>, <argument><expr><name>shouldAbort</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>offset</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>dispatcher</name><operator>.</operator><name>seek</name></name><argument_list>(<argument><expr><name>offset</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><call><name><name>dispatcher</name><operator>.</operator><name>dispatch</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>delete</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>cleanUp</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Finished hinted handoff of file {} to endpoint {}: {}"</literal></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>fileName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>address</name></expr></argument>, <argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>markDispatchOffset</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>, <argument><expr><call><name><name>dispatcher</name><operator>.</operator><name>dispatchPosition</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>offerFirst</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Finished hinted handoff of file {} to endpoint {}: {}, partially"</literal></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>fileName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>address</name></expr></argument>, <argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block></try>
+        </block_content>}</block></function>
+
+        <comment type="line">// for each hint in the hints file for a node that isn't part of the ring anymore, write RF hints for each replica</comment>
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>convert</name><parameter_list>(<parameter><decl><type><name>HintsDescriptor</name></type> <name>descriptor</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>File</name></type> <name>file</name> <init>= <expr><operator>new</operator> <call><name>File</name><argument_list>(<argument><expr><name>hintsDirectory</name></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>fileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <try>try <init>(<decl><type><name>HintsReader</name></type> <name>reader</name> <init>= <expr><call><name><name>HintsReader</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><name>file</name></expr></argument>, <argument><expr><name>rateLimiter</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>reader</name><operator>.</operator><name>forEach</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>page</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>page</name><operator>.</operator><name>hintsIterator</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>forEachRemaining</name><argument_list>(<argument><expr><name><name>HintsService</name><operator>.</operator><name>instance</name></name><operator>::</operator><name>writeForAllReplicas</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>delete</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>cleanUp</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Finished converting hints file {}"</literal></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>fileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></try>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isPaused</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>isPaused</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>hasScheduledDispatches</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>!</operator><call><name><name>scheduledDispatches</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

@@ -1,0 +1,1272 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/filter/DataLimits.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>aggregation</name><operator>.</operator><name>GroupMaker</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>aggregation</name><operator>.</operator><name>GroupingState</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>aggregation</name><operator>.</operator><name>AggregationSpecification</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>transform</name><operator>.</operator><name>BasePartitions</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>transform</name><operator>.</operator><name>BaseRows</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>transform</name><operator>.</operator><name>StoppingTransformation</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>transform</name><operator>.</operator><name>Transformation</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataInputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ByteBufferUtil</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Object in charge of tracking if we have fetch enough data for a given query.
+ *
+ * This is more complicated than a single count because we support PER PARTITION
+ * limits, but also due to GROUP BY and paging.
+ */</comment>
+<class><specifier>public</specifier> <specifier>abstract</specifier> class <name>DataLimits</name>
+<block>{
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Serializer</name></type> <name>serializer</name> <init>= <expr><operator>new</operator> <call><name>Serializer</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>NO_LIMIT</name> <init>= <expr><name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>DataLimits</name></type> <name>NONE</name> <init>= <expr><operator>new</operator> <class><super><name>CQLLimits</name></super><argument_list>(<argument><expr><name>NO_LIMIT</name></expr></argument>)</argument_list>
+    <block>{
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>hasEnoughLiveData</name><parameter_list>(<parameter><decl><type><name>CachedPartition</name></type> <name>cached</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>UnfilteredPartitionIterator</name></type> <name>filter</name><parameter_list>(<parameter><decl><type><name>UnfilteredPartitionIterator</name></type> <name>iter</name></decl></parameter>,
+                                                  <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                                  <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>iter</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>UnfilteredRowIterator</name></type> <name>filter</name><parameter_list>(<parameter><decl><type><name>UnfilteredRowIterator</name></type> <name>iter</name></decl></parameter>,
+                                            <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                            <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>iter</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>PartitionIterator</name></type> <name>filter</name><parameter_list>(<parameter><decl><type><name>PartitionIterator</name></type> <name>iter</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>iter</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// We currently deal with distinct queries by querying full partitions but limiting the result at 1 row per</comment>
+    <comment type="line">// partition (see SelectStatement.makeFilter). So an "unbounded" distinct is still actually doing some filtering.</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>DataLimits</name></type> <name>DISTINCT_NONE</name> <init>= <expr><operator>new</operator> <call><name>CQLLimits</name><argument_list>(<argument><expr><name>NO_LIMIT</name></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <enum><specifier>public</specifier> enum <name>Kind</name>
+    <block>{
+        <decl><name>CQL_LIMIT</name></decl>,
+        <decl><name>CQL_PAGING_LIMIT</name></decl>,
+        @<decl><name>Deprecated</name> <name>THRIFT_LIMIT</name></decl>, <comment type="line">//Deprecated and unused in 4.0, stop publishing in 5.0, reclaim in 6.0</comment>
+        @<decl><name>Deprecated</name> <name>SUPER_COLUMN_COUNTING_LIMIT</name></decl>, <comment type="line">//Deprecated and unused in 4.0, stop publishing in 5.0, reclaim in 6.0</comment>
+        <decl><name>CQL_GROUP_BY_LIMIT</name></decl>,
+        <decl><name>CQL_GROUP_BY_PAGING_LIMIT</name></decl>,
+    }</block></enum>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>DataLimits</name></type> <name>cqlLimits</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>cqlRowLimit</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>cqlRowLimit</name> <operator>==</operator> <name>NO_LIMIT</name></expr> ?</condition><then> <expr><name>NONE</name></expr> </then><else>: <expr><operator>new</operator> <call><name>CQLLimits</name><argument_list>(<argument><expr><name>cqlRowLimit</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>DataLimits</name></type> <name>cqlLimits</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>cqlRowLimit</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>perPartitionLimit</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>cqlRowLimit</name> <operator>==</operator> <name>NO_LIMIT</name> <operator>&amp;&amp;</operator> <name>perPartitionLimit</name> <operator>==</operator> <name>NO_LIMIT</name></expr>
+             ?</condition><then> <expr><name>NONE</name></expr>
+             </then><else>: <expr><operator>new</operator> <call><name>CQLLimits</name><argument_list>(<argument><expr><name>cqlRowLimit</name></expr></argument>, <argument><expr><name>perPartitionLimit</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>DataLimits</name></type> <name>cqlLimits</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>cqlRowLimit</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>perPartitionLimit</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isDistinct</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>cqlRowLimit</name> <operator>==</operator> <name>NO_LIMIT</name> <operator>&amp;&amp;</operator> <name>perPartitionLimit</name> <operator>==</operator> <name>NO_LIMIT</name> <operator>&amp;&amp;</operator> <operator>!</operator><name>isDistinct</name></expr>
+             ?</condition><then> <expr><name>NONE</name></expr>
+             </then><else>: <expr><operator>new</operator> <call><name>CQLLimits</name><argument_list>(<argument><expr><name>cqlRowLimit</name></expr></argument>, <argument><expr><name>perPartitionLimit</name></expr></argument>, <argument><expr><name>isDistinct</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>DataLimits</name></type> <name>groupByLimits</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>groupLimit</name></decl></parameter>,
+                                           <parameter><decl><type><name>int</name></type> <name>groupPerPartitionLimit</name></decl></parameter>,
+                                           <parameter><decl><type><name>int</name></type> <name>rowLimit</name></decl></parameter>,
+                                           <parameter><decl><type><name>AggregationSpecification</name></type> <name>groupBySpec</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>CQLGroupByLimits</name><argument_list>(<argument><expr><name>groupLimit</name></expr></argument>, <argument><expr><name>groupPerPartitionLimit</name></expr></argument>, <argument><expr><name>rowLimit</name></expr></argument>, <argument><expr><name>groupBySpec</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>DataLimits</name></type> <name>distinctLimits</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>cqlRowLimit</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>CQLLimits</name><operator>.</operator><name>distinct</name></name><argument_list>(<argument><expr><name>cqlRowLimit</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>Kind</name></type> <name>kind</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>boolean</name></type> <name>isUnlimited</name><parameter_list>()</parameter_list>;</function_decl>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>boolean</name></type> <name>isDistinct</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isGroupByLimit</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isExhausted</name><parameter_list>(<parameter><decl><type><name>Counter</name></type> <name>counter</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>counter</name><operator>.</operator><name>counted</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <call><name>count</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>DataLimits</name></type> <name>forPaging</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>pageSize</name></decl></parameter>)</parameter_list>;</function_decl>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>DataLimits</name></type> <name>forPaging</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>pageSize</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>lastReturnedKey</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>lastReturnedKeyRemaining</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>DataLimits</name></type> <name>forShortReadRetry</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>toFetch</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a &lt;code&gt;DataLimits&lt;/code&gt; instance to be used for paginating internally GROUP BY queries.
+     *
+     * @param state the &lt;code&gt;GroupMaker&lt;/code&gt; state
+     * @return a &lt;code&gt;DataLimits&lt;/code&gt; instance to be used for paginating internally GROUP BY queries
+     */</comment>
+    <function><type><specifier>public</specifier> <name>DataLimits</name></type> <name>forGroupByInternalPaging</name><parameter_list>(<parameter><decl><type><name>GroupingState</name></type> <name>state</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <throw>throw <expr><operator>new</operator> <call><name>UnsupportedOperationException</name><argument_list>()</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>boolean</name></type> <name>hasEnoughLiveData</name><parameter_list>(<parameter><decl><type><name>CachedPartition</name></type> <name>cached</name></decl></parameter>,
+                                              <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                              <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>,
+                                              <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Returns a new {@code Counter} for this limits.
+     *
+     * @param nowInSec the current time in second (to decide what is expired or not).
+     * @param assumeLiveData if true, the counter will assume that every row passed is live and won't
+     * thus check for liveness, otherwise it will. This should be {@code true} when used on a
+     * {@code RowIterator} (since it only returns live rows), false otherwise.
+     * @param countPartitionsWithOnlyStaticData if {@code true} the partitions with only static data should be counted
+     * as 1 valid row.
+     * @param enforceStrictLiveness whether the row should be purged if there is no PK liveness info,
+     * normally retrieved from {@link org.apache.cassandra.schema.TableMetadata#enforceStrictLiveness()}
+     * @return a new {@code Counter} for this limits.
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>Counter</name></type> <name>newCounter</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                       <parameter><decl><type><name>boolean</name></type> <name>assumeLiveData</name></decl></parameter>,
+                                       <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>,
+                                       <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * The max number of results this limits enforces.
+     * &lt;p&gt;
+     * Note that the actual definition of "results" depends a bit: for "normal" queries it's a number of rows,
+     * but for GROUP BY queries it's a number of groups.
+     *
+     * @return the maximum number of results this limits enforces.
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>int</name></type> <name>count</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>int</name></type> <name>perPartitionCount</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Returns equivalent limits but where any internal state kept to track where we are of paging and/or grouping is
+     * discarded.
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>DataLimits</name></type> <name>withoutState</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <function><type><specifier>public</specifier> <name>UnfilteredPartitionIterator</name></type> <name>filter</name><parameter_list>(<parameter><decl><type><name>UnfilteredPartitionIterator</name></type> <name>iter</name></decl></parameter>,
+                                              <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                              <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>this</name><operator>.</operator><name>newCounter</name></name><argument_list>(<argument><expr><name>nowInSec</name></expr></argument>,
+                               <argument><expr><literal type="boolean">false</literal></expr></argument>,
+                               <argument><expr><name>countPartitionsWithOnlyStaticData</name></expr></argument>,
+                               <argument><expr><call><name><name>iter</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>enforceStrictLiveness</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call>
+                   <operator>.</operator><call><name>applyTo</name><argument_list>(<argument><expr><name>iter</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>UnfilteredRowIterator</name></type> <name>filter</name><parameter_list>(<parameter><decl><type><name>UnfilteredRowIterator</name></type> <name>iter</name></decl></parameter>,
+                                        <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                        <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>this</name><operator>.</operator><name>newCounter</name></name><argument_list>(<argument><expr><name>nowInSec</name></expr></argument>,
+                               <argument><expr><literal type="boolean">false</literal></expr></argument>,
+                               <argument><expr><name>countPartitionsWithOnlyStaticData</name></expr></argument>,
+                               <argument><expr><call><name><name>iter</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>enforceStrictLiveness</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call>
+                   <operator>.</operator><call><name>applyTo</name><argument_list>(<argument><expr><name>iter</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>PartitionIterator</name></type> <name>filter</name><parameter_list>(<parameter><decl><type><name>PartitionIterator</name></type> <name>iter</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>this</name><operator>.</operator><name>newCounter</name></name><argument_list>(<argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><name>countPartitionsWithOnlyStaticData</name></expr></argument>, <argument><expr><name>enforceStrictLiveness</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>applyTo</name><argument_list>(<argument><expr><name>iter</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Estimate the number of results that a full scan of the provided cfs would yield.
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>float</name></type> <name>estimateTotalResults</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> <specifier>abstract</specifier> class <name>Counter</name> <super_list><extends>extends <super><name><name>StoppingTransformation</name><argument_list type="generic">&lt;<argument><name><name>BaseRowIterator</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>int</name></type> <name>nowInSec</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>assumeLiveData</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>enforceStrictLiveness</name></decl>;</decl_stmt>
+
+        <comment type="line">// false means we do not propagate our stop signals onto the iterator, we only count</comment>
+        <decl_stmt><decl><type><specifier>protected</specifier> <name>boolean</name></type> <name>enforceLimits</name> <init>= <expr><literal type="boolean">true</literal></expr></init></decl>;</decl_stmt>
+
+        <constructor><specifier>protected</specifier> <name>Counter</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>assumeLiveData</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>nowInSec</name></name> <operator>=</operator> <name>nowInSec</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>assumeLiveData</name></name> <operator>=</operator> <name>assumeLiveData</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>enforceStrictLiveness</name></name> <operator>=</operator> <name>enforceStrictLiveness</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>Counter</name></type> <name>onlyCount</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>enforceLimits</name></name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>PartitionIterator</name></type> <name>applyTo</name><parameter_list>(<parameter><decl><type><name>PartitionIterator</name></type> <name>partitions</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>Transformation</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><name>partitions</name></expr></argument>, <argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>UnfilteredPartitionIterator</name></type> <name>applyTo</name><parameter_list>(<parameter><decl><type><name>UnfilteredPartitionIterator</name></type> <name>partitions</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>Transformation</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><name>partitions</name></expr></argument>, <argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>UnfilteredRowIterator</name></type> <name>applyTo</name><parameter_list>(<parameter><decl><type><name>UnfilteredRowIterator</name></type> <name>partition</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>(</operator><name>UnfilteredRowIterator</name><operator>)</operator> <call><name>applyToPartition</name><argument_list>(<argument><expr><name>partition</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>RowIterator</name></type> <name>applyTo</name><parameter_list>(<parameter><decl><type><name>RowIterator</name></type> <name>partition</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>(</operator><name>RowIterator</name><operator>)</operator> <call><name>applyToPartition</name><argument_list>(<argument><expr><name>partition</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * The number of results counted.
+         * &lt;p&gt;
+         * Note that the definition of "results" should be the same that for {@link #count}.
+         *
+         * @return the number of results counted.
+         */</comment>
+        <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>int</name></type> <name>counted</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>int</name></type> <name>countedInCurrentPartition</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * The number of rows counted.
+         *
+         * @return the number of rows counted.
+         */</comment>
+        <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>int</name></type> <name>rowsCounted</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * The number of rows counted in the current partition.
+         *
+         * @return the number of rows counted in the current partition.
+         */</comment>
+        <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>int</name></type> <name>rowsCountedInCurrentPartition</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>boolean</name></type> <name>isDone</name><parameter_list>()</parameter_list>;</function_decl>
+        <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>boolean</name></type> <name>isDoneForPartition</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <function><type><specifier>protected</specifier> <name>boolean</name></type> <name>isLive</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>assumeLiveData</name> <operator>||</operator> <call><name><name>row</name><operator>.</operator><name>hasLiveData</name></name><argument_list>(<argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>enforceStrictLiveness</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>protected</specifier> <name><name>BaseRowIterator</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>applyToPartition</name><parameter_list>(<parameter><decl><type><name><name>BaseRowIterator</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>partition</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><ternary><condition><expr><name>partition</name> <operator>instanceof</operator> <name>UnfilteredRowIterator</name></expr> ?</condition><then> <expr><call><name><name>Transformation</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><operator>(</operator><name>UnfilteredRowIterator</name><operator>)</operator> <name>partition</name></expr></argument>, <argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>
+                                                              </then><else>: <expr><call><name><name>Transformation</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><operator>(</operator><name>RowIterator</name><operator>)</operator> <name>partition</name></expr></argument>, <argument><expr><name>this</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="line">// called before we process a given partition</comment>
+        <function_decl><type><specifier>protected</specifier> <specifier>abstract</specifier> <name>void</name></type> <name>applyToPartition</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>partitionKey</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>staticRow</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>protected</specifier> <name>void</name></type> <name>attachTo</name><parameter_list>(<parameter><decl><type><name>BasePartitions</name></type> <name>partitions</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>enforceLimits</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>super</name><operator>.</operator><name>attachTo</name></name><argument_list>(<argument><expr><name>partitions</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name>isDone</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>stop</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>protected</specifier> <name>void</name></type> <name>attachTo</name><parameter_list>(<parameter><decl><type><name>BaseRows</name></type> <name>rows</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>enforceLimits</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>super</name><operator>.</operator><name>attachTo</name></name><argument_list>(<argument><expr><name>rows</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <expr_stmt><expr><call><name>applyToPartition</name><argument_list>(<argument><expr><call><name><name>rows</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>rows</name><operator>.</operator><name>staticRow</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name>isDoneForPartition</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>stopInPartition</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>onClose</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>super</name><operator>.</operator><name>onClose</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * Limits used by CQL; this counts rows.
+     */</comment>
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>CQLLimits</name> <super_list><extends>extends <super><name>DataLimits</name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>int</name></type> <name>rowLimit</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>int</name></type> <name>perPartitionLimit</name></decl>;</decl_stmt>
+
+        <comment type="line">// Whether the query is a distinct query or not.</comment>
+        <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>isDistinct</name></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>CQLLimits</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>rowLimit</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>rowLimit</name></expr></argument>, <argument><expr><name>NO_LIMIT</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><specifier>private</specifier> <name>CQLLimits</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>rowLimit</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>perPartitionLimit</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>rowLimit</name></expr></argument>, <argument><expr><name>perPartitionLimit</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><specifier>private</specifier> <name>CQLLimits</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>rowLimit</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>perPartitionLimit</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isDistinct</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>rowLimit</name></name> <operator>=</operator> <name>rowLimit</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>perPartitionLimit</name></name> <operator>=</operator> <name>perPartitionLimit</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>isDistinct</name></name> <operator>=</operator> <name>isDistinct</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>CQLLimits</name></type> <name>distinct</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>rowLimit</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>CQLLimits</name><argument_list>(<argument><expr><name>rowLimit</name></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Kind</name></type> <name>kind</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name><name>Kind</name><operator>.</operator><name>CQL_LIMIT</name></name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isUnlimited</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>rowLimit</name> <operator>==</operator> <name>NO_LIMIT</name> <operator>&amp;&amp;</operator> <name>perPartitionLimit</name> <operator>==</operator> <name>NO_LIMIT</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isDistinct</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>isDistinct</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>DataLimits</name></type> <name>forPaging</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>pageSize</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>CQLLimits</name><argument_list>(<argument><expr><name>pageSize</name></expr></argument>, <argument><expr><name>perPartitionLimit</name></expr></argument>, <argument><expr><name>isDistinct</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>DataLimits</name></type> <name>forPaging</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>pageSize</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>lastReturnedKey</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>lastReturnedKeyRemaining</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>CQLPagingLimits</name><argument_list>(<argument><expr><name>pageSize</name></expr></argument>, <argument><expr><name>perPartitionLimit</name></expr></argument>, <argument><expr><name>isDistinct</name></expr></argument>, <argument><expr><name>lastReturnedKey</name></expr></argument>, <argument><expr><name>lastReturnedKeyRemaining</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>DataLimits</name></type> <name>forShortReadRetry</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>toFetch</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>CQLLimits</name><argument_list>(<argument><expr><name>toFetch</name></expr></argument>, <argument><expr><name>perPartitionLimit</name></expr></argument>, <argument><expr><name>isDistinct</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>hasEnoughLiveData</name><parameter_list>(<parameter><decl><type><name>CachedPartition</name></type> <name>cached</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// We want the number of row that are currently live. Getting that precise number forces</comment>
+            <comment type="line">// us to iterate the cached partition in general, but we can avoid that if:</comment>
+            <comment type="line">//   - The number of rows with at least one non-expiring cell is greater than what we ask,</comment>
+            <comment type="line">//     in which case we know we have enough live.</comment>
+            <comment type="line">//   - The number of rows is less than requested, in which case we  know we won't have enough.</comment>
+            <if_stmt><if>if <condition>(<expr><call><name><name>cached</name><operator>.</operator><name>rowsWithNonExpiringCells</name></name><argument_list>()</argument_list></call> <operator>&gt;=</operator> <name>rowLimit</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>cached</name><operator>.</operator><name>rowCount</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <name>rowLimit</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <comment type="line">// Otherwise, we need to re-count</comment>
+
+            <decl_stmt><decl><type><name><name>DataLimits</name><operator>.</operator><name>Counter</name></name></type> <name>counter</name> <init>= <expr><call><name>newCounter</name><argument_list>(<argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><name>countPartitionsWithOnlyStaticData</name></expr></argument>, <argument><expr><name>enforceStrictLiveness</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <try>try <init>(<decl><type><name>UnfilteredRowIterator</name></type> <name>cacheIter</name> <init>= <expr><call><name><name>cached</name><operator>.</operator><name>unfilteredIterator</name></name><argument_list>(<argument><expr><call><name><name>ColumnFilter</name><operator>.</operator><name>selection</name></name><argument_list>(<argument><expr><call><name><name>cached</name><operator>.</operator><name>columns</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>Slices</name><operator>.</operator><name>ALL</name></name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;
+                 <decl><type><name>UnfilteredRowIterator</name></type> <name>iter</name> <init>= <expr><call><name><name>counter</name><operator>.</operator><name>applyTo</name></name><argument_list>(<argument><expr><name>cacheIter</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+                <comment type="line">// Consume the iterator until we've counted enough</comment>
+                <while>while <condition>(<expr><call><name><name>iter</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>iter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></while>
+                <return>return <expr><call><name><name>counter</name><operator>.</operator><name>isDone</name></name><argument_list>()</argument_list></call></expr>;</return>
+            </block_content>}</block></try>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Counter</name></type> <name>newCounter</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                  <parameter><decl><type><name>boolean</name></type> <name>assumeLiveData</name></decl></parameter>,
+                                  <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>,
+                                  <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>CQLCounter</name><argument_list>(<argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>assumeLiveData</name></expr></argument>, <argument><expr><name>countPartitionsWithOnlyStaticData</name></expr></argument>, <argument><expr><name>enforceStrictLiveness</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>int</name></type> <name>count</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>rowLimit</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>int</name></type> <name>perPartitionCount</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>perPartitionLimit</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>DataLimits</name></type> <name>withoutState</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>float</name></type> <name>estimateTotalResults</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// TODO: we should start storing stats on the number of rows (instead of the number of cells, which</comment>
+            <comment type="line">// is what getMeanColumns returns)</comment>
+            <decl_stmt><decl><type><name>float</name></type> <name>rowsPerPartition</name> <init>= <expr><operator>(</operator><operator>(</operator><name>float</name><operator>)</operator> <call><name><name>cfs</name><operator>.</operator><name>getMeanEstimatedCellPerPartitionCount</name></name><argument_list>()</argument_list></call><operator>)</operator> <operator>/</operator> <call><name><name>cfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>regularColumns</name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <return>return <expr><name>rowsPerPartition</name> <operator>*</operator> <operator>(</operator><call><name><name>cfs</name><operator>.</operator><name>estimateKeys</name></name><argument_list>()</argument_list></call><operator>)</operator></expr>;</return>
+        </block_content>}</block></function>
+
+        <class><specifier>protected</specifier> class <name>CQLCounter</name> <super_list><extends>extends <super><name>Counter</name></super></extends></super_list>
+        <block>{
+            <decl_stmt><decl><type><specifier>protected</specifier> <name>int</name></type> <name>rowsCounted</name></decl>;</decl_stmt>
+            <decl_stmt><decl><type><specifier>protected</specifier> <name>int</name></type> <name>rowsInCurrentPartition</name></decl>;</decl_stmt>
+            <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><specifier>protected</specifier> <name>boolean</name></type> <name>hasLiveStaticRow</name></decl>;</decl_stmt>
+
+            <constructor><specifier>public</specifier> <name>CQLCounter</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                              <parameter><decl><type><name>boolean</name></type> <name>assumeLiveData</name></decl></parameter>,
+                              <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>,
+                              <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>assumeLiveData</name></expr></argument>, <argument><expr><name>enforceStrictLiveness</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name><name>this</name><operator>.</operator><name>countPartitionsWithOnlyStaticData</name></name> <operator>=</operator> <name>countPartitionsWithOnlyStaticData</name></expr>;</expr_stmt>
+            </block_content>}</block></constructor>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>applyToPartition</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>partitionKey</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>staticRow</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><name>rowsInCurrentPartition</name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+                <expr_stmt><expr><name>hasLiveStaticRow</name> <operator>=</operator> <operator>!</operator><call><name><name>staticRow</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name>isLive</name><argument_list>(<argument><expr><name>staticRow</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>Row</name></type> <name>applyToRow</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name>isLive</name><argument_list>(<argument><expr><name>row</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name>incrementRowCount</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <return>return <expr><name>row</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onPartitionClose</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <comment type="line">// Normally, we don't count static rows as from a CQL point of view, it will be merge with other</comment>
+                <comment type="line">// rows in the partition. However, if we only have the static row, it will be returned as one row</comment>
+                <comment type="line">// so count it.</comment>
+                <if_stmt><if>if <condition>(<expr><name>countPartitionsWithOnlyStaticData</name> <operator>&amp;&amp;</operator> <name>hasLiveStaticRow</name> <operator>&amp;&amp;</operator> <name>rowsInCurrentPartition</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name>incrementRowCount</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>super</name><operator>.</operator><name>onPartitionClose</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><type><specifier>protected</specifier> <name>void</name></type> <name>incrementRowCount</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><operator>++</operator><name>rowsCounted</name> <operator>&gt;=</operator> <name>rowLimit</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name>stop</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><operator>++</operator><name>rowsInCurrentPartition</name> <operator>&gt;=</operator> <name>perPartitionLimit</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name>stopInPartition</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></function>
+
+            <function><type><specifier>public</specifier> <name>int</name></type> <name>counted</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>rowsCounted</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><type><specifier>public</specifier> <name>int</name></type> <name>countedInCurrentPartition</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>rowsInCurrentPartition</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><type><specifier>public</specifier> <name>int</name></type> <name>rowsCounted</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>rowsCounted</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><type><specifier>public</specifier> <name>int</name></type> <name>rowsCountedInCurrentPartition</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>rowsInCurrentPartition</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isDone</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>rowsCounted</name> <operator>&gt;=</operator> <name>rowLimit</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isDoneForPartition</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><call><name>isDone</name><argument_list>()</argument_list></call> <operator>||</operator> <name>rowsInCurrentPartition</name> <operator>&gt;=</operator> <name>perPartitionLimit</name></expr>;</return>
+            </block_content>}</block></function>
+        }</block></class>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>StringBuilder</name></type> <name>sb</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>rowLimit</name> <operator>!=</operator> <name>NO_LIMIT</name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"LIMIT "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>rowLimit</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>perPartitionLimit</name> <operator>!=</operator> <name>NO_LIMIT</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">' '</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>perPartitionLimit</name> <operator>!=</operator> <name>NO_LIMIT</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"PER PARTITION LIMIT "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>perPartitionLimit</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <return>return <expr><call><name><name>sb</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>CQLPagingLimits</name> <super_list><extends>extends <super><name>CQLLimits</name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ByteBuffer</name></type> <name>lastReturnedKey</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>lastReturnedKeyRemaining</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>CQLPagingLimits</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>rowLimit</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>perPartitionLimit</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isDistinct</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>lastReturnedKey</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>lastReturnedKeyRemaining</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>rowLimit</name></expr></argument>, <argument><expr><name>perPartitionLimit</name></expr></argument>, <argument><expr><name>isDistinct</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>lastReturnedKey</name></name> <operator>=</operator> <name>lastReturnedKey</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>lastReturnedKeyRemaining</name></name> <operator>=</operator> <name>lastReturnedKeyRemaining</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>Kind</name></type> <name>kind</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name><name>Kind</name><operator>.</operator><name>CQL_PAGING_LIMIT</name></name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>DataLimits</name></type> <name>forPaging</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>pageSize</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>UnsupportedOperationException</name><argument_list>()</argument_list></call></expr>;</throw>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>DataLimits</name></type> <name>forPaging</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>pageSize</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>lastReturnedKey</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>lastReturnedKeyRemaining</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>UnsupportedOperationException</name><argument_list>()</argument_list></call></expr>;</throw>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>DataLimits</name></type> <name>withoutState</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>CQLLimits</name><argument_list>(<argument><expr><name>rowLimit</name></expr></argument>, <argument><expr><name>perPartitionLimit</name></expr></argument>, <argument><expr><name>isDistinct</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>Counter</name></type> <name>newCounter</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>assumeLiveData</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>PagingAwareCounter</name><argument_list>(<argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>assumeLiveData</name></expr></argument>, <argument><expr><name>countPartitionsWithOnlyStaticData</name></expr></argument>, <argument><expr><name>enforceStrictLiveness</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <class><specifier>private</specifier> class <name>PagingAwareCounter</name> <super_list><extends>extends <super><name>CQLCounter</name></super></extends></super_list>
+        <block>{
+            <constructor><specifier>private</specifier> <name>PagingAwareCounter</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                       <parameter><decl><type><name>boolean</name></type> <name>assumeLiveData</name></decl></parameter>,
+                                       <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>,
+                                       <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>assumeLiveData</name></expr></argument>, <argument><expr><name>countPartitionsWithOnlyStaticData</name></expr></argument>, <argument><expr><name>enforceStrictLiveness</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></constructor>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>applyToPartition</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>partitionKey</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>staticRow</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>partitionKey</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name>lastReturnedKey</name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>rowsInCurrentPartition</name> <operator>=</operator> <name>perPartitionLimit</name> <operator>-</operator> <name>lastReturnedKeyRemaining</name></expr>;</expr_stmt>
+                    <comment type="line">// lastReturnedKey is the last key for which we're returned rows in the first page.</comment>
+                    <comment type="line">// So, since we know we have returned rows, we know we have accounted for the static row</comment>
+                    <comment type="line">// if any already, so force hasLiveStaticRow to false so we make sure to not count it</comment>
+                    <comment type="line">// once more.</comment>
+                    <expr_stmt><expr><name>hasLiveStaticRow</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>super</name><operator>.</operator><name>applyToPartition</name></name><argument_list>(<argument><expr><name>partitionKey</name></expr></argument>, <argument><expr><name>staticRow</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block></function>
+        }</block></class>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * &lt;code&gt;CQLLimits&lt;/code&gt; used for GROUP BY queries or queries with aggregates.
+     * &lt;p&gt;Internally, GROUP BY queries are always paginated by number of rows to avoid OOMExceptions. By consequence,
+     * the limits keep track of the number of rows as well as the number of groups.&lt;/p&gt;
+     * &lt;p&gt;A group can only be counted if the next group or the end of the data is reached.&lt;/p&gt;
+     */</comment>
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>CQLGroupByLimits</name> <super_list><extends>extends <super><name>CQLLimits</name></super></extends></super_list>
+    <block>{
+        <comment type="block" format="javadoc">/**
+         * The &lt;code&gt;GroupMaker&lt;/code&gt; state
+         */</comment>
+        <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>GroupingState</name></type> <name>state</name></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+         * The GROUP BY specification
+         */</comment>
+        <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>AggregationSpecification</name></type> <name>groupBySpec</name></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+         * The limit on the number of groups
+         */</comment>
+        <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>int</name></type> <name>groupLimit</name></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+         * The limit on the number of groups per partition
+         */</comment>
+        <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>int</name></type> <name>groupPerPartitionLimit</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>CQLGroupByLimits</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>groupLimit</name></decl></parameter>,
+                                <parameter><decl><type><name>int</name></type> <name>groupPerPartitionLimit</name></decl></parameter>,
+                                <parameter><decl><type><name>int</name></type> <name>rowLimit</name></decl></parameter>,
+                                <parameter><decl><type><name>AggregationSpecification</name></type> <name>groupBySpec</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>groupLimit</name></expr></argument>, <argument><expr><name>groupPerPartitionLimit</name></expr></argument>, <argument><expr><name>rowLimit</name></expr></argument>, <argument><expr><name>groupBySpec</name></expr></argument>, <argument><expr><name><name>GroupingState</name><operator>.</operator><name>EMPTY_STATE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><specifier>private</specifier> <name>CQLGroupByLimits</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>groupLimit</name></decl></parameter>,
+                                 <parameter><decl><type><name>int</name></type> <name>groupPerPartitionLimit</name></decl></parameter>,
+                                 <parameter><decl><type><name>int</name></type> <name>rowLimit</name></decl></parameter>,
+                                 <parameter><decl><type><name>AggregationSpecification</name></type> <name>groupBySpec</name></decl></parameter>,
+                                 <parameter><decl><type><name>GroupingState</name></type> <name>state</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>rowLimit</name></expr></argument>, <argument><expr><name>NO_LIMIT</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>groupLimit</name></name> <operator>=</operator> <name>groupLimit</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>groupPerPartitionLimit</name></name> <operator>=</operator> <name>groupPerPartitionLimit</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>groupBySpec</name></name> <operator>=</operator> <name>groupBySpec</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>state</name></name> <operator>=</operator> <name>state</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>Kind</name></type> <name>kind</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name><name>Kind</name><operator>.</operator><name>CQL_GROUP_BY_LIMIT</name></name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>isGroupByLimit</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isUnlimited</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>groupLimit</name> <operator>==</operator> <name>NO_LIMIT</name> <operator>&amp;&amp;</operator> <name>groupPerPartitionLimit</name> <operator>==</operator> <name>NO_LIMIT</name> <operator>&amp;&amp;</operator> <name>rowLimit</name> <operator>==</operator> <name>NO_LIMIT</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>DataLimits</name></type> <name>forShortReadRetry</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>toFetch</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>CQLLimits</name><argument_list>(<argument><expr><name>toFetch</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>float</name></type> <name>estimateTotalResults</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// For the moment, we return the estimated number of rows as we have no good way of estimating </comment>
+            <comment type="line">// the number of groups that will be returned. Hopefully, we should be able to fix</comment>
+            <comment type="line">// that problem at some point.</comment>
+            <return>return <expr><call><name><name>super</name><operator>.</operator><name>estimateTotalResults</name></name><argument_list>(<argument><expr><name>cfs</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>DataLimits</name></type> <name>forPaging</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>pageSize</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>CQLGroupByLimits</name><argument_list>(<argument><expr><name>pageSize</name></expr></argument>,
+                                        <argument><expr><name>groupPerPartitionLimit</name></expr></argument>,
+                                        <argument><expr><name>rowLimit</name></expr></argument>,
+                                        <argument><expr><name>groupBySpec</name></expr></argument>,
+                                        <argument><expr><name>state</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>DataLimits</name></type> <name>forPaging</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>pageSize</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>lastReturnedKey</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>lastReturnedKeyRemaining</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>CQLGroupByPagingLimits</name><argument_list>(<argument><expr><name>pageSize</name></expr></argument>,
+                                              <argument><expr><name>groupPerPartitionLimit</name></expr></argument>,
+                                              <argument><expr><name>rowLimit</name></expr></argument>,
+                                              <argument><expr><name>groupBySpec</name></expr></argument>,
+                                              <argument><expr><name>state</name></expr></argument>,
+                                              <argument><expr><name>lastReturnedKey</name></expr></argument>,
+                                              <argument><expr><name>lastReturnedKeyRemaining</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>DataLimits</name></type> <name>forGroupByInternalPaging</name><parameter_list>(<parameter><decl><type><name>GroupingState</name></type> <name>state</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>CQLGroupByLimits</name><argument_list>(<argument><expr><name>rowLimit</name></expr></argument>,
+                                        <argument><expr><name>groupPerPartitionLimit</name></expr></argument>,
+                                        <argument><expr><name>rowLimit</name></expr></argument>,
+                                        <argument><expr><name>groupBySpec</name></expr></argument>,
+                                        <argument><expr><name>state</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>Counter</name></type> <name>newCounter</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                  <parameter><decl><type><name>boolean</name></type> <name>assumeLiveData</name></decl></parameter>,
+                                  <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>,
+                                  <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>GroupByAwareCounter</name><argument_list>(<argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>assumeLiveData</name></expr></argument>, <argument><expr><name>countPartitionsWithOnlyStaticData</name></expr></argument>, <argument><expr><name>enforceStrictLiveness</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>int</name></type> <name>count</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>groupLimit</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>int</name></type> <name>perPartitionCount</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>groupPerPartitionLimit</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>DataLimits</name></type> <name>withoutState</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><ternary><condition><expr><name>state</name> <operator>==</operator> <name><name>GroupingState</name><operator>.</operator><name>EMPTY_STATE</name></name></expr>
+                 ?</condition><then> <expr><name>this</name></expr>
+                 </then><else>: <expr><operator>new</operator> <call><name>CQLGroupByLimits</name><argument_list>(<argument><expr><name>groupLimit</name></expr></argument>, <argument><expr><name>groupPerPartitionLimit</name></expr></argument>, <argument><expr><name>rowLimit</name></expr></argument>, <argument><expr><name>groupBySpec</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>StringBuilder</name></type> <name>sb</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>groupLimit</name> <operator>!=</operator> <name>NO_LIMIT</name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"GROUP LIMIT "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>groupLimit</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>groupPerPartitionLimit</name> <operator>!=</operator> <name>NO_LIMIT</name> <operator>||</operator> <name>rowLimit</name> <operator>!=</operator> <name>NO_LIMIT</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">' '</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>groupPerPartitionLimit</name> <operator>!=</operator> <name>NO_LIMIT</name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"GROUP PER PARTITION LIMIT "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>groupPerPartitionLimit</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>rowLimit</name> <operator>!=</operator> <name>NO_LIMIT</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">' '</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>rowLimit</name> <operator>!=</operator> <name>NO_LIMIT</name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"LIMIT "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>rowLimit</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <return>return <expr><call><name><name>sb</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>isExhausted</name><parameter_list>(<parameter><decl><type><name>Counter</name></type> <name>counter</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>(</operator><operator>(</operator><name>GroupByAwareCounter</name><operator>)</operator> <name>counter</name><operator>)</operator><operator>.</operator><name>rowsCounted</name> <operator>&lt;</operator> <name>rowLimit</name>
+                    <operator>&amp;&amp;</operator> <call><name><name>counter</name><operator>.</operator><name>counted</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <name>groupLimit</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <class><specifier>protected</specifier> class <name>GroupByAwareCounter</name> <super_list><extends>extends <super><name>Counter</name></super></extends></super_list>
+        <block>{
+            <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>GroupMaker</name></type> <name>groupMaker</name></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl>;</decl_stmt>
+
+            <comment type="block" format="javadoc">/**
+             * The key of the partition being processed.
+             */</comment>
+            <decl_stmt><decl><type><specifier>protected</specifier> <name>DecoratedKey</name></type> <name>currentPartitionKey</name></decl>;</decl_stmt>
+
+            <comment type="block" format="javadoc">/**
+             * The number of rows counted so far.
+             */</comment>
+            <decl_stmt><decl><type><specifier>protected</specifier> <name>int</name></type> <name>rowsCounted</name></decl>;</decl_stmt>
+
+            <comment type="block" format="javadoc">/**
+             * The number of rows counted so far in the current partition.
+             */</comment>
+            <decl_stmt><decl><type><specifier>protected</specifier> <name>int</name></type> <name>rowsCountedInCurrentPartition</name></decl>;</decl_stmt>
+
+            <comment type="block" format="javadoc">/**
+             * The number of groups counted so far. A group is counted only once it is complete
+             * (e.g the next one has been reached).
+             */</comment>
+            <decl_stmt><decl><type><specifier>protected</specifier> <name>int</name></type> <name>groupCounted</name></decl>;</decl_stmt>
+
+            <comment type="block" format="javadoc">/**
+             * The number of groups in the current partition.
+             */</comment>
+            <decl_stmt><decl><type><specifier>protected</specifier> <name>int</name></type> <name>groupInCurrentPartition</name></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><specifier>protected</specifier> <name>boolean</name></type> <name>hasUnfinishedGroup</name></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><specifier>protected</specifier> <name>boolean</name></type> <name>hasLiveStaticRow</name></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><specifier>protected</specifier> <name>boolean</name></type> <name>hasReturnedRowsFromCurrentPartition</name></decl>;</decl_stmt>
+
+            <constructor><specifier>private</specifier> <name>GroupByAwareCounter</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                        <parameter><decl><type><name>boolean</name></type> <name>assumeLiveData</name></decl></parameter>,
+                                        <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>,
+                                        <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>assumeLiveData</name></expr></argument>, <argument><expr><name>enforceStrictLiveness</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name><name>this</name><operator>.</operator><name>groupMaker</name></name> <operator>=</operator> <call><name><name>groupBySpec</name><operator>.</operator><name>newGroupMaker</name></name><argument_list>(<argument><expr><name>state</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name><name>this</name><operator>.</operator><name>countPartitionsWithOnlyStaticData</name></name> <operator>=</operator> <name>countPartitionsWithOnlyStaticData</name></expr>;</expr_stmt>
+
+                <comment type="line">// If the end of the partition was reached at the same time than the row limit, the last group might</comment>
+                <comment type="line">// not have been counted yet. Due to that we need to guess, based on the state, if the previous group</comment>
+                <comment type="line">// is still open.</comment>
+                <expr_stmt><expr><name>hasUnfinishedGroup</name> <operator>=</operator> <call><name><name>state</name><operator>.</operator><name>hasClustering</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></constructor>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>applyToPartition</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>partitionKey</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>staticRow</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>partitionKey</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><call><name><name>state</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <comment type="line">// The only case were we could have state.partitionKey() equals to the partition key</comment>
+                    <comment type="line">// is if some of the partition rows have been returned in the previous page but the</comment>
+                    <comment type="line">// partition was not exhausted (as the state partition key has not been updated yet).</comment>
+                    <comment type="line">// Since we know we have returned rows, we know we have accounted for</comment>
+                    <comment type="line">// the static row if any already, so force hasLiveStaticRow to false so we make sure to not count it</comment>
+                    <comment type="line">// once more.</comment>
+                    <expr_stmt><expr><name>hasLiveStaticRow</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>hasReturnedRowsFromCurrentPartition</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>hasUnfinishedGroup</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <comment type="line">// We need to increment our count of groups if we have reached a new one and unless we had no new</comment>
+                    <comment type="line">// content added since we closed our last group (that is, if hasUnfinishedGroup). Note that we may get</comment>
+                    <comment type="line">// here with hasUnfinishedGroup == false in the following cases:</comment>
+                    <comment type="line">// * the partition limit was reached for the previous partition</comment>
+                    <comment type="line">// * the previous partition was containing only one static row</comment>
+                    <comment type="line">// * the rows of the last group of the previous partition were all marked as deleted</comment>
+                    <if_stmt><if>if <condition>(<expr><name>hasUnfinishedGroup</name> <operator>&amp;&amp;</operator> <call><name><name>groupMaker</name><operator>.</operator><name>isNewGroup</name></name><argument_list>(<argument><expr><name>partitionKey</name></expr></argument>, <argument><expr><name><name>Clustering</name><operator>.</operator><name>STATIC_CLUSTERING</name></name></expr></argument>)</argument_list></call></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><call><name>incrementGroupCount</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                        <comment type="line">// If we detect, before starting the new partition, that we are done, we need to increase</comment>
+                        <comment type="line">// the per partition group count of the previous partition as the next page will start from</comment>
+                        <comment type="line">// there.</comment>
+                        <if_stmt><if>if <condition>(<expr><call><name>isDone</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                            <expr_stmt><expr><call><name>incrementGroupInCurrentPartitionCount</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                        <expr_stmt><expr><name>hasUnfinishedGroup</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                    <expr_stmt><expr><name>hasReturnedRowsFromCurrentPartition</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>hasLiveStaticRow</name> <operator>=</operator> <operator>!</operator><call><name><name>staticRow</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name>isLive</name><argument_list>(<argument><expr><name>staticRow</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></else></if_stmt>
+                <expr_stmt><expr><name>currentPartitionKey</name> <operator>=</operator> <name>partitionKey</name></expr>;</expr_stmt>
+                <comment type="line">// If we are done we need to preserve the groupInCurrentPartition and rowsCountedInCurrentPartition</comment>
+                <comment type="line">// because the pager need to retrieve the count associated to the last value it has returned.</comment>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>isDone</name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>groupInCurrentPartition</name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>rowsCountedInCurrentPartition</name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>protected</specifier> <name>Row</name></type> <name>applyToStatic</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <comment type="line">// It's possible that we're "done" if the partition we just started bumped the number of groups (in</comment>
+                <comment type="line">// applyToPartition() above), in which case Transformation will still call this method. In that case, we</comment>
+                <comment type="line">// want to ignore the static row, it should (and will) be returned with the next page/group if needs be.</comment>
+                <if_stmt><if>if <condition>(<expr><name>enforceLimits</name> <operator>&amp;&amp;</operator> <call><name>isDone</name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>hasLiveStaticRow</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt> <comment type="line">// The row has not been returned</comment>
+                    <return>return <expr><name><name>Rows</name><operator>.</operator><name>EMPTY_STATIC_ROW</name></name></expr>;</return>
+                </block_content>}</block></if></if_stmt>
+                <return>return <expr><name>row</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>Row</name></type> <name>applyToRow</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <comment type="line">// We want to check if the row belongs to a new group even if it has been deleted. The goal being</comment>
+                <comment type="line">// to minimize the chances of having to go through the same data twice if we detect on the next</comment>
+                <comment type="line">// non deleted row that we have reached the limit.</comment>
+                <if_stmt><if>if <condition>(<expr><call><name><name>groupMaker</name><operator>.</operator><name>isNewGroup</name></name><argument_list>(<argument><expr><name>currentPartitionKey</name></expr></argument>, <argument><expr><call><name><name>row</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><name>hasUnfinishedGroup</name></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><call><name>incrementGroupCount</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><call><name>incrementGroupInCurrentPartitionCount</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                    <expr_stmt><expr><name>hasUnfinishedGroup</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+
+                <comment type="line">// That row may have made us increment the group count, which may mean we're done for this partition, in</comment>
+                <comment type="line">// which case we shouldn't count this row (it won't be returned).</comment>
+                <if_stmt><if>if <condition>(<expr><name>enforceLimits</name> <operator>&amp;&amp;</operator> <call><name>isDoneForPartition</name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>hasUnfinishedGroup</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+                    <return>return <expr><literal type="null">null</literal></expr>;</return>
+                </block_content>}</block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><call><name>isLive</name><argument_list>(<argument><expr><name>row</name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>hasUnfinishedGroup</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name>incrementRowCount</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>hasReturnedRowsFromCurrentPartition</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+
+                <return>return <expr><name>row</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>int</name></type> <name>counted</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>groupCounted</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>int</name></type> <name>countedInCurrentPartition</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>groupInCurrentPartition</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>int</name></type> <name>rowsCounted</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>rowsCounted</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>int</name></type> <name>rowsCountedInCurrentPartition</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>rowsCountedInCurrentPartition</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><type><specifier>protected</specifier> <name>void</name></type> <name>incrementRowCount</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><name>rowsCountedInCurrentPartition</name><operator>++</operator></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><operator>++</operator><name>rowsCounted</name> <operator>&gt;=</operator> <name>rowLimit</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name>stop</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></function>
+
+            <function><type><specifier>private</specifier> <name>void</name></type> <name>incrementGroupCount</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><name>groupCounted</name><operator>++</operator></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>groupCounted</name> <operator>&gt;=</operator> <name>groupLimit</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name>stop</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></function>
+
+            <function><type><specifier>private</specifier> <name>void</name></type> <name>incrementGroupInCurrentPartitionCount</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><name>groupInCurrentPartition</name><operator>++</operator></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>groupInCurrentPartition</name> <operator>&gt;=</operator> <name>groupPerPartitionLimit</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name>stopInPartition</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>boolean</name></type> <name>isDoneForPartition</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><call><name>isDone</name><argument_list>()</argument_list></call> <operator>||</operator> <name>groupInCurrentPartition</name> <operator>&gt;=</operator> <name>groupPerPartitionLimit</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>boolean</name></type> <name>isDone</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>groupCounted</name> <operator>&gt;=</operator> <name>groupLimit</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onPartitionClose</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <comment type="line">// Normally, we don't count static rows as from a CQL point of view, it will be merge with other</comment>
+                <comment type="line">// rows in the partition. However, if we only have the static row, it will be returned as one group</comment>
+                <comment type="line">// so count it.</comment>
+                <if_stmt><if>if <condition>(<expr><name>countPartitionsWithOnlyStaticData</name> <operator>&amp;&amp;</operator> <name>hasLiveStaticRow</name> <operator>&amp;&amp;</operator> <operator>!</operator><name>hasReturnedRowsFromCurrentPartition</name></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name>incrementRowCount</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name>incrementGroupCount</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name>incrementGroupInCurrentPartitionCount</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>hasUnfinishedGroup</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>super</name><operator>.</operator><name>onPartitionClose</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>onClose</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <comment type="line">// Groups are only counted when the end of the group is reached.</comment>
+                <comment type="line">// The end of a group is detected by 2 ways:</comment>
+                <comment type="line">// 1) a new group is reached</comment>
+                <comment type="line">// 2) the end of the data is reached</comment>
+                <comment type="line">// We know that the end of the data is reached if the group limit has not been reached</comment>
+                <comment type="line">// and the number of rows counted is smaller than the internal page size.</comment>
+                <if_stmt><if>if <condition>(<expr><name>hasUnfinishedGroup</name> <operator>&amp;&amp;</operator> <name>groupCounted</name> <operator>&lt;</operator> <name>groupLimit</name> <operator>&amp;&amp;</operator> <name>rowsCounted</name> <operator>&lt;</operator> <name>rowLimit</name></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name>incrementGroupCount</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name>incrementGroupInCurrentPartitionCount</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+
+                <expr_stmt><expr><call><name><name>super</name><operator>.</operator><name>onClose</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+        }</block></class>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>CQLGroupByPagingLimits</name> <super_list><extends>extends <super><name>CQLGroupByLimits</name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ByteBuffer</name></type> <name>lastReturnedKey</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>lastReturnedKeyRemaining</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>CQLGroupByPagingLimits</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>groupLimit</name></decl></parameter>,
+                                      <parameter><decl><type><name>int</name></type> <name>groupPerPartitionLimit</name></decl></parameter>,
+                                      <parameter><decl><type><name>int</name></type> <name>rowLimit</name></decl></parameter>,
+                                      <parameter><decl><type><name>AggregationSpecification</name></type> <name>groupBySpec</name></decl></parameter>,
+                                      <parameter><decl><type><name>GroupingState</name></type> <name>state</name></decl></parameter>,
+                                      <parameter><decl><type><name>ByteBuffer</name></type> <name>lastReturnedKey</name></decl></parameter>,
+                                      <parameter><decl><type><name>int</name></type> <name>lastReturnedKeyRemaining</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>groupLimit</name></expr></argument>,
+                  <argument><expr><name>groupPerPartitionLimit</name></expr></argument>,
+                  <argument><expr><name>rowLimit</name></expr></argument>,
+                  <argument><expr><name>groupBySpec</name></expr></argument>,
+                  <argument><expr><name>state</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>lastReturnedKey</name></name> <operator>=</operator> <name>lastReturnedKey</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>lastReturnedKeyRemaining</name></name> <operator>=</operator> <name>lastReturnedKeyRemaining</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>Kind</name></type> <name>kind</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name><name>Kind</name><operator>.</operator><name>CQL_GROUP_BY_PAGING_LIMIT</name></name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>DataLimits</name></type> <name>forPaging</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>pageSize</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>UnsupportedOperationException</name><argument_list>()</argument_list></call></expr>;</throw>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>DataLimits</name></type> <name>forPaging</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>pageSize</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>lastReturnedKey</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>lastReturnedKeyRemaining</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>UnsupportedOperationException</name><argument_list>()</argument_list></call></expr>;</throw>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>DataLimits</name></type> <name>forGroupByInternalPaging</name><parameter_list>(<parameter><decl><type><name>GroupingState</name></type> <name>state</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>UnsupportedOperationException</name><argument_list>()</argument_list></call></expr>;</throw>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>Counter</name></type> <name>newCounter</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>assumeLiveData</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><name>state</name> <operator>==</operator> <name><name>GroupingState</name><operator>.</operator><name>EMPTY_STATE</name></name> <operator>||</operator> <call><name><name>lastReturnedKey</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name><name>state</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</assert>
+            <return>return <expr><operator>new</operator> <call><name>PagingGroupByAwareCounter</name><argument_list>(<argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>assumeLiveData</name></expr></argument>, <argument><expr><name>countPartitionsWithOnlyStaticData</name></expr></argument>, <argument><expr><name>enforceStrictLiveness</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>DataLimits</name></type> <name>withoutState</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>CQLGroupByLimits</name><argument_list>(<argument><expr><name>groupLimit</name></expr></argument>, <argument><expr><name>groupPerPartitionLimit</name></expr></argument>, <argument><expr><name>rowLimit</name></expr></argument>, <argument><expr><name>groupBySpec</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <class><specifier>private</specifier> class <name>PagingGroupByAwareCounter</name> <super_list><extends>extends <super><name>GroupByAwareCounter</name></super></extends></super_list>
+        <block>{
+            <constructor><specifier>private</specifier> <name>PagingGroupByAwareCounter</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>assumeLiveData</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>countPartitionsWithOnlyStaticData</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>enforceStrictLiveness</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>assumeLiveData</name></expr></argument>, <argument><expr><name>countPartitionsWithOnlyStaticData</name></expr></argument>, <argument><expr><name>enforceStrictLiveness</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></constructor>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>applyToPartition</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>partitionKey</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>staticRow</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>partitionKey</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name>lastReturnedKey</name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>currentPartitionKey</name> <operator>=</operator> <name>partitionKey</name></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>groupInCurrentPartition</name> <operator>=</operator> <name>groupPerPartitionLimit</name> <operator>-</operator> <name>lastReturnedKeyRemaining</name></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>hasReturnedRowsFromCurrentPartition</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>hasLiveStaticRow</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>hasUnfinishedGroup</name> <operator>=</operator> <call><name><name>state</name><operator>.</operator><name>hasClustering</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>super</name><operator>.</operator><name>applyToPartition</name></name><argument_list>(<argument><expr><name>partitionKey</name></expr></argument>, <argument><expr><name>staticRow</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block></function>
+        }</block></class>
+    }</block></class>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>Serializer</name>
+    <block>{
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>DataLimits</name></type> <name>limits</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name>ClusteringComparator</name></type> <name>comparator</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeByte</name></name><argument_list>(<argument><expr><call><name><name>limits</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>ordinal</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <switch>switch <condition>(<expr><call><name><name>limits</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><name>CQL_LIMIT</name></expr>:</case>
+                <case>case <expr><name>CQL_PAGING_LIMIT</name></expr>:</case>
+                    <decl_stmt><decl><type><name>CQLLimits</name></type> <name>cqlLimits</name> <init>= <expr><operator>(</operator><name>CQLLimits</name><operator>)</operator><name>limits</name></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>cqlLimits</name><operator>.</operator><name>rowLimit</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>cqlLimits</name><operator>.</operator><name>perPartitionLimit</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeBoolean</name></name><argument_list>(<argument><expr><name><name>cqlLimits</name><operator>.</operator><name>isDistinct</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>limits</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Kind</name><operator>.</operator><name>CQL_PAGING_LIMIT</name></name></expr>)</condition>
+                    <block>{<block_content>
+                        <decl_stmt><decl><type><name>CQLPagingLimits</name></type> <name>pagingLimits</name> <init>= <expr><operator>(</operator><name>CQLPagingLimits</name><operator>)</operator><name>cqlLimits</name></expr></init></decl>;</decl_stmt>
+                        <expr_stmt><expr><call><name><name>ByteBufferUtil</name><operator>.</operator><name>writeWithVIntLength</name></name><argument_list>(<argument><expr><name><name>pagingLimits</name><operator>.</operator><name>lastReturnedKey</name></name></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>pagingLimits</name><operator>.</operator><name>lastReturnedKeyRemaining</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                    <break>break;</break>
+                <case>case <expr><name>CQL_GROUP_BY_LIMIT</name></expr>:</case>
+                <case>case <expr><name>CQL_GROUP_BY_PAGING_LIMIT</name></expr>:</case>
+                    <decl_stmt><decl><type><name>CQLGroupByLimits</name></type> <name>groupByLimits</name> <init>= <expr><operator>(</operator><name>CQLGroupByLimits</name><operator>)</operator> <name>limits</name></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>groupByLimits</name><operator>.</operator><name>groupLimit</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>groupByLimits</name><operator>.</operator><name>groupPerPartitionLimit</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>groupByLimits</name><operator>.</operator><name>rowLimit</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <decl_stmt><decl><type><name>AggregationSpecification</name></type> <name>groupBySpec</name> <init>= <expr><name><name>groupByLimits</name><operator>.</operator><name>groupBySpec</name></name></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>AggregationSpecification</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>groupBySpec</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <expr_stmt><expr><call><name><name>GroupingState</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name><name>groupByLimits</name><operator>.</operator><name>state</name></name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>comparator</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <if_stmt><if>if <condition>(<expr><call><name><name>limits</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Kind</name><operator>.</operator><name>CQL_GROUP_BY_PAGING_LIMIT</name></name></expr>)</condition>
+                    <block>{<block_content>
+                        <decl_stmt><decl><type><name>CQLGroupByPagingLimits</name></type> <name>pagingLimits</name> <init>= <expr><operator>(</operator><name>CQLGroupByPagingLimits</name><operator>)</operator> <name>groupByLimits</name></expr></init></decl>;</decl_stmt>
+                        <expr_stmt><expr><call><name><name>ByteBufferUtil</name><operator>.</operator><name>writeWithVIntLength</name></name><argument_list>(<argument><expr><name><name>pagingLimits</name><operator>.</operator><name>lastReturnedKey</name></name></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>pagingLimits</name><operator>.</operator><name>lastReturnedKeyRemaining</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                     </block_content>}</block></if></if_stmt>
+                     <break>break;</break>
+            </block_content>}</block></switch>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>DataLimits</name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name>ClusteringComparator</name></type> <name>comparator</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Kind</name></type> <name>kind</name> <init>= <expr><call><name><name>Kind</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call><index>[<expr><call><name><name>in</name><operator>.</operator><name>readUnsignedByte</name></name><argument_list>()</argument_list></call></expr>]</index></expr></init></decl>;</decl_stmt>
+            <switch>switch <condition>(<expr><name>kind</name></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><name>CQL_LIMIT</name></expr>:</case>
+                <case>case <expr><name>CQL_PAGING_LIMIT</name></expr>:</case>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>int</name></type> <name>rowLimit</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>int</name></type> <name>perPartitionLimit</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>boolean</name></type> <name>isDistinct</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readBoolean</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>kind</name> <operator>==</operator> <name><name>Kind</name><operator>.</operator><name>CQL_LIMIT</name></name></expr>)</condition><block type="pseudo"><block_content>
+                        <return>return <expr><call><name>cqlLimits</name><argument_list>(<argument><expr><name>rowLimit</name></expr></argument>, <argument><expr><name>perPartitionLimit</name></expr></argument>, <argument><expr><name>isDistinct</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+                    <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>lastKey</name> <init>= <expr><call><name><name>ByteBufferUtil</name><operator>.</operator><name>readWithVIntLength</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>int</name></type> <name>lastRemaining</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <return>return <expr><operator>new</operator> <call><name>CQLPagingLimits</name><argument_list>(<argument><expr><name>rowLimit</name></expr></argument>, <argument><expr><name>perPartitionLimit</name></expr></argument>, <argument><expr><name>isDistinct</name></expr></argument>, <argument><expr><name>lastKey</name></expr></argument>, <argument><expr><name>lastRemaining</name></expr></argument>)</argument_list></call></expr>;</return>
+                </block_content>}</block>
+                <case>case <expr><name>CQL_GROUP_BY_LIMIT</name></expr>:</case>
+                <case>case <expr><name>CQL_GROUP_BY_PAGING_LIMIT</name></expr>:</case>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>int</name></type> <name>groupLimit</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>int</name></type> <name>groupPerPartitionLimit</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>int</name></type> <name>rowLimit</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                    <decl_stmt><decl><type><name>AggregationSpecification</name></type> <name>groupBySpec</name> <init>= <expr><call><name><name>AggregationSpecification</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>comparator</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                    <decl_stmt><decl><type><name>GroupingState</name></type> <name>state</name> <init>= <expr><call><name><name>GroupingState</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>comparator</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                    <if_stmt><if>if <condition>(<expr><name>kind</name> <operator>==</operator> <name><name>Kind</name><operator>.</operator><name>CQL_GROUP_BY_LIMIT</name></name></expr>)</condition><block type="pseudo"><block_content>
+                        <return>return <expr><operator>new</operator> <call><name>CQLGroupByLimits</name><argument_list>(<argument><expr><name>groupLimit</name></expr></argument>,
+                                                    <argument><expr><name>groupPerPartitionLimit</name></expr></argument>,
+                                                    <argument><expr><name>rowLimit</name></expr></argument>,
+                                                    <argument><expr><name>groupBySpec</name></expr></argument>,
+                                                    <argument><expr><name>state</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+                    <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>lastKey</name> <init>= <expr><call><name><name>ByteBufferUtil</name><operator>.</operator><name>readWithVIntLength</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>int</name></type> <name>lastRemaining</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <return>return <expr><operator>new</operator> <call><name>CQLGroupByPagingLimits</name><argument_list>(<argument><expr><name>groupLimit</name></expr></argument>,
+                                                      <argument><expr><name>groupPerPartitionLimit</name></expr></argument>,
+                                                      <argument><expr><name>rowLimit</name></expr></argument>,
+                                                      <argument><expr><name>groupBySpec</name></expr></argument>,
+                                                      <argument><expr><name>state</name></expr></argument>,
+                                                      <argument><expr><name>lastKey</name></expr></argument>,
+                                                      <argument><expr><name>lastRemaining</name></expr></argument>)</argument_list></call></expr>;</return>
+                </block_content>}</block>
+            </block_content>}</block></switch>
+            <throw>throw <expr><operator>new</operator> <call><name>AssertionError</name><argument_list>()</argument_list></call></expr>;</throw>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>serializedSize</name><parameter_list>(<parameter><decl><type><name>DataLimits</name></type> <name>limits</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name>ClusteringComparator</name></type> <name>comparator</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>size</name> <init>= <expr><call><name><name>TypeSizes</name><operator>.</operator><name>sizeof</name></name><argument_list>(<argument><expr><operator>(</operator><name>byte</name><operator>)</operator> <call><name><name>limits</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>ordinal</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <switch>switch <condition>(<expr><call><name><name>limits</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><name>CQL_LIMIT</name></expr>:</case>
+                <case>case <expr><name>CQL_PAGING_LIMIT</name></expr>:</case>
+                    <decl_stmt><decl><type><name>CQLLimits</name></type> <name>cqlLimits</name> <init>= <expr><operator>(</operator><name>CQLLimits</name><operator>)</operator> <name>limits</name></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>cqlLimits</name><operator>.</operator><name>rowLimit</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>cqlLimits</name><operator>.</operator><name>perPartitionLimit</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeof</name></name><argument_list>(<argument><expr><name><name>cqlLimits</name><operator>.</operator><name>isDistinct</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>limits</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Kind</name><operator>.</operator><name>CQL_PAGING_LIMIT</name></name></expr>)</condition>
+                    <block>{<block_content>
+                        <decl_stmt><decl><type><name>CQLPagingLimits</name></type> <name>pagingLimits</name> <init>= <expr><operator>(</operator><name>CQLPagingLimits</name><operator>)</operator> <name>cqlLimits</name></expr></init></decl>;</decl_stmt>
+                        <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>ByteBufferUtil</name><operator>.</operator><name>serializedSizeWithVIntLength</name></name><argument_list>(<argument><expr><name><name>pagingLimits</name><operator>.</operator><name>lastReturnedKey</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>pagingLimits</name><operator>.</operator><name>lastReturnedKeyRemaining</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                    <break>break;</break>
+                <case>case <expr><name>CQL_GROUP_BY_LIMIT</name></expr>:</case>
+                <case>case <expr><name>CQL_GROUP_BY_PAGING_LIMIT</name></expr>:</case>
+                    <decl_stmt><decl><type><name>CQLGroupByLimits</name></type> <name>groupByLimits</name> <init>= <expr><operator>(</operator><name>CQLGroupByLimits</name><operator>)</operator> <name>limits</name></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>groupByLimits</name><operator>.</operator><name>groupLimit</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>groupByLimits</name><operator>.</operator><name>groupPerPartitionLimit</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>groupByLimits</name><operator>.</operator><name>rowLimit</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <decl_stmt><decl><type><name>AggregationSpecification</name></type> <name>groupBySpec</name> <init>= <expr><name><name>groupByLimits</name><operator>.</operator><name>groupBySpec</name></name></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>AggregationSpecification</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><name>groupBySpec</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>GroupingState</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><name><name>groupByLimits</name><operator>.</operator><name>state</name></name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>comparator</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <if_stmt><if>if <condition>(<expr><call><name><name>limits</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Kind</name><operator>.</operator><name>CQL_GROUP_BY_PAGING_LIMIT</name></name></expr>)</condition>
+                    <block>{<block_content>
+                        <decl_stmt><decl><type><name>CQLGroupByPagingLimits</name></type> <name>pagingLimits</name> <init>= <expr><operator>(</operator><name>CQLGroupByPagingLimits</name><operator>)</operator> <name>groupByLimits</name></expr></init></decl>;</decl_stmt>
+                        <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>ByteBufferUtil</name><operator>.</operator><name>serializedSizeWithVIntLength</name></name><argument_list>(<argument><expr><name><name>pagingLimits</name><operator>.</operator><name>lastReturnedKey</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>pagingLimits</name><operator>.</operator><name>lastReturnedKeyRemaining</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                    <break>break;</break>
+                <default>default:</default>
+                    <throw>throw <expr><operator>new</operator> <call><name>AssertionError</name><argument_list>()</argument_list></call></expr>;</throw>
+            </block_content>}</block></switch>
+            <return>return <expr><name>size</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

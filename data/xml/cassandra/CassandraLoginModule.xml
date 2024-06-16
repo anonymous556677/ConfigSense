@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/auth/CassandraLoginModule.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>auth</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>HashMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>security</name><operator>.</operator><name>auth</name><operator>.</operator><name>Subject</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>security</name><operator>.</operator><name>auth</name><operator>.</operator><name>callback</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>security</name><operator>.</operator><name>auth</name><operator>.</operator><name>login</name><operator>.</operator><name>FailedLoginException</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>security</name><operator>.</operator><name>auth</name><operator>.</operator><name>login</name><operator>.</operator><name>LoginException</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>security</name><operator>.</operator><name>auth</name><operator>.</operator><name>spi</name><operator>.</operator><name>LoginModule</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>AuthenticationException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>StorageService</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * LoginModule which authenticates a user towards the Cassandra database using
+ * the internal authentication mechanism.
+ */</comment>
+<class><specifier>public</specifier> class <name>CassandraLoginModule</name> <super_list><implements>implements <super><name>LoginModule</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>CassandraLoginModule</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// initial state</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Subject</name></type> <name>subject</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>CallbackHandler</name></type> <name>callbackHandler</name></decl>;</decl_stmt>
+
+    <comment type="line">// the authentication status</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>succeeded</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>commitSucceeded</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// username and password</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>String</name></type> <name>username</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>char</name><index>[]</index></name></type> <name>password</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>CassandraPrincipal</name></type> <name>principal</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Initialize this {@code}LoginModule{@code}.
+     *
+     * @param subject the {@code}Subject{@code} to be authenticated. &lt;p&gt;
+     * @param callbackHandler a {@code}CallbackHandler{@code} for communicating
+     *        with the end user (prompting for user names and passwords, for example)
+     * @param sharedState shared {@code}LoginModule{@code} state. This param is unused.
+     * @param options options specified in the login {@code}Configuration{@code} for this particular
+     *        {@code}LoginModule{@code}. This param is unused
+     */</comment>
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>initialize</name><parameter_list>(<parameter><decl><type><name>Subject</name></type> <name>subject</name></decl></parameter>,
+                           <parameter><decl><type><name>CallbackHandler</name></type> <name>callbackHandler</name></decl></parameter>,
+                           <parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>String</name></name></argument>, <argument><name>?</name></argument>&gt;</argument_list></name></type> <name>sharedState</name></decl></parameter>,
+                           <parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>String</name></name></argument>, <argument><name>?</name></argument>&gt;</argument_list></name></type> <name>options</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>subject</name></name> <operator>=</operator> <name>subject</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>callbackHandler</name></name> <operator>=</operator> <name>callbackHandler</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Authenticate the user, obtaining credentials from the CallbackHandler
+     * supplied in {@code}initialize{@code}. As long as the configured
+     * {@code}IAuthenticator{@code} supports the optional
+     * {@code}legacyAuthenticate{@code} method, it can be used here.
+     *
+     * @return true in all cases since this {@code}LoginModule{@code}
+     *         should not be ignored.
+     * @exception FailedLoginException if the authentication fails.
+     * @exception LoginException if this {@code}LoginModule{@code} is unable to
+     * perform the authentication.
+     */</comment>
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>login</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>LoginException</name></expr></argument></throws>
+    <block>{<block_content>
+        <comment type="line">// prompt for a user name and password</comment>
+        <if_stmt><if>if <condition>(<expr><name>callbackHandler</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"No CallbackHandler available for authentication"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <throw>throw <expr><operator>new</operator> <call><name>LoginException</name><argument_list>(<argument><expr><literal type="string">"Authentication failed"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>NameCallback</name></type> <name>nc</name> <init>= <expr><operator>new</operator> <call><name>NameCallback</name><argument_list>(<argument><expr><literal type="string">"username: "</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>PasswordCallback</name></type> <name>pc</name> <init>= <expr><operator>new</operator> <call><name>PasswordCallback</name><argument_list>(<argument><expr><literal type="string">"password: "</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>callbackHandler</name><operator>.</operator><name>handle</name></name><argument_list>(<argument><expr><operator>new</operator> <name><name>Callback</name><index>[]</index></name><block>{<expr><name>nc</name></expr>, <expr><name>pc</name></expr>}</block></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>username</name> <operator>=</operator> <call><name><name>nc</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name><name>char</name><index>[]</index></name></type> <name>tmpPassword</name> <init>= <expr><call><name><name>pc</name><operator>.</operator><name>getPassword</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>tmpPassword</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>tmpPassword</name> <operator>=</operator> <operator>new</operator> <name><name>char</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <expr_stmt><expr><name>password</name> <operator>=</operator> <operator>new</operator> <name><name>char</name><index>[<expr><name><name>tmpPassword</name><operator>.</operator><name>length</name></name></expr>]</index></name></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>System</name><operator>.</operator><name>arraycopy</name></name><argument_list>(<argument><expr><name>tmpPassword</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>password</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name><name>tmpPassword</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>pc</name><operator>.</operator><name>clearPassword</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> | <type><name>UnsupportedCallbackException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Unexpected exception processing authentication callbacks"</literal></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <throw>throw <expr><operator>new</operator> <call><name>LoginException</name><argument_list>(<argument><expr><literal type="string">"Authentication failed"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+
+        <comment type="line">// verify the credentials</comment>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>authenticate</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>AuthenticationException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// authentication failed -- clean up</comment>
+            <expr_stmt><expr><name>succeeded</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>cleanUpInternalState</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <throw>throw <expr><operator>new</operator> <call><name>FailedLoginException</name><argument_list>(<argument><expr><call><name><name>e</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+
+        <expr_stmt><expr><name>succeeded</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>authenticate</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>isAuthSetupComplete</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>AuthenticationException</name><argument_list>(<argument><expr><literal type="string">"Cannot login as server authentication setup is not yet completed"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>IAuthenticator</name></type> <name>authenticator</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getAuthenticator</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name></type> <name>credentials</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>credentials</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name><name>PasswordAuthenticator</name><operator>.</operator><name>USERNAME_KEY</name></name></expr></argument>, <argument><expr><name>username</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>credentials</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name><name>PasswordAuthenticator</name><operator>.</operator><name>PASSWORD_KEY</name></name></expr></argument>, <argument><expr><call><name><name>String</name><operator>.</operator><name>valueOf</name></name><argument_list>(<argument><expr><name>password</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>AuthenticatedUser</name></type> <name>user</name> <init>= <expr><call><name><name>authenticator</name><operator>.</operator><name>legacyAuthenticate</name></name><argument_list>(<argument><expr><name>credentials</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// Only actual users should be allowed to authenticate for JMX</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>user</name><operator>.</operator><name>isAnonymous</name></name><argument_list>()</argument_list></call> <operator>||</operator> <call><name><name>user</name><operator>.</operator><name>isSystem</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>AuthenticationException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Invalid user %s"</literal></expr></argument>, <argument><expr><call><name><name>user</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <comment type="line">// The LOGIN privilege is required to authenticate - c.f. ClientState::login</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getRoleManager</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>canLogin</name><argument_list>(<argument><expr><call><name><name>user</name><operator>.</operator><name>getPrimaryRole</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>AuthenticationException</name><argument_list>(<argument><expr><call><name><name>user</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="string">" is not permitted to log in"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * This method is called if the LoginContext's overall authentication succeeded
+     * (the relevant REQUIRED, REQUISITE, SUFFICIENT and OPTIONAL LoginModules
+     * succeeded).
+     *
+     * If this LoginModule's own authentication attempt succeeded (checked by
+     * retrieving the private state saved by the {@code}login{@code} method),
+     * then this method associates a {@code}CassandraPrincipal{@code}
+     * with the {@code}Subject{@code}.
+     * If this LoginModule's own authentication attempted failed, then this
+     * method removes any state that was originally saved.
+     *
+     * @return true if this LoginModule's own login and commit attempts succeeded, false otherwise.
+     * @exception LoginException if the commit fails.
+     */</comment>
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>commit</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>LoginException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>succeeded</name></expr>)</condition>
+        <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <comment type="line">// add a Principal (authenticated identity)</comment>
+            <comment type="line">// to the Subject</comment>
+            <expr_stmt><expr><name>principal</name> <operator>=</operator> <operator>new</operator> <call><name>CassandraPrincipal</name><argument_list>(<argument><expr><name>username</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>subject</name><operator>.</operator><name>getPrincipals</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>contains</name><argument_list>(<argument><expr><name>principal</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>subject</name><operator>.</operator><name>getPrincipals</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>add</name><argument_list>(<argument><expr><name>principal</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name>cleanUpInternalState</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>commitSucceeded</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * This method is called if the LoginContext's  overall authentication failed.
+     * (the relevant REQUIRED, REQUISITE, SUFFICIENT and OPTIONAL LoginModules
+     * did not succeed).
+     *
+     * If this LoginModule's own authentication attempt succeeded (checked by
+     * retrieving the private state saved by the {@code}login{@code} and
+     * {@code}commit{@code} methods), then this method cleans up any state that
+     * was originally saved.
+     *
+     * @return false if this LoginModule's own login and/or commit attempts failed, true otherwise.
+     * @throws LoginException if the abort fails.
+     */</comment>
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>abort</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>LoginException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>succeeded</name></expr>)</condition>
+        <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if>
+        <if type="elseif">else if <condition>(<expr><operator>!</operator><name>commitSucceeded</name></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// login succeeded but overall authentication failed</comment>
+            <expr_stmt><expr><name>succeeded</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>cleanUpInternalState</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>principal</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <comment type="line">// overall authentication succeeded and commit succeeded,</comment>
+            <comment type="line">// but someone else's commit failed</comment>
+            <expr_stmt><expr><call><name>logout</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Logout the user.
+     *
+     * This method removes the principal that was added by the
+     * {@code}commit{@code} method.
+     *
+     * @return true in all cases since this {@code}LoginModule{@code}
+     *         should not be ignored.
+     * @throws LoginException if the logout fails.
+     */</comment>
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>logout</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>LoginException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>subject</name><operator>.</operator><name>getPrincipals</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>remove</name><argument_list>(<argument><expr><name>principal</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>succeeded</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>cleanUpInternalState</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>principal</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>cleanUpInternalState</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>username</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>password</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>password</name><operator>.</operator><name>length</name></name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><name><name>password</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <literal type="char">' '</literal></expr>;</expr_stmt></block_content></block></for>
+            <expr_stmt><expr><name>password</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

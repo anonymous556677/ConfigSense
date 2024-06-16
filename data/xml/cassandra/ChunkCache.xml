@@ -1,0 +1,322 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/cache/ChunkCache.java"><comment type="block">/*
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cache</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicInteger</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Throwables</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterables</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>MoreExecutors</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>github</name><operator>.</operator><name>benmanes</name><operator>.</operator><name>caffeine</name><operator>.</operator><name>cache</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>CorruptSSTableException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>ChunkCacheMetrics</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>BufferPool</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>BufferPools</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>ChunkCache</name>
+        <super_list><implements>implements <super><name><name>CacheLoader</name><argument_list type="generic">&lt;<argument><name><name>ChunkCache</name><operator>.</operator><name>Key</name></name></argument>, <argument><name><name>ChunkCache</name><operator>.</operator><name>Buffer</name></name></argument>&gt;</argument_list></name></super>, <super><name><name>RemovalListener</name><argument_list type="generic">&lt;<argument><name><name>ChunkCache</name><operator>.</operator><name>Key</name></name></argument>, <argument><name><name>ChunkCache</name><operator>.</operator><name>Buffer</name></name></argument>&gt;</argument_list></name></super>, <super><name>CacheSize</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>RESERVED_POOL_SPACE_IN_MB</name> <init>= <expr><literal type="number">32</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>cacheSize</name> <init>= <expr><literal type="number">1024L</literal> <operator>*</operator> <literal type="number">1024L</literal> <operator>*</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getFileCacheSizeInMB</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>RESERVED_POOL_SPACE_IN_MB</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>roundUp</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getFileCacheRoundUp</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>enabled</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getFileCacheEnabled</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <name>cacheSize</name> <operator>&gt;</operator> <literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>ChunkCache</name></type> <name>instance</name> <init>= <expr><ternary><condition><expr><name>enabled</name></expr> ?</condition><then> <expr><operator>new</operator> <call><name>ChunkCache</name><argument_list>(<argument><expr><call><name><name>BufferPools</name><operator>.</operator><name>forChunkCache</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>BufferPool</name></type> <name>bufferPool</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>LoadingCache</name><argument_list type="generic">&lt;<argument><name>Key</name></argument>, <argument><name>Buffer</name></argument>&gt;</argument_list></name></type> <name>cache</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>ChunkCacheMetrics</name></type> <name>metrics</name></decl>;</decl_stmt>
+
+    <class><specifier>static</specifier> class <name>Key</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>final</specifier> <name>ChunkReader</name></type> <name>file</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>String</name></type> <name>path</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>position</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>Key</name><parameter_list>(<parameter><decl><type><name>ChunkReader</name></type> <name>file</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>position</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>file</name></name> <operator>=</operator> <name>file</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>position</name></name> <operator>=</operator> <name>position</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>path</name></name> <operator>=</operator> <call><name><name>file</name><operator>.</operator><name>channel</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>filePath</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>int</name></type> <name>hashCode</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>prime</name> <init>= <expr><literal type="number">31</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>result</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>result</name> <operator>=</operator> <name>prime</name> <operator>*</operator> <name>result</name> <operator>+</operator> <call><name><name>path</name><operator>.</operator><name>hashCode</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>result</name> <operator>=</operator> <name>prime</name> <operator>*</operator> <name>result</name> <operator>+</operator> <call><name><name>file</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>hashCode</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>result</name> <operator>=</operator> <name>prime</name> <operator>*</operator> <name>result</name> <operator>+</operator> <call><name><name>Long</name><operator>.</operator><name>hashCode</name></name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>result</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>obj</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>this</name> <operator>==</operator> <name>obj</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><name>obj</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>Key</name></type> <name>other</name> <init>= <expr><operator>(</operator><name>Key</name><operator>)</operator> <name>obj</name></expr></init></decl>;</decl_stmt>
+            <return>return <expr><operator>(</operator><name>position</name> <operator>==</operator> <name><name>other</name><operator>.</operator><name>position</name></name><operator>)</operator>
+                    <operator>&amp;&amp;</operator> <call><name><name>file</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call> <operator>==</operator> <call><name><name>other</name><operator>.</operator><name>file</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call>
+                    <operator>&amp;&amp;</operator> <call><name><name>path</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>other</name><operator>.</operator><name>path</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class>class <name>Buffer</name> <super_list><implements>implements <super><name><name>Rebufferer</name><operator>.</operator><name>BufferHolder</name></name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ByteBuffer</name></type> <name>buffer</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>offset</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>AtomicInteger</name></type> <name>references</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>Buffer</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>offset</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>buffer</name></name> <operator>=</operator> <name>buffer</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>offset</name></name> <operator>=</operator> <name>offset</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>references</name> <operator>=</operator> <operator>new</operator> <call><name>AtomicInteger</name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>  <comment type="line">// start referenced.</comment>
+        </block_content>}</block></constructor>
+
+        <function><type><name>Buffer</name></type> <name>reference</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>refCount</name></decl>;</decl_stmt>
+            <do>do
+            <block>{<block_content>
+                <expr_stmt><expr><name>refCount</name> <operator>=</operator> <call><name><name>references</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>refCount</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <comment type="line">// Buffer was released before we managed to reference it.</comment>
+                    <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+            </block_content>}</block> while <condition>(<expr><operator>!</operator><call><name><name>references</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>refCount</name></expr></argument>, <argument><expr><name>refCount</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>)</condition>;</do>
+
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>ByteBuffer</name></type> <name>buffer</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><call><name><name>references</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>;</assert>
+            <return>return <expr><call><name><name>buffer</name><operator>.</operator><name>duplicate</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>long</name></type> <name>offset</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>offset</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>release</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>references</name><operator>.</operator><name>decrementAndGet</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>bufferPool</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <constructor><specifier>private</specifier> <name>ChunkCache</name><parameter_list>(<parameter><decl><type><name>BufferPool</name></type> <name>pool</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>bufferPool</name> <operator>=</operator> <name>pool</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name>metrics</name> <operator>=</operator> <operator>new</operator> <call><name>ChunkCacheMetrics</name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>cache</name> <operator>=</operator> <call><name><name>Caffeine</name><operator>.</operator><name>newBuilder</name></name><argument_list>()</argument_list></call>
+                        <operator>.</operator><call><name>maximumWeight</name><argument_list>(<argument><expr><name>cacheSize</name></expr></argument>)</argument_list></call>
+                        <operator>.</operator><call><name>executor</name><argument_list>(<argument><expr><call><name><name>MoreExecutors</name><operator>.</operator><name>directExecutor</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call>
+                        <operator>.</operator><call><name>weigher</name><argument_list>(<argument><expr><lambda><parameter_list>(<parameter><decl><name>key</name></decl></parameter>, <parameter><decl><name>buffer</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><operator>(</operator><operator>(</operator><name>Buffer</name><operator>)</operator> <name>buffer</name><operator>)</operator><operator>.</operator><call><name><name>buffer</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call>
+                        <operator>.</operator><call><name>removalListener</name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call>
+                        <operator>.</operator><call><name>recordStats</name><argument_list>(<argument><expr><lambda><parameter_list>()</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name>metrics</name></expr></block_content></block></lambda></expr></argument>)</argument_list></call>
+                        <operator>.</operator><call><name>build</name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Buffer</name></type> <name>load</name><parameter_list>(<parameter><decl><type><name>Key</name></type> <name>key</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>buffer</name> <init>= <expr><call><name><name>bufferPool</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>key</name><operator>.</operator><name>file</name><operator>.</operator><name>chunkSize</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>key</name><operator>.</operator><name>file</name><operator>.</operator><name>preferredBufferType</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <assert>assert <expr><name>buffer</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</assert>
+        <expr_stmt><expr><call><name><name>key</name><operator>.</operator><name>file</name><operator>.</operator><name>readChunk</name></name><argument_list>(<argument><expr><name><name>key</name><operator>.</operator><name>position</name></name></expr></argument>, <argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><operator>new</operator> <call><name>Buffer</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><name><name>key</name><operator>.</operator><name>position</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>onRemoval</name><parameter_list>(<parameter><decl><type><name>Key</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>Buffer</name></type> <name>buffer</name></decl></parameter>, <parameter><decl><type><name>RemovalCause</name></type> <name>cause</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>cache</name><operator>.</operator><name>invalidateAll</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>RebuffererFactory</name></type> <name>wrap</name><parameter_list>(<parameter><decl><type><name>ChunkReader</name></type> <name>file</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>CachingRebufferer</name><argument_list>(<argument><expr><name>file</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>RebuffererFactory</name></type> <name>maybeWrap</name><parameter_list>(<parameter><decl><type><name>ChunkReader</name></type> <name>file</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>enabled</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>file</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name><name>instance</name><operator>.</operator><name>wrap</name></name><argument_list>(<argument><expr><name>file</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>invalidatePosition</name><parameter_list>(<parameter><decl><type><name>FileHandle</name></type> <name>dfile</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>position</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><operator>(</operator><call><name><name>dfile</name><operator>.</operator><name>rebuffererFactory</name></name><argument_list>()</argument_list></call> <operator>instanceof</operator> <name>CachingRebufferer</name><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><operator>(</operator><operator>(</operator><name>CachingRebufferer</name><operator>)</operator> <call><name><name>dfile</name><operator>.</operator><name>rebuffererFactory</name></name><argument_list>()</argument_list></call><operator>)</operator><operator>.</operator><call><name>invalidate</name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>invalidateFile</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>fileName</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>cache</name><operator>.</operator><name>invalidateAll</name></name><argument_list>(<argument><expr><call><name><name>Iterables</name><operator>.</operator><name>filter</name></name><argument_list>(<argument><expr><call><name><name>cache</name><operator>.</operator><name>asMap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>keySet</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>x</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>x</name><operator>.</operator><name>path</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>fileName</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>enable</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>enabled</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>ChunkCache</name><operator>.</operator><name>enabled</name></name> <operator>=</operator> <name>enabled</name></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>cache</name><operator>.</operator><name>invalidateAll</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>reset</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="line">// TODO: Invalidate caches for obsoleted/MOVED_START tables?</comment>
+
+    <comment type="block" format="javadoc">/**
+     * Rebufferer providing cached chunks where data is obtained from the specified ChunkReader.
+     * Thread-safe. One instance per SegmentedFile, created by ChunkCache.maybeWrap if the cache is enabled.
+     */</comment>
+    <class>class <name>CachingRebufferer</name> <super_list><implements>implements <super><name>Rebufferer</name></super>, <super><name>RebuffererFactory</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ChunkReader</name></type> <name>source</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>alignmentMask</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>CachingRebufferer</name><parameter_list>(<parameter><decl><type><name>ChunkReader</name></type> <name>file</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name>source</name> <operator>=</operator> <name>file</name></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>chunkSize</name> <init>= <expr><call><name><name>file</name><operator>.</operator><name>chunkSize</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <assert>assert <expr><call><name><name>Integer</name><operator>.</operator><name>bitCount</name></name><argument_list>(<argument><expr><name>chunkSize</name></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="number">1</literal> <operator>:</operator> <call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%d must be a power of two"</literal></expr></argument>, <argument><expr><name>chunkSize</name></expr></argument>)</argument_list></call></expr>;</assert>
+            <expr_stmt><expr><name>alignmentMask</name> <operator>=</operator> <operator>-</operator><name>chunkSize</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>Buffer</name></type> <name>rebuffer</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>position</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>long</name></type> <name>pageAlignedPos</name> <init>= <expr><name>position</name> <operator>&amp;</operator> <name>alignmentMask</name></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>Buffer</name></type> <name>buf</name></decl>;</decl_stmt>
+                <do>do<block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>buf</name> <operator>=</operator> <call><name><name>cache</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>Key</name><argument_list>(<argument><expr><name>source</name></expr></argument>, <argument><expr><name>pageAlignedPos</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>reference</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block>
+                while <condition>(<expr><name>buf</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>;</do>
+
+                <return>return <expr><name>buf</name></expr>;</return>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>Throwables</name><operator>.</operator><name>propagateIfInstanceOf</name></name><argument_list>(<argument><expr><call><name><name>t</name><operator>.</operator><name>getCause</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>CorruptSSTableException</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <throw>throw <expr><call><name><name>Throwables</name><operator>.</operator><name>propagate</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>invalidate</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>position</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>pageAlignedPos</name> <init>= <expr><name>position</name> <operator>&amp;</operator> <name>alignmentMask</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>cache</name><operator>.</operator><name>invalidate</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>Key</name><argument_list>(<argument><expr><name>source</name></expr></argument>, <argument><expr><name>pageAlignedPos</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>Rebufferer</name></type> <name>instantiateRebufferer</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>source</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>closeReader</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// Instance is shared among readers. Nothing to release.</comment>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>ChannelProxy</name></type> <name>channel</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>source</name><operator>.</operator><name>channel</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>long</name></type> <name>fileLength</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>source</name><operator>.</operator><name>fileLength</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>double</name></type> <name>getCrcCheckChance</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>source</name><operator>.</operator><name>getCrcCheckChance</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="string">"CachingRebufferer:"</literal> <operator>+</operator> <name>source</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>long</name></type> <name>capacity</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>cacheSize</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>setCapacity</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>capacity</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <throw>throw <expr><operator>new</operator> <call><name>UnsupportedOperationException</name><argument_list>(<argument><expr><literal type="string">"Chunk cache size cannot be changed."</literal></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>size</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>cache</name><operator>.</operator><name>asMap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>long</name></type> <name>weightedSize</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>cache</name><operator>.</operator><name>policy</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>eviction</name><argument_list>()</argument_list></call>
+                <operator>.</operator><call><name>map</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>policy</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>policy</name><operator>.</operator><name>weightedSize</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>orElseGet</name><argument_list>(<argument><expr><name>cache</name><operator>::</operator><name>estimatedSize</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call>
+                <operator>.</operator><call><name>orElseGet</name><argument_list>(<argument><expr><name>cache</name><operator>::</operator><name>estimatedSize</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

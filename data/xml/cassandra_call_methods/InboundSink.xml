@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/net/InboundSink.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicReferenceFieldUpdater</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Predicate</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>net</name><operator>.</operator><name>openhft</name><operator>.</operator><name>chronicle</name><operator>.</operator><name>core</name><operator>.</operator><name>util</name><operator>.</operator><name>ThrowingConsumer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name><operator>.</operator><name>TombstoneOverwhelmingException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>RequestFailureReason</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>index</name><operator>.</operator><name>IndexNotAvailableException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>NoSpamLogger</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A message sink that all inbound messages go through.
+ *
+ * Default sink used by {@link MessagingService} is {@link IVerbHandler#doVerb(Message)}, but it can be overridden
+ * to filter out certain messages, record the fact of attempted delivery, or delay arrival.
+ *
+ * This facility is most useful for test code.
+ *
+ * {@link #accept(Message)} is invoked on a thread belonging to the {@link org.apache.cassandra.concurrent.Stage}
+ * assigned to the {@link Verb} of the message.
+ */</comment>
+<class><specifier>public</specifier> class <name>InboundSink</name> <super_list><implements>implements <super><name><name>InboundMessageHandlers</name><operator>.</operator><name>MessageConsumer</name></name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>NoSpamLogger</name></type> <name>noSpamLogger</name> <init>=
+        <expr><call><name><name>NoSpamLogger</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>InboundSink</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="number">1L</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>SECONDS</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>Filtered</name> <super_list><implements>implements <super><name><name>ThrowingConsumer</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>, <argument><name>IOException</name></argument>&gt;</argument_list></name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>Predicate</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>condition</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>ThrowingConsumer</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>, <argument><name>IOException</name></argument>&gt;</argument_list></name></type> <name>next</name></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>Filtered</name><parameter_list>(<parameter><decl><type><name><name>Predicate</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>condition</name></decl></parameter>, <parameter><decl><type><name><name>ThrowingConsumer</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>, <argument><name>IOException</name></argument>&gt;</argument_list></name></type> <name>next</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>condition</name></name> <operator>=</operator> <name>condition</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>next</name></name> <operator>=</operator> <name>next</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>accept</name><parameter_list>(<parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>message</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>condition</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>next</name><operator>.</operator><name>accept</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <decl_stmt><decl><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"FieldMayBeFinal"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>private</specifier> <specifier>volatile</specifier> <name><name>ThrowingConsumer</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>, <argument><name>IOException</name></argument>&gt;</argument_list></name></type> <name>sink</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicReferenceFieldUpdater</name><argument_list type="generic">&lt;<argument><name>InboundSink</name></argument>, <argument><name>ThrowingConsumer</name></argument>&gt;</argument_list></name></type> <name>sinkUpdater</name>
+        <init>= <expr><call><name><name>AtomicReferenceFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>InboundSink</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><name><name>ThrowingConsumer</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"sink"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>MessagingService</name></type> <name>messaging</name></decl>;</decl_stmt>
+
+    <constructor><name>InboundSink</name><parameter_list>(<parameter><decl><type><name>MessagingService</name></type> <name>messaging</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>messaging</name></name> <operator>=</operator> <name>messaging</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>sink</name></name> <operator>=</operator> <lambda><parameter_list type="pseudo"><parameter><decl><name>message</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>message</name><operator>.</operator><name>header</name><operator>.</operator><name>verb</name><operator>.</operator><name>handler</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>doVerb</name><argument_list>(<argument><expr><operator>(</operator><name><name>Message</name><argument_list type="generic">&lt;<argument><name>Object</name></argument>&gt;</argument_list></name><operator>)</operator> <name>message</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>fail</name><parameter_list>(<parameter><decl><type><name><name>Message</name><operator>.</operator><name>Header</name></name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>Throwable</name></type> <name>failure</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>header</name><operator>.</operator><name>callBackOnFailure</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>to</name> <init>= <expr><ternary><condition><expr><call><name><name>header</name><operator>.</operator><name>respondTo</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name><name>header</name><operator>.</operator><name>respondTo</name></name><argument_list>()</argument_list></call></expr> </then><else>: <expr><name><name>header</name><operator>.</operator><name>from</name></name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>RequestFailureReason</name></argument>&gt;</argument_list></name></type> <name>response</name> <init>= <expr><call><name><name>Message</name><operator>.</operator><name>failureResponse</name></name><argument_list>(<argument><expr><name><name>header</name><operator>.</operator><name>id</name></name></expr></argument>,
+                                                                             <argument><expr><name><name>header</name><operator>.</operator><name>expiresAtNanos</name></name></expr></argument>,
+                                                                             <argument><expr><call><name><name>RequestFailureReason</name><operator>.</operator><name>forException</name></name><argument_list>(<argument><expr><name>failure</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>messaging</name><operator>.</operator><name>send</name></name><argument_list>(<argument><expr><name>response</name></expr></argument>, <argument><expr><name>to</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>accept</name><parameter_list>(<parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>message</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>sink</name><operator>.</operator><name>accept</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>fail</name><argument_list>(<argument><expr><name><name>message</name><operator>.</operator><name>header</name></name></expr></argument>, <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>t</name> <operator>instanceof</operator> <name>TombstoneOverwhelmingException</name> <operator>||</operator> <name>t</name> <operator>instanceof</operator> <name>IndexNotAvailableException</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>noSpamLogger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><call><name><name>t</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <if type="elseif">else if <condition>(<expr><name>t</name> <operator>instanceof</operator> <name>RuntimeException</name></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>(</operator><name>RuntimeException</name><operator>)</operator> <name>t</name></expr>;</throw></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></else></if_stmt>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>add</name><parameter_list>(<parameter><decl><type><name><name>Predicate</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>allow</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>sinkUpdater</name><operator>.</operator><name>updateAndGet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>sink</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><operator>new</operator> <call><name>Filtered</name><argument_list>(<argument><expr><name>allow</name></expr></argument>, <argument><expr><name>sink</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>remove</name><parameter_list>(<parameter><decl><type><name><name>Predicate</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>allow</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>sinkUpdater</name><operator>.</operator><name>updateAndGet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>sink</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name>without</name><argument_list>(<argument><expr><name>sink</name></expr></argument>, <argument><expr><name>allow</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>clear</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>sinkUpdater</name><operator>.</operator><name>updateAndGet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>InboundSink</name><operator>::</operator><name>clear</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Deprecated</name></annotation> <comment type="line">// TODO: this is not the correct way to do things</comment>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>allow</name><parameter_list>(<parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>message</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>allows</name><argument_list>(<argument><expr><name>sink</name></expr></argument>, <argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name><name>ThrowingConsumer</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>, <argument><name>IOException</name></argument>&gt;</argument_list></name></type> <name>clear</name><parameter_list>(<parameter><decl><type><name><name>ThrowingConsumer</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>, <argument><name>IOException</name></argument>&gt;</argument_list></name></type> <name>sink</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <while>while <condition>(<expr><name>sink</name> <operator>instanceof</operator> <name>Filtered</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>sink</name> <operator>=</operator> <operator>(</operator><operator>(</operator><name>Filtered</name><operator>)</operator> <name>sink</name><operator>)</operator><operator>.</operator><name>next</name></expr>;</expr_stmt></block_content></block></while>
+        <return>return <expr><name>sink</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name><name>ThrowingConsumer</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>, <argument><name>IOException</name></argument>&gt;</argument_list></name></type> <name>without</name><parameter_list>(<parameter><decl><type><name><name>ThrowingConsumer</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>, <argument><name>IOException</name></argument>&gt;</argument_list></name></type> <name>sink</name></decl></parameter>, <parameter><decl><type><name><name>Predicate</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>condition</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><operator>(</operator><name>sink</name> <operator>instanceof</operator> <name>Filtered</name><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>sink</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>Filtered</name></type> <name>filtered</name> <init>= <expr><operator>(</operator><name>Filtered</name><operator>)</operator> <name>sink</name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>ThrowingConsumer</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>, <argument><name>IOException</name></argument>&gt;</argument_list></name></type> <name>next</name> <init>= <expr><call><name>without</name><argument_list>(<argument><expr><name><name>filtered</name><operator>.</operator><name>next</name></name></expr></argument>, <argument><expr><name>condition</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><ternary><condition><expr><call><name><name>condition</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>filtered</name><operator>.</operator><name>condition</name></name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><name>next</name></expr>
+                                                    </then><else>: <expr><ternary><condition><expr><name>next</name> <operator>==</operator> <name><name>filtered</name><operator>.</operator><name>next</name></name></expr>
+                                                      ?</condition><then> <expr><name>sink</name></expr>
+                                                      </then><else>: <expr><operator>new</operator> <call><name>Filtered</name><argument_list>(<argument><expr><name><name>filtered</name><operator>.</operator><name>condition</name></name></expr></argument>, <argument><expr><name>next</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>allows</name><parameter_list>(<parameter><decl><type><name><name>ThrowingConsumer</name><argument_list type="generic">&lt;<argument><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>, <argument><name>IOException</name></argument>&gt;</argument_list></name></type> <name>sink</name></decl></parameter>, <parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>message</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <while>while <condition>(<expr><name>sink</name> <operator>instanceof</operator> <name>Filtered</name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Filtered</name></type> <name>filtered</name> <init>= <expr><operator>(</operator><name>Filtered</name><operator>)</operator> <name>sink</name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>filtered</name><operator>.</operator><name>condition</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+            <expr_stmt><expr><name>sink</name> <operator>=</operator> <name><name>filtered</name><operator>.</operator><name>next</name></name></expr>;</expr_stmt>
+        </block_content>}</block></while>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

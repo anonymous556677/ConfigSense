@@ -1,0 +1,552 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/service/reads/ReplicaFilteringProtection.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>reads</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>ArrayDeque</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>ArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Arrays</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>NavigableSet</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Queue</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Function</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Stage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Clustering</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ColumnFamilyStore</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Columns</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ConsistencyLevel</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>DecoratedKey</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>DeletionTime</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Keyspace</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ReadCommand</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>RegularAndStaticColumns</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>SinglePartitionReadCommand</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name><operator>.</operator><name>ClusteringIndexFilter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name><operator>.</operator><name>ClusteringIndexNamesFilter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name><operator>.</operator><name>DataLimits</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name><operator>.</operator><name>RowFilter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>PartitionIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>PartitionIterators</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>UnfilteredPartitionIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>UnfilteredPartitionIterators</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>EncodingStats</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>RangeTombstoneMarker</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>Row</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>Rows</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>Unfiltered</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>UnfilteredRowIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>UnfilteredRowIterators</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>OverloadedException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>ReadTimeoutException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>UnavailableException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>Endpoints</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>EndpointsForToken</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>Replica</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>ReplicaPlan</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>ReplicaPlans</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>TableMetrics</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>MessagingService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>ClientWarn</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>StorageProxy</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>reads</name><operator>.</operator><name>repair</name><operator>.</operator><name>NoopReadRepair</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>tracing</name><operator>.</operator><name>Tracing</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>NoSpamLogger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>btree</name><operator>.</operator><name>BTreeSet</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Helper in charge of collecting additional queries to be done on the coordinator to protect against invalid results
+ * being included due to replica-side filtering (secondary indexes or {@code ALLOW * FILTERING}).
+ * &lt;p&gt;
+ * When using replica-side filtering with CL&gt;ONE, a replica can send a stale result satisfying the filter, while updated
+ * replicas won't send a corresponding tombstone to discard that result during reconciliation. This helper identifies
+ * the rows in a replica response that don't have a corresponding row in other replica responses, and requests them by
+ * primary key to the "silent" replicas in a second fetch round.
+ * &lt;p&gt;
+ * See CASSANDRA-8272, CASSANDRA-8273, and CASSANDRA-15907 for further details.
+ */</comment>
+<class><specifier>public</specifier> class <name><name>ReplicaFilteringProtection</name><parameter_list>&lt;<parameter><name>E</name> <extends>extends <name><name>Endpoints</name><parameter_list>&lt;<parameter><name>E</name></parameter>&gt;</parameter_list></name></extends></parameter>&gt;</parameter_list></name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>ReplicaFilteringProtection</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>NoSpamLogger</name></type> <name>oneMinuteLogger</name> <init>= <expr><call><name><name>NoSpamLogger</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name>logger</name></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MINUTES</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>Function</name><argument_list type="generic">&lt;<argument><name>UnfilteredRowIterator</name></argument>, <argument><name>EncodingStats</name></argument>&gt;</argument_list></name></type> <name>NULL_TO_NO_STATS</name> <init>=
+        <expr><ternary><condition><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>rowIterator</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><ternary><condition><expr><name>rowIterator</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name><name>EncodingStats</name><operator>.</operator><name>NO_STATS</name></name></expr> </then><else>: <expr><call><name><name>rowIterator</name><operator>.</operator><name>stats</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr></block_content></block></lambda></expr></condition></ternary></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Keyspace</name></type> <name>keyspace</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ReadCommand</name></type> <name>command</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ConsistencyLevel</name></type> <name>consistency</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>queryStartNanoTime</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>E</name></type> <name>sources</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>TableMetrics</name></type> <name>tableMetrics</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>cachedRowsWarnThreshold</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>cachedRowsFailThreshold</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/** Tracks whether or not we've already hit the warning threshold while evaluating a partition. */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>hitWarningThreshold</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>currentRowsCached</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt> <comment type="line">// tracks the current number of cached rows</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>maxRowsCached</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt> <comment type="line">// tracks the high watermark for the number of cached rows</comment>
+
+    <comment type="block" format="javadoc">/**
+     * Per-source list of the pending partitions seen by the merge listener, to be merged with the extra fetched rows.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name><name>Queue</name><argument_list type="generic">&lt;<argument><name>PartitionBuilder</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>originalPartitions</name></decl>;</decl_stmt>
+
+    <constructor><name>ReplicaFilteringProtection</name><parameter_list>(<parameter><decl><type><name>Keyspace</name></type> <name>keyspace</name></decl></parameter>,
+                               <parameter><decl><type><name>ReadCommand</name></type> <name>command</name></decl></parameter>,
+                               <parameter><decl><type><name>ConsistencyLevel</name></type> <name>consistency</name></decl></parameter>,
+                               <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>,
+                               <parameter><decl><type><name>E</name></type> <name>sources</name></decl></parameter>,
+                               <parameter><decl><type><name>int</name></type> <name>cachedRowsWarnThreshold</name></decl></parameter>,
+                               <parameter><decl><type><name>int</name></type> <name>cachedRowsFailThreshold</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>keyspace</name></name> <operator>=</operator> <name>keyspace</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>command</name></name> <operator>=</operator> <name>command</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>consistency</name></name> <operator>=</operator> <name>consistency</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>queryStartNanoTime</name></name> <operator>=</operator> <name>queryStartNanoTime</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>sources</name></name> <operator>=</operator> <name>sources</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>originalPartitions</name></name> <operator>=</operator> <operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>sources</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>sources</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>originalPartitions</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name><name>ArrayDeque</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <expr_stmt><expr><name>tableMetrics</name> <operator>=</operator> <call><name><name>ColumnFamilyStore</name><operator>.</operator><name>metricsFor</name></name><argument_list>(<argument><expr><call><name><name>command</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>id</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cachedRowsWarnThreshold</name></name> <operator>=</operator> <name>cachedRowsWarnThreshold</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cachedRowsFailThreshold</name></name> <operator>=</operator> <name>cachedRowsFailThreshold</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>private</specifier> <name>UnfilteredPartitionIterator</name></type> <name>executeReadCommand</name><parameter_list>(<parameter><decl><type><name>ReadCommand</name></type> <name>cmd</name></decl></parameter>, <parameter><decl><type><name>Replica</name></type> <name>source</name></decl></parameter>, <parameter><decl><type><name><name>ReplicaPlan</name><operator>.</operator><name><name>Shared</name><argument_list type="generic">&lt;<argument><name>EndpointsForToken</name></argument>, <argument><name><name>ReplicaPlan</name><operator>.</operator><name>ForTokenRead</name></name></argument>&gt;</argument_list></name></name></type> <name>replicaPlan</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unchecked"</literal></expr></argument>)</argument_list></annotation>
+        <type><name><name>DataResolver</name><argument_list type="generic">&lt;<argument><name>EndpointsForToken</name></argument>, <argument><name><name>ReplicaPlan</name><operator>.</operator><name>ForTokenRead</name></name></argument>&gt;</argument_list></name></type> <name>resolver</name> <init>=
+            <expr><operator>new</operator> <call><name><name>DataResolver</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>cmd</name></expr></argument>, <argument><expr><name>replicaPlan</name></expr></argument>, <argument><expr><operator>(</operator><name><name>NoopReadRepair</name><argument_list type="generic">&lt;<argument><name>EndpointsForToken</name></argument>, <argument><name><name>ReplicaPlan</name><operator>.</operator><name>ForTokenRead</name></name></argument>&gt;</argument_list></name><operator>)</operator> <name><name>NoopReadRepair</name><operator>.</operator><name>instance</name></name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>ReadCallback</name><argument_list type="generic">&lt;<argument><name>EndpointsForToken</name></argument>, <argument><name><name>ReplicaPlan</name><operator>.</operator><name>ForTokenRead</name></name></argument>&gt;</argument_list></name></type> <name>handler</name> <init>= <expr><operator>new</operator> <call><name><name>ReadCallback</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>resolver</name></expr></argument>, <argument><expr><name>cmd</name></expr></argument>, <argument><expr><name>replicaPlan</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>source</name><operator>.</operator><name>isSelf</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>Stage</name><operator>.</operator><name>READ</name><operator>.</operator><name>maybeExecuteImmediately</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name><name>StorageProxy</name><operator>.</operator><name>LocalReadRunnable</name></name><argument_list>(<argument><expr><name>cmd</name></expr></argument>, <argument><expr><name>handler</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>source</name><operator>.</operator><name>isTransient</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>cmd</name> <operator>=</operator> <call><name><name>cmd</name><operator>.</operator><name>copyAsTransientQuery</name></name><argument_list>(<argument><expr><name>source</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>MessagingService</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>sendWithCallback</name><argument_list>(<argument><expr><call><name><name>cmd</name><operator>.</operator><name>createMessage</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>source</name><operator>.</operator><name>endpoint</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>handler</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+
+        <comment type="line">// We don't call handler.get() because we want to preserve tombstones since we're still in the middle of merging node results.</comment>
+        <expr_stmt><expr><call><name><name>handler</name><operator>.</operator><name>awaitResults</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <assert>assert <expr><call><name><name>resolver</name><operator>.</operator><name>getMessages</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">1</literal></expr>;</assert>
+        <return>return <expr><call><name><name>resolver</name><operator>.</operator><name>getMessages</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name><name>payload</name><operator>.</operator><name>makeIterator</name></name><argument_list>(<argument><expr><name>command</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns a merge listener that skips the merged rows for which any of the replicas doesn't have a version,
+     * pessimistically assuming that they are outdated. It is intended to be used during a first merge of per-replica
+     * query results to ensure we fetch enough results from the replicas to ensure we don't miss any potentially
+     * outdated result.
+     * &lt;p&gt;
+     * The listener will track both the accepted data and the primary keys of the rows that are considered as outdated.
+     * That way, once the query results would have been merged using this listener, further calls to
+     * {@link #queryProtectedPartitions(PartitionIterator, int)} will use the collected data to return a copy of the
+     * data originally collected from the specified replica, completed with the potentially outdated rows.
+     */</comment>
+    <function><type><name><name>UnfilteredPartitionIterators</name><operator>.</operator><name>MergeListener</name></name></type> <name>mergeController</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <class><super><name><name>UnfilteredPartitionIterators</name><operator>.</operator><name>MergeListener</name></name></super><argument_list>()</argument_list>
+        <block>{
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <comment type="line">// If we hit the failure threshold before consuming a single partition, record the current rows cached.</comment>
+                <expr_stmt><expr><call><name><name>tableMetrics</name><operator>.</operator><name>rfpRowsCachedPerQuery</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>currentRowsCached</name></expr></argument>, <argument><expr><name>maxRowsCached</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name><name>UnfilteredRowIterators</name><operator>.</operator><name>MergeListener</name></name></type> <name>getRowMergeListener</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>partitionKey</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>UnfilteredRowIterator</name></argument>&gt;</argument_list></name></type> <name>versions</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>PartitionBuilder</name></argument>&gt;</argument_list></name></type> <name>builders</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>sources</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>RegularAndStaticColumns</name></type> <name>columns</name> <init>= <expr><call><name>columns</name><argument_list>(<argument><expr><name>versions</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>EncodingStats</name></type> <name>stats</name> <init>= <expr><call><name><name>EncodingStats</name><operator>.</operator><name>merge</name></name><argument_list>(<argument><expr><name>versions</name></expr></argument>, <argument><expr><name>NULL_TO_NO_STATS</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>sources</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>builders</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>PartitionBuilder</name><argument_list>(<argument><expr><name>partitionKey</name></expr></argument>, <argument><expr><call><name><name>sources</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><name>stats</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+                <return>return <expr><operator>new</operator> <class><super><name><name>UnfilteredRowIterators</name><operator>.</operator><name>MergeListener</name></name></super><argument_list>()</argument_list>
+                <block>{
+                    <function><annotation>@<name>Override</name></annotation>
+                    <type><specifier>public</specifier> <name>void</name></type> <name>onMergedPartitionLevelDeletion</name><parameter_list>(<parameter><decl><type><name>DeletionTime</name></type> <name>mergedDeletion</name></decl></parameter>, <parameter><decl><type><name><name>DeletionTime</name><index>[]</index></name></type> <name>versions</name></decl></parameter>)</parameter_list>
+                    <block>{<block_content>
+                        <comment type="line">// cache the deletion time versions to be able to regenerate the original row iterator</comment>
+                        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>versions</name><operator>.</operator><name>length</name></name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                            <expr_stmt><expr><call><name><name>builders</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>setDeletionTime</name><argument_list>(<argument><expr><name><name>versions</name><index>[<expr><name>i</name></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+                    </block_content>}</block></function>
+
+                    <function><annotation>@<name>Override</name></annotation>
+                    <type><specifier>public</specifier> <name>Row</name></type> <name>onMergedRows</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>merged</name></decl></parameter>, <parameter><decl><type><name><name>Row</name><index>[]</index></name></type> <name>versions</name></decl></parameter>)</parameter_list>
+                    <block>{<block_content>
+                        <comment type="line">// cache the row versions to be able to regenerate the original row iterator</comment>
+                        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>versions</name><operator>.</operator><name>length</name></name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                            <expr_stmt><expr><call><name><name>builders</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>addRow</name><argument_list>(<argument><expr><name><name>versions</name><index>[<expr><name>i</name></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+                        <if_stmt><if>if <condition>(<expr><call><name><name>merged</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                            <return>return <expr><name>merged</name></expr>;</return></block_content></block></if></if_stmt>
+
+                        <decl_stmt><decl><type><name>boolean</name></type> <name>isPotentiallyOutdated</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+                        <decl_stmt><decl><type><name>boolean</name></type> <name>isStatic</name> <init>= <expr><call><name><name>merged</name><operator>.</operator><name>isStatic</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>versions</name><operator>.</operator><name>length</name></name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+                        <block>{<block_content>
+                            <decl_stmt><decl><type><name>Row</name></type> <name>version</name> <init>= <expr><name><name>versions</name><index>[<expr><name>i</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+                            <if_stmt><if>if <condition>(<expr><name>version</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <operator>(</operator><name>isStatic</name> <operator>&amp;&amp;</operator> <call><name><name>version</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call><operator>)</operator></expr>)</condition>
+                            <block>{<block_content>
+                                <expr_stmt><expr><name>isPotentiallyOutdated</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                                <expr_stmt><expr><call><name><name>builders</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>addToFetch</name><argument_list>(<argument><expr><name>merged</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                            </block_content>}</block></if></if_stmt>
+                        </block_content>}</block></for>
+
+                        <comment type="line">// If the row is potentially outdated (because some replica didn't send anything and so it _may_ be</comment>
+                        <comment type="line">// an outdated result that is only present because other replica have filtered the up-to-date result</comment>
+                        <comment type="line">// out), then we skip the row. In other words, the results of the initial merging of results by this</comment>
+                        <comment type="line">// protection assume the worst case scenario where every row that might be outdated actually is.</comment>
+                        <comment type="line">// This ensures that during this first phase (collecting additional row to fetch) we are guaranteed</comment>
+                        <comment type="line">// to look at enough data to ultimately fulfill the query limit.</comment>
+                        <return>return <expr><ternary><condition><expr><name>isPotentiallyOutdated</name></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><name>merged</name></expr></else></ternary></expr>;</return>
+                    </block_content>}</block></function>
+
+                    <function><annotation>@<name>Override</name></annotation>
+                    <type><specifier>public</specifier> <name>void</name></type> <name>onMergedRangeTombstoneMarkers</name><parameter_list>(<parameter><decl><type><name>RangeTombstoneMarker</name></type> <name>merged</name></decl></parameter>, <parameter><decl><type><name><name>RangeTombstoneMarker</name><index>[]</index></name></type> <name>versions</name></decl></parameter>)</parameter_list>
+                    <block>{<block_content>
+                        <comment type="line">// cache the marker versions to be able to regenerate the original row iterator</comment>
+                        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>versions</name><operator>.</operator><name>length</name></name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                            <expr_stmt><expr><call><name><name>builders</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>addRangeTombstoneMarker</name><argument_list>(<argument><expr><name><name>versions</name><index>[<expr><name>i</name></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+                    </block_content>}</block></function>
+
+                    <function><annotation>@<name>Override</name></annotation>
+                    <type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+                    <block>{<block_content>
+                        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>sources</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                            <expr_stmt><expr><call><name><name>originalPartitions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>add</name><argument_list>(<argument><expr><call><name><name>builders</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+                    </block_content>}</block></function>
+                }</block></class></expr>;</return>
+            </block_content>}</block></function>
+        }</block></class></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>incrementCachedRows</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>currentRowsCached</name><operator>++</operator></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>currentRowsCached</name> <operator>==</operator> <name>cachedRowsFailThreshold</name> <operator>+</operator> <literal type="number">1</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>message</name> <init>= <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Replica filtering protection has cached over %d rows during query %s. "</literal> <operator>+</operator>
+                                           <literal type="string">"(See 'cached_replica_rows_fail_threshold' in cassandra.yaml.)"</literal></expr></argument>,
+                                           <argument><expr><name>cachedRowsFailThreshold</name></expr></argument>, <argument><expr><call><name><name>command</name><operator>.</operator><name>toCQLString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <throw>throw <expr><operator>new</operator> <call><name>OverloadedException</name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if>
+        <if type="elseif">else if <condition>(<expr><name>currentRowsCached</name> <operator>==</operator> <name>cachedRowsWarnThreshold</name> <operator>+</operator> <literal type="number">1</literal> <operator>&amp;&amp;</operator> <operator>!</operator><name>hitWarningThreshold</name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>hitWarningThreshold</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+
+            <decl_stmt><decl><type><name>String</name></type> <name>message</name> <init>= <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Replica filtering protection has cached over %d rows during query %s. "</literal> <operator>+</operator>
+                                           <literal type="string">"(See 'cached_replica_rows_warn_threshold' in cassandra.yaml.)"</literal></expr></argument>,
+                                           <argument><expr><name>cachedRowsWarnThreshold</name></expr></argument>, <argument><expr><call><name><name>command</name><operator>.</operator><name>toCQLString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <expr_stmt><expr><call><name><name>ClientWarn</name><operator>.</operator><name>instance</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>oneMinuteLogger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>releaseCachedRows</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>count</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>maxRowsCached</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>maxRowsCached</name></expr></argument>, <argument><expr><name>currentRowsCached</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>currentRowsCached</name> <operator>-=</operator> <name>count</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>RegularAndStaticColumns</name></type> <name>columns</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>UnfilteredRowIterator</name></argument>&gt;</argument_list></name></type> <name>versions</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Columns</name></type> <name>statics</name> <init>= <expr><name><name>Columns</name><operator>.</operator><name>NONE</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Columns</name></type> <name>regulars</name> <init>= <expr><name><name>Columns</name><operator>.</operator><name>NONE</name></name></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>UnfilteredRowIterator</name></type> <name>iter</name> <range>: <expr><name>versions</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>iter</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <continue>continue;</continue></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>RegularAndStaticColumns</name></type> <name>cols</name> <init>= <expr><call><name><name>iter</name><operator>.</operator><name>columns</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>statics</name> <operator>=</operator> <call><name><name>statics</name><operator>.</operator><name>mergeTo</name></name><argument_list>(<argument><expr><name><name>cols</name><operator>.</operator><name>statics</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>regulars</name> <operator>=</operator> <call><name><name>regulars</name><operator>.</operator><name>mergeTo</name></name><argument_list>(<argument><expr><name><name>cols</name><operator>.</operator><name>regulars</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><operator>new</operator> <call><name>RegularAndStaticColumns</name><argument_list>(<argument><expr><name>statics</name></expr></argument>, <argument><expr><name>regulars</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns the protected results for the specified replica. These are generated fetching the extra rows and merging
+     * them with the cached original filtered results for that replica.
+     *
+     * @param merged the first iteration partitions, that should have been read used with the {@link #mergeController()}
+     * @param source the source
+     * @return the protected results for the specified replica
+     */</comment>
+    <function><type><name>UnfilteredPartitionIterator</name></type> <name>queryProtectedPartitions</name><parameter_list>(<parameter><decl><type><name>PartitionIterator</name></type> <name>merged</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>source</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <class><super><name>UnfilteredPartitionIterator</name></super><argument_list>()</argument_list>
+        <block>{
+            <decl_stmt><decl><type><specifier>final</specifier> <name><name>Queue</name><argument_list type="generic">&lt;<argument><name>PartitionBuilder</name></argument>&gt;</argument_list></name></type> <name>partitions</name> <init>= <expr><call><name><name>originalPartitions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>source</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>TableMetadata</name></type> <name>metadata</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><call><name><name>command</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list> <block>{<block_content> </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>boolean</name></type> <name>hasNext</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <comment type="line">// If there are no cached partition builders for this source, advance the first phase iterator, which</comment>
+                <comment type="line">// will force the RFP merge listener to load at least the next protected partition. Note that this may</comment>
+                <comment type="line">// load more than one partition if any divergence between replicas is discovered by the merge listener.</comment>
+                <if_stmt><if>if <condition>(<expr><call><name><name>partitions</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>PartitionIterators</name><operator>.</operator><name>consumeNext</name></name><argument_list>(<argument><expr><name>merged</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+
+                <return>return <expr><operator>!</operator><call><name><name>partitions</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>UnfilteredRowIterator</name></type> <name>next</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>PartitionBuilder</name></type> <name>builder</name> <init>= <expr><call><name><name>partitions</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <assert>assert <expr><name>builder</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</assert>
+                <return>return <expr><call><name><name>builder</name><operator>.</operator><name>protectedPartition</name></name><argument_list>()</argument_list></call></expr>;</return>
+            </block_content>}</block></function>
+        }</block></class></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>private</specifier> class <name>PartitionBuilder</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>DecoratedKey</name></type> <name>key</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Replica</name></type> <name>source</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>RegularAndStaticColumns</name></type> <name>columns</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>EncodingStats</name></type> <name>stats</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <name>DeletionTime</name></type> <name>deletionTime</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>Row</name></type> <name>staticRow</name> <init>= <expr><name><name>Rows</name><operator>.</operator><name>EMPTY_STATIC_ROW</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Queue</name><argument_list type="generic">&lt;<argument><name>Unfiltered</name></argument>&gt;</argument_list></name></type> <name>contents</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayDeque</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name><name>BTreeSet</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></name></type> <name>toFetch</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>partitionRowsCached</name></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>PartitionBuilder</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>Replica</name></type> <name>source</name></decl></parameter>, <parameter><decl><type><name>RegularAndStaticColumns</name></type> <name>columns</name></decl></parameter>, <parameter><decl><type><name>EncodingStats</name></type> <name>stats</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>key</name></name> <operator>=</operator> <name>key</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>source</name></name> <operator>=</operator> <name>source</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columns</name></name> <operator>=</operator> <name>columns</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>stats</name></name> <operator>=</operator> <name>stats</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>setDeletionTime</name><parameter_list>(<parameter><decl><type><name>DeletionTime</name></type> <name>deletionTime</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>deletionTime</name></name> <operator>=</operator> <name>deletionTime</name></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>addRow</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name>partitionRowsCached</name><operator>++</operator></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name>incrementCachedRows</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <comment type="line">// Note that even null rows are counted against the row caching limit. The assumption is that</comment>
+            <comment type="line">// a subsequent protection query will later fetch the row onto the heap anyway.</comment>
+            <if_stmt><if>if <condition>(<expr><name>row</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>row</name><operator>.</operator><name>isStatic</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>staticRow</name> <operator>=</operator> <name>row</name></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>contents</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>row</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>addRangeTombstoneMarker</name><parameter_list>(<parameter><decl><type><name>RangeTombstoneMarker</name></type> <name>marker</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>marker</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>contents</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>marker</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>addToFetch</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>toFetch</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>toFetch</name> <operator>=</operator> <call><name><name>BTreeSet</name><operator>.</operator><name>builder</name></name><argument_list>(<argument><expr><call><name><name>command</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>comparator</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <comment type="line">// Note that for static, we shouldn't add the clustering to the clustering set (the</comment>
+            <comment type="line">// ClusteringIndexNamesFilter we'll build from this later does not expect it), but the fact</comment>
+            <comment type="line">// we created a builder in the first place will act as a marker that the static row must be</comment>
+            <comment type="line">// fetched, even if no other rows are added for this partition.</comment>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>row</name><operator>.</operator><name>isStatic</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>toFetch</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>UnfilteredRowIterator</name></type> <name>originalPartition</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <class><super><name>UnfilteredRowIterator</name></super><argument_list>()</argument_list>
+            <block>{
+                <function><annotation>@<name>Override</name></annotation>
+                <type><specifier>public</specifier> <name>DeletionTime</name></type> <name>partitionLevelDeletion</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <return>return <expr><name>deletionTime</name></expr>;</return>
+                </block_content>}</block></function>
+
+                <function><annotation>@<name>Override</name></annotation>
+                <type><specifier>public</specifier> <name>EncodingStats</name></type> <name>stats</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <return>return <expr><name>stats</name></expr>;</return>
+                </block_content>}</block></function>
+
+                <function><annotation>@<name>Override</name></annotation>
+                <type><specifier>public</specifier> <name>TableMetadata</name></type> <name>metadata</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <return>return <expr><call><name><name>command</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr>;</return>
+                </block_content>}</block></function>
+
+                <function><annotation>@<name>Override</name></annotation>
+                <type><specifier>public</specifier> <name>boolean</name></type> <name>isReverseOrder</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <return>return <expr><call><name><name>command</name><operator>.</operator><name>isReversed</name></name><argument_list>()</argument_list></call></expr>;</return>
+                </block_content>}</block></function>
+
+                <function><annotation>@<name>Override</name></annotation>
+                <type><specifier>public</specifier> <name>RegularAndStaticColumns</name></type> <name>columns</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <return>return <expr><name>columns</name></expr>;</return>
+                </block_content>}</block></function>
+
+                <function><annotation>@<name>Override</name></annotation>
+                <type><specifier>public</specifier> <name>DecoratedKey</name></type> <name>partitionKey</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <return>return <expr><name>key</name></expr>;</return>
+                </block_content>}</block></function>
+
+                <function><annotation>@<name>Override</name></annotation>
+                <type><specifier>public</specifier> <name>Row</name></type> <name>staticRow</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <return>return <expr><name>staticRow</name></expr>;</return>
+                </block_content>}</block></function>
+
+                <function><annotation>@<name>Override</name></annotation>
+                <type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name>releaseCachedRows</name><argument_list>(<argument><expr><name>partitionRowsCached</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></function>
+
+                <function><annotation>@<name>Override</name></annotation>
+                <type><specifier>public</specifier> <name>boolean</name></type> <name>hasNext</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <return>return <expr><operator>!</operator><call><name><name>contents</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</return>
+                </block_content>}</block></function>
+
+                <function><annotation>@<name>Override</name></annotation>
+                <type><specifier>public</specifier> <name>Unfiltered</name></type> <name>next</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <return>return <expr><call><name><name>contents</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr>;</return>
+                </block_content>}</block></function>
+            }</block></class></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>UnfilteredRowIterator</name></type> <name>protectedPartition</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>UnfilteredRowIterator</name></type> <name>original</name> <init>= <expr><call><name>originalPartition</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>toFetch</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <try>try <init>(<decl><type><name>UnfilteredPartitionIterator</name></type> <name>partitions</name> <init>= <expr><call><name>fetchFromSource</name><argument_list>()</argument_list></call></expr></init></decl>)</init>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>partitions</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                    <block>{<block_content>
+                        <try>try <init>(<decl><type><name>UnfilteredRowIterator</name></type> <name>fetchedRows</name> <init>= <expr><call><name><name>partitions</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>)</init>
+                        <block>{<block_content>
+                            <return>return <expr><call><name><name>UnfilteredRowIterators</name><operator>.</operator><name>merge</name></name><argument_list>(<argument><expr><call><name><name>Arrays</name><operator>.</operator><name>asList</name></name><argument_list>(<argument><expr><name>original</name></expr></argument>, <argument><expr><name>fetchedRows</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+                        </block_content>}</block></try>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></try>
+            </block_content>}</block></if></if_stmt>
+
+            <return>return <expr><name>original</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>UnfilteredPartitionIterator</name></type> <name>fetchFromSource</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><name>toFetch</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</assert>
+
+            <decl_stmt><decl><type><name><name>NavigableSet</name><argument_list type="generic">&lt;<argument><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>clusterings</name> <init>= <expr><call><name><name>toFetch</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>tableMetrics</name><operator>.</operator><name>replicaFilteringProtectionRequests</name><operator>.</operator><name>mark</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Requesting rows {} in partition {} from {} for replica filtering protection"</literal></expr></argument>,
+                             <argument><expr><name>clusterings</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>source</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Requesting {} rows in partition {} from {} for replica filtering protection"</literal></expr></argument>,
+                          <argument><expr><call><name><name>clusterings</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>source</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <comment type="line">// build the read command taking into account that we could be requesting only in the static row</comment>
+            <decl_stmt><decl><type><name>DataLimits</name></type> <name>limits</name> <init>= <expr><ternary><condition><expr><call><name><name>clusterings</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr> ?</condition><then> <expr><call><name><name>DataLimits</name><operator>.</operator><name>cqlLimits</name></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr> </then><else>: <expr><name><name>DataLimits</name><operator>.</operator><name>NONE</name></name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>ClusteringIndexFilter</name></type> <name>filter</name> <init>= <expr><operator>new</operator> <call><name>ClusteringIndexNamesFilter</name><argument_list>(<argument><expr><name>clusterings</name></expr></argument>, <argument><expr><call><name><name>command</name><operator>.</operator><name>isReversed</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>SinglePartitionReadCommand</name></type> <name>cmd</name> <init>= <expr><call><name><name>SinglePartitionReadCommand</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><call><name><name>command</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                                               <argument><expr><call><name><name>command</name><operator>.</operator><name>nowInSec</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                                               <argument><expr><call><name><name>command</name><operator>.</operator><name>columnFilter</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                                               <argument><expr><name><name>RowFilter</name><operator>.</operator><name>NONE</name></name></expr></argument>,
+                                                                               <argument><expr><name>limits</name></expr></argument>,
+                                                                               <argument><expr><name>key</name></expr></argument>,
+                                                                               <argument><expr><name>filter</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name><name>ReplicaPlan</name><operator>.</operator><name>ForTokenRead</name></name></type> <name>replicaPlan</name> <init>= <expr><call><name><name>ReplicaPlans</name><operator>.</operator><name>forSingleReplicaRead</name></name><argument_list>(<argument><expr><name>keyspace</name></expr></argument>, <argument><expr><call><name><name>key</name><operator>.</operator><name>getToken</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>source</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>ReplicaPlan</name><operator>.</operator><name>SharedForTokenRead</name></name></type> <name>sharedReplicaPlan</name> <init>= <expr><call><name><name>ReplicaPlan</name><operator>.</operator><name>shared</name></name><argument_list>(<argument><expr><name>replicaPlan</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <try>try
+            <block>{<block_content>
+                <return>return <expr><call><name>executeReadCommand</name><argument_list>(<argument><expr><name>cmd</name></expr></argument>, <argument><expr><name>source</name></expr></argument>, <argument><expr><name>sharedReplicaPlan</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>ReadTimeoutException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>blockFor</name> <init>= <expr><call><name><name>consistency</name><operator>.</operator><name>blockFor</name></name><argument_list>(<argument><expr><call><name><name>replicaPlan</name><operator>.</operator><name>replicationStrategy</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <throw>throw <expr><operator>new</operator> <call><name>ReadTimeoutException</name><argument_list>(<argument><expr><name>consistency</name></expr></argument>, <argument><expr><name>blockFor</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>, <argument><expr><name>blockFor</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>UnavailableException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>blockFor</name> <init>= <expr><call><name><name>consistency</name><operator>.</operator><name>blockFor</name></name><argument_list>(<argument><expr><call><name><name>replicaPlan</name><operator>.</operator><name>replicationStrategy</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <throw>throw <expr><call><name><name>UnavailableException</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>consistency</name></expr></argument>, <argument><expr><name>blockFor</name></expr></argument>, <argument><expr><name>blockFor</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/utils/StatusLogger.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>locks</name><operator>.</operator><name>ReentrantLock</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cache</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>CassandraMetricsRegistry</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>ThreadPoolMetrics</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ColumnFamilyStore</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>RowIndexEntry</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>compaction</name><operator>.</operator><name>CompactionManager</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>MessagingService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>CacheService</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>StatusLogger</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>StatusLogger</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>ReentrantLock</name></type> <name>busyMonitor</name> <init>= <expr><operator>new</operator> <call><name>ReentrantLock</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>log</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// avoid logging more than once at the same time. throw away any attempts to log concurrently, as it would be</comment>
+        <comment type="line">// confusing and noisy for operators - and don't bother logging again, immediately as it'll just be the same data</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>busyMonitor</name><operator>.</operator><name>tryLock</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>logStatus</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <finally>finally
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>busyMonitor</name><operator>.</operator><name>unlock</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></finally></try>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"StatusLogger is busy"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>logStatus</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// everything from o.a.c.concurrent</comment>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%-28s%10s%10s%15s%10s%18s"</literal></expr></argument>, <argument><expr><literal type="string">"Pool Name"</literal></expr></argument>, <argument><expr><literal type="string">"Active"</literal></expr></argument>, <argument><expr><literal type="string">"Pending"</literal></expr></argument>, <argument><expr><literal type="string">"Completed"</literal></expr></argument>, <argument><expr><literal type="string">"Blocked"</literal></expr></argument>, <argument><expr><literal type="string">"All Time Blocked"</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <for>for <control>(<init><decl><type><name>ThreadPoolMetrics</name></type> <name>tpool</name> <range>: <expr><call><name><name>CassandraMetricsRegistry</name><operator>.</operator><name>Metrics</name><operator>.</operator><name>allThreadPoolMetrics</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%-28s%10s%10s%15s%10s%18s"</literal></expr></argument>,
+                                      <argument><expr><name><name>tpool</name><operator>.</operator><name>poolName</name></name></expr></argument>,
+                                      <argument><expr><call><name><name>tpool</name><operator>.</operator><name>activeTasks</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                      <argument><expr><call><name><name>tpool</name><operator>.</operator><name>pendingTasks</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                      <argument><expr><call><name><name>tpool</name><operator>.</operator><name>completedTasks</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                      <argument><expr><call><name><name>tpool</name><operator>.</operator><name>currentBlocked</name><operator>.</operator><name>getCount</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                      <argument><expr><call><name><name>tpool</name><operator>.</operator><name>totalBlocked</name><operator>.</operator><name>getCount</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <comment type="line">// one offs</comment>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%-25s%10s%10s"</literal></expr></argument>,
+                                  <argument><expr><literal type="string">"CompactionManager"</literal></expr></argument>, <argument><expr><call><name><name>CompactionManager</name><operator>.</operator><name>instance</name><operator>.</operator><name>getActiveCompactions</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>CompactionManager</name><operator>.</operator><name>instance</name><operator>.</operator><name>getPendingTasks</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>pendingLargeMessages</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>n</name> <range>: <expr><call><name><name>MessagingService</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getLargeMessagePendingTasks</name><argument_list>()</argument_list></call><operator>.</operator><call><name>values</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><name>pendingLargeMessages</name> <operator>+=</operator> <name>n</name></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <decl_stmt><decl><type><name>int</name></type> <name>pendingSmallMessages</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>n</name> <range>: <expr><call><name><name>MessagingService</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getSmallMessagePendingTasks</name><argument_list>()</argument_list></call><operator>.</operator><call><name>values</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><name>pendingSmallMessages</name> <operator>+=</operator> <name>n</name></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%-25s%10s%10s"</literal></expr></argument>,
+                                  <argument><expr><literal type="string">"MessagingService"</literal></expr></argument>, <argument><expr><literal type="string">"n/a"</literal></expr></argument>, <argument><expr><name>pendingLargeMessages</name> <operator>+</operator> <literal type="string">"/"</literal> <operator>+</operator> <name>pendingSmallMessages</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// Global key/row cache information</comment>
+        <decl_stmt><decl><type><name><name>AutoSavingCache</name><argument_list type="generic">&lt;<argument><name>KeyCacheKey</name></argument>, <argument><name>RowIndexEntry</name></argument>&gt;</argument_list></name></type> <name>keyCache</name> <init>= <expr><name><name>CacheService</name><operator>.</operator><name>instance</name><operator>.</operator><name>keyCache</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>AutoSavingCache</name><argument_list type="generic">&lt;<argument><name>RowCacheKey</name></argument>, <argument><name>IRowCacheEntry</name></argument>&gt;</argument_list></name></type> <name>rowCache</name> <init>= <expr><name><name>CacheService</name><operator>.</operator><name>instance</name><operator>.</operator><name>rowCache</name></name></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>int</name></type> <name>keyCacheKeysToSave</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getKeyCacheKeysToSave</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>rowCacheKeysToSave</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getRowCacheKeysToSave</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%-25s%10s%25s%25s"</literal></expr></argument>,
+                                  <argument><expr><literal type="string">"Cache Type"</literal></expr></argument>, <argument><expr><literal type="string">"Size"</literal></expr></argument>, <argument><expr><literal type="string">"Capacity"</literal></expr></argument>, <argument><expr><literal type="string">"KeysToSave"</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%-25s%10s%25s%25s"</literal></expr></argument>,
+                                  <argument><expr><literal type="string">"KeyCache"</literal></expr></argument>,
+                                  <argument><expr><call><name><name>keyCache</name><operator>.</operator><name>weightedSize</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                  <argument><expr><call><name><name>keyCache</name><operator>.</operator><name>getCapacity</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                  <argument><expr><ternary><condition><expr><name>keyCacheKeysToSave</name> <operator>==</operator> <name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr> ?</condition><then> <expr><literal type="string">"all"</literal></expr> </then><else>: <expr><name>keyCacheKeysToSave</name></expr></else></ternary></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%-25s%10s%25s%25s"</literal></expr></argument>,
+                                  <argument><expr><literal type="string">"RowCache"</literal></expr></argument>,
+                                  <argument><expr><call><name><name>rowCache</name><operator>.</operator><name>weightedSize</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                  <argument><expr><call><name><name>rowCache</name><operator>.</operator><name>getCapacity</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                  <argument><expr><ternary><condition><expr><name>rowCacheKeysToSave</name> <operator>==</operator> <name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr> ?</condition><then> <expr><literal type="string">"all"</literal></expr> </then><else>: <expr><name>rowCacheKeysToSave</name></expr></else></ternary></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// per-CF stats</comment>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%-25s%20s"</literal></expr></argument>, <argument><expr><literal type="string">"Table"</literal></expr></argument>, <argument><expr><literal type="string">"Memtable ops,data"</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <for>for <control>(<init><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <range>: <expr><call><name><name>ColumnFamilyStore</name><operator>.</operator><name>all</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%-25s%20s"</literal></expr></argument>,
+                                      <argument><expr><call><name><name>cfs</name><operator>.</operator><name>keyspace</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="string">"."</literal> <operator>+</operator> <name><name>cfs</name><operator>.</operator><name>name</name></name></expr></argument>,
+                                      <argument><expr><call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>memtableColumnsCount</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="string">","</literal> <operator>+</operator> <call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>memtableLiveDataSize</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

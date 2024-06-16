@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/hints/HintsStore.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>hints</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>File</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentHashMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentLinkedDeque</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentLinkedQueue</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>ImmutableMap</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>FailureDetector</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>FSWriteError</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>StorageService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>SyncUtil</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Encapsulates the state of a peer's hints: the queue of hints files for dispatch, and the current writer (if any).
+ *
+ * The queue for dispatch is multi-threading safe.
+ *
+ * The writer MUST only be accessed by {@link HintsWriteExecutor}.
+ */</comment>
+<class><specifier>final</specifier> class <name>HintsStore</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>HintsStore</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>UUID</name></type> <name>hostId</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>File</name></type> <name>hintsDirectory</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ImmutableMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>Object</name></argument>&gt;</argument_list></name></type> <name>writerParams</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>HintsDescriptor</name></argument>, <argument><name>InputPosition</name></argument>&gt;</argument_list></name></type> <name>dispatchPositions</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Deque</name><argument_list type="generic">&lt;<argument><name>HintsDescriptor</name></argument>&gt;</argument_list></name></type> <name>dispatchDequeue</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Queue</name><argument_list type="generic">&lt;<argument><name>HintsDescriptor</name></argument>&gt;</argument_list></name></type> <name>corruptedFiles</name></decl>;</decl_stmt>
+
+    <comment type="line">// last timestamp used in a descriptor; make sure to not reuse the same timestamp for new descriptors.</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>long</name></type> <name>lastUsedTimestamp</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>HintsWriter</name></type> <name>hintsWriter</name></decl>;</decl_stmt>
+
+    <constructor><specifier>private</specifier> <name>HintsStore</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>hostId</name></decl></parameter>, <parameter><decl><type><name>File</name></type> <name>hintsDirectory</name></decl></parameter>, <parameter><decl><type><name><name>ImmutableMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>Object</name></argument>&gt;</argument_list></name></type> <name>writerParams</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>HintsDescriptor</name></argument>&gt;</argument_list></name></type> <name>descriptors</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>hostId</name></name> <operator>=</operator> <name>hostId</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>hintsDirectory</name></name> <operator>=</operator> <name>hintsDirectory</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>writerParams</name></name> <operator>=</operator> <name>writerParams</name></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name>dispatchPositions</name> <operator>=</operator> <operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>dispatchDequeue</name> <operator>=</operator> <operator>new</operator> <call><name><name>ConcurrentLinkedDeque</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>descriptors</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>corruptedFiles</name> <operator>=</operator> <operator>new</operator> <call><name><name>ConcurrentLinkedQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">//noinspection resource</comment>
+        <expr_stmt><expr><name>lastUsedTimestamp</name> <operator>=</operator> <call><name><name>descriptors</name><operator>.</operator><name>stream</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>mapToLong</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>d</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name><name>d</name><operator>.</operator><name>timestamp</name></name></expr></block_content></block></lambda></expr></argument>)</argument_list></call><operator>.</operator><call><name>max</name><argument_list>()</argument_list></call><operator>.</operator><call><name>orElse</name><argument_list>(<argument><expr><literal type="number">0L</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>static</specifier> <name>HintsStore</name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>hostId</name></decl></parameter>, <parameter><decl><type><name>File</name></type> <name>hintsDirectory</name></decl></parameter>, <parameter><decl><type><name><name>ImmutableMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>Object</name></argument>&gt;</argument_list></name></type> <name>writerParams</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>HintsDescriptor</name></argument>&gt;</argument_list></name></type> <name>descriptors</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>descriptors</name><operator>.</operator><name>sort</name></name><argument_list>(<argument><expr><lambda><parameter_list>(<parameter><decl><name>d1</name></decl></parameter>, <parameter><decl><name>d2</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>Long</name><operator>.</operator><name>compare</name></name><argument_list>(<argument><expr><name><name>d1</name><operator>.</operator><name>timestamp</name></name></expr></argument>, <argument><expr><name><name>d2</name><operator>.</operator><name>timestamp</name></name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><operator>new</operator> <call><name>HintsStore</name><argument_list>(<argument><expr><name>hostId</name></expr></argument>, <argument><expr><name>hintsDirectory</name></expr></argument>, <argument><expr><name>writerParams</name></expr></argument>, <argument><expr><name>descriptors</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><name>int</name></type> <name>getDispatchQueueSize</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>dispatchDequeue</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>InetAddressAndPort</name></type> <name>address</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>getEndpointForHostId</name></name><argument_list>(<argument><expr><name>hostId</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>boolean</name></type> <name>isLive</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>address</name> <init>= <expr><call><name>address</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><name>address</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>FailureDetector</name><operator>.</operator><name>instance</name><operator>.</operator><name>isAlive</name></name><argument_list>(<argument><expr><name>address</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>HintsDescriptor</name></type> <name>poll</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>dispatchDequeue</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>offerFirst</name><parameter_list>(<parameter><decl><type><name>HintsDescriptor</name></type> <name>descriptor</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>dispatchDequeue</name><operator>.</operator><name>offerFirst</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>offerLast</name><parameter_list>(<parameter><decl><type><name>HintsDescriptor</name></type> <name>descriptor</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>dispatchDequeue</name><operator>.</operator><name>offerLast</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>deleteAllHints</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>HintsDescriptor</name></type> <name>descriptor</name></decl>;</decl_stmt>
+        <while>while <condition>(<expr><operator>(</operator><name>descriptor</name> <operator>=</operator> <call><name>poll</name><argument_list>()</argument_list></call><operator>)</operator> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>cleanUp</name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>delete</name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></while>
+
+        <while>while <condition>(<expr><operator>(</operator><name>descriptor</name> <operator>=</operator> <call><name><name>corruptedFiles</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call><operator>)</operator> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>cleanUp</name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>delete</name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>delete</name><parameter_list>(<parameter><decl><type><name>HintsDescriptor</name></type> <name>descriptor</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>File</name></type> <name>hintsFile</name> <init>= <expr><operator>new</operator> <call><name>File</name><argument_list>(<argument><expr><name>hintsDirectory</name></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>fileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>hintsFile</name><operator>.</operator><name>delete</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Deleted hint file {}"</literal></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>fileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"Failed to delete hint file {}"</literal></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>fileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+
+        <comment type="line">//noinspection ResultOfMethodCallIgnored</comment>
+        <expr_stmt><expr><operator>new</operator> <call><name>File</name><argument_list>(<argument><expr><name>hintsDirectory</name></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>checksumFileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>delete</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>boolean</name></type> <name>hasFiles</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>!</operator><call><name><name>dispatchDequeue</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>InputPosition</name></type> <name>getDispatchOffset</name><parameter_list>(<parameter><decl><type><name>HintsDescriptor</name></type> <name>descriptor</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>dispatchPositions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>markDispatchOffset</name><parameter_list>(<parameter><decl><type><name>HintsDescriptor</name></type> <name>descriptor</name></decl></parameter>, <parameter><decl><type><name>InputPosition</name></type> <name>inputPosition</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>dispatchPositions</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>, <argument><expr><name>inputPosition</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>cleanUp</name><parameter_list>(<parameter><decl><type><name>HintsDescriptor</name></type> <name>descriptor</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>dispatchPositions</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>markCorrupted</name><parameter_list>(<parameter><decl><type><name>HintsDescriptor</name></type> <name>descriptor</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>corruptedFiles</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block">/*
+     * Methods dealing with HintsWriter.
+     *
+     * All of these, with the exception of isWriting(), are for exclusively single-threaded use by HintsWriteExecutor.
+     */</comment>
+
+    <function><type><name>boolean</name></type> <name>isWriting</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>hintsWriter</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>HintsWriter</name></type> <name>getOrOpenWriter</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>hintsWriter</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>hintsWriter</name> <operator>=</operator> <call><name>openWriter</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <return>return <expr><name>hintsWriter</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>HintsWriter</name></type> <name>getWriter</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>hintsWriter</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>HintsWriter</name></type> <name>openWriter</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>lastUsedTimestamp</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><call><name><name>System</name><operator>.</operator><name>currentTimeMillis</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>lastUsedTimestamp</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>HintsDescriptor</name></type> <name>descriptor</name> <init>= <expr><operator>new</operator> <call><name>HintsDescriptor</name><argument_list>(<argument><expr><name>hostId</name></expr></argument>, <argument><expr><name>lastUsedTimestamp</name></expr></argument>, <argument><expr><name>writerParams</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <try>try
+        <block>{<block_content>
+            <return>return <expr><call><name><name>HintsWriter</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>hintsDirectory</name></expr></argument>, <argument><expr><name>descriptor</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>FSWriteError</name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>fileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>closeWriter</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>hintsWriter</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>hintsWriter</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>offerLast</name><argument_list>(<argument><expr><call><name><name>hintsWriter</name><operator>.</operator><name>descriptor</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>hintsWriter</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>SyncUtil</name><operator>.</operator><name>trySyncDir</name></name><argument_list>(<argument><expr><name>hintsDirectory</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>fsyncWriter</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>hintsWriter</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>hintsWriter</name><operator>.</operator><name>fsync</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

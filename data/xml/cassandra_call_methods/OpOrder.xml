@@ -1,0 +1,445 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/utils/concurrent/OpOrder.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicIntegerFieldUpdater</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * &lt;p&gt;A class for providing synchronization between producers and consumers that do not
+ * communicate directly with each other, but where the consumers need to process their
+ * work in contiguous batches. In particular this is useful for both CommitLog and Memtable
+ * where the producers (writing threads) are modifying a structure that the consumer
+ * (flush executor) only batch syncs, but needs to know what 'position' the work is at
+ * for co-ordination with other processes,
+ *
+ * &lt;p&gt;The typical usage is something like:
+ * &lt;pre&gt;
+ * {@code
+     public final class ExampleShared
+     {
+        final OpOrder order = new OpOrder();
+        volatile SharedState state;
+
+        static class SharedState
+        {
+            volatile Barrier barrier;
+
+            // ...
+        }
+
+        public void consume()
+        {
+            SharedState state = this.state;
+            state.setReplacement(new State())
+            state.doSomethingToPrepareForBarrier();
+
+            state.barrier = order.newBarrier();
+            // seal() MUST be called after newBarrier() else barrier.isAfter()
+            // will always return true, and barrier.await() will fail
+            state.barrier.issue();
+
+            // wait for all producer work started prior to the barrier to complete
+            state.barrier.await();
+
+            // change the shared state to its replacement, as the current state will no longer be used by producers
+            this.state = state.getReplacement();
+
+            state.doSomethingWithExclusiveAccess();
+        }
+
+        public void produce()
+        {
+            try (Group opGroup = order.start())
+            {
+                SharedState s = state;
+                while (s.barrier != null &amp;&amp; !s.barrier.isAfter(opGroup))
+                    s = s.getReplacement();
+                s.doProduceWork();
+            }
+        }
+    }
+ * }
+ * &lt;/pre&gt;
+ */</comment>
+<class><specifier>public</specifier> class <name>OpOrder</name>
+<block>{
+    <comment type="block" format="javadoc">/**
+     * Constant that when an Ordered.running is equal to, indicates the Ordered is complete
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>FINISHED</name> <init>= <expr><operator>-</operator><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * A linked list starting with the most recent Ordered object, i.e. the one we should start new operations from,
+     * with (prev) links to any incomplete Ordered instances, and (next) links to any potential future Ordered instances.
+     * Once all operations started against an Ordered instance and its ancestors have been finished the next instance
+     * will unlink this one
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>Group</name></type> <name>current</name> <init>= <expr><operator>new</operator> <call><name>Group</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Start an operation against this OpOrder.
+     * Once the operation is completed Ordered.close() MUST be called EXACTLY once for this operation.
+     *
+     * @return the Ordered instance that manages this OpOrder
+     */</comment>
+    <function><type><specifier>public</specifier> <name>Group</name></type> <name>start</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Group</name></type> <name>current</name> <init>= <expr><name><name>this</name><operator>.</operator><name>current</name></name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>current</name><operator>.</operator><name>register</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name>current</name></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new barrier. The barrier is only a placeholder until barrier.issue() is called on it,
+     * after which all new operations will start against a new Group that will not be accepted
+     * by barrier.isAfter(), and barrier.await() will return only once all operations started prior to the issue
+     * have completed.
+     *
+     * @return
+     */</comment>
+    <function><type><specifier>public</specifier> <name>Barrier</name></type> <name>newBarrier</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>Barrier</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Group</name></type> <name>getCurrent</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>current</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>awaitNewBarrier</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Barrier</name></type> <name>barrier</name> <init>= <expr><call><name>newBarrier</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>barrier</name><operator>.</operator><name>issue</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>barrier</name><operator>.</operator><name>await</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Represents a group of identically ordered operations, i.e. all operations started in the interval between
+     * two barrier issuances. For each register() call this is returned, close() must be called exactly once.
+     * It should be treated like taking a lock().
+     */</comment>
+    <class><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>Group</name> <super_list><implements>implements <super><name><name>Comparable</name><argument_list type="generic">&lt;<argument><name>Group</name></argument>&gt;</argument_list></name></super>, <super><name>AutoCloseable</name></super></implements></super_list>
+    <block>{
+        <comment type="block" format="javadoc">/**
+         * In general this class goes through the following stages:
+         * 1) LIVE:      many calls to register() and close()
+         * 2) FINISHING: a call to expire() (after a barrier issue), means calls to register() will now fail,
+         *               and we are now 'in the past' (new operations will be started against a new Ordered)
+         * 3) FINISHED:  once the last close() is called, this Ordered is done. We call unlink().
+         * 4) ZOMBIE:    all our operations are finished, but some operations against an earlier Ordered are still
+         *               running, or tidying up, so unlink() fails to remove us
+         * 5) COMPLETE:  all operations started on or before us are FINISHED (and COMPLETE), so we are unlinked
+         * &lt;p/&gt;
+         * Another parallel states is ISBLOCKING:
+         * &lt;p/&gt;
+         * isBlocking =&gt; a barrier that is waiting on us (either directly, or via a future Ordered) is blocking general
+         * progress. This state is entered by calling Barrier.markBlocking(). If the running operations are blocked
+         * on a Signal that is also registered with the isBlockingSignal (probably through isSafeBlockingSignal)
+         * then they will be notified that they are blocking forward progress, and may take action to avoid that.
+         */</comment>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>Group</name></type> <name>prev</name></decl>, <decl><type ref="prev"/><name>next</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>id</name></decl>;</decl_stmt> <comment type="line">// monotonically increasing id for compareTo()</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>int</name></type> <name>running</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt> <comment type="line">// number of operations currently running.  &lt; 0 means we're expired, and the count of tasks still running is -(running + 1)</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>boolean</name></type> <name>isBlocking</name></decl>;</decl_stmt> <comment type="line">// indicates running operations are blocking future barriers</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>WaitQueue</name></type> <name>isBlockingSignal</name> <init>= <expr><operator>new</operator> <call><name>WaitQueue</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt> <comment type="line">// signal to wait on to indicate isBlocking is true</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>WaitQueue</name></type> <name>waiting</name> <init>= <expr><operator>new</operator> <call><name>WaitQueue</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt> <comment type="line">// signal to wait on for completion</comment>
+
+        <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicIntegerFieldUpdater</name><argument_list type="generic">&lt;<argument><name>Group</name></argument>&gt;</argument_list></name></type> <name>runningUpdater</name> <init>= <expr><call><name><name>AtomicIntegerFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>Group</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"running"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// constructs first instance only</comment>
+        <constructor><specifier>private</specifier> <name>Group</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>id</name></name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><specifier>private</specifier> <name>Group</name><parameter_list>(<parameter><decl><type><name>Group</name></type> <name>prev</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>id</name></name> <operator>=</operator> <name><name>prev</name><operator>.</operator><name>id</name></name> <operator>+</operator> <literal type="number">1</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>prev</name></name> <operator>=</operator> <name>prev</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <comment type="line">// prevents any further operations starting against this Ordered instance</comment>
+        <comment type="line">// if there are no running operations, calls unlink; otherwise, we let the last op to close call it.</comment>
+        <comment type="line">// this means issue() won't have to block for ops to finish.</comment>
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>expire</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>current</name> <init>= <expr><name>running</name></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>current</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>()</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>runningUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>current</name></expr></argument>, <argument><expr><operator>-</operator><literal type="number">1</literal> <operator>-</operator> <name>current</name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <comment type="line">// if we're already finished (no running ops), unlink ourselves</comment>
+                    <if_stmt><if>if <condition>(<expr><name>current</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name>unlink</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <comment type="line">// attempts to start an operation against this Ordered instance, and returns true if successful.</comment>
+        <function><type><specifier>private</specifier> <name>boolean</name></type> <name>register</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>current</name> <init>= <expr><name>running</name></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>current</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>runningUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>current</name></expr></argument>, <argument><expr><name>current</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * To be called exactly once for each register() call this object is returned for, indicating the operation
+         * is complete
+         */</comment>
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>current</name> <init>= <expr><name>running</name></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>current</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>runningUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>current</name></expr></argument>, <argument><expr><name>current</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>)</condition>
+                    <block>{<block_content>
+                        <if_stmt><if>if <condition>(<expr><name>current</name> <operator>+</operator> <literal type="number">1</literal> <operator>==</operator> <name>FINISHED</name></expr>)</condition>
+                        <block>{<block_content>
+                            <comment type="line">// if we're now finished, unlink ourselves</comment>
+                            <expr_stmt><expr><call><name>unlink</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                        </block_content>}</block></if></if_stmt>
+                        <return>return;</return>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></if>
+                <if type="elseif">else if <condition>(<expr><call><name><name>runningUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>current</name></expr></argument>, <argument><expr><name>current</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isFinished</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name><name>next</name><operator>.</operator><name>prev</name></name> <operator>==</operator> <literal type="null">null</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isOldestLiveGroup</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>prev</name> <operator>==</operator> <literal type="null">null</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>await</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <while>while <condition>(<expr><operator>!</operator><call><name>isFinished</name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name><name>WaitQueue</name><operator>.</operator><name>Signal</name></name></type> <name>signal</name> <init>= <expr><call><name><name>waiting</name><operator>.</operator><name>register</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name>isFinished</name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>signal</name><operator>.</operator><name>cancel</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <return>return;</return>
+                </block_content>}</block></if>
+                <else>else<block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>signal</name><operator>.</operator><name>awaitUninterruptibly</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+            </block_content>}</block></while>
+            <assert>assert <expr><name>running</name> <operator>==</operator> <name>FINISHED</name></expr>;</assert>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>prev</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>prev</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * called once we know all operations started against this Ordered have completed,
+         * however we do not know if operations against its ancestors have completed, or
+         * if its descendants have completed ahead of it, so we attempt to create the longest
+         * chain from the oldest still linked Ordered. If we can't reach the oldest through
+         * an unbroken chain of completed Ordered, we abort, and leave the still completing
+         * ancestor to tidy up.
+         */</comment>
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>unlink</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// walk back in time to find the start of the list</comment>
+            <decl_stmt><decl><type><name>Group</name></type> <name>start</name> <init>= <expr><name>this</name></expr></init></decl>;</decl_stmt>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>Group</name></type> <name>prev</name> <init>= <expr><name><name>start</name><operator>.</operator><name>prev</name></name></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>prev</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <break>break;</break></block_content></block></if></if_stmt>
+                <comment type="line">// if we haven't finished this Ordered yet abort and let it clean up when it's done</comment>
+                <if_stmt><if>if <condition>(<expr><name><name>prev</name><operator>.</operator><name>running</name></name> <operator>!=</operator> <name>FINISHED</name></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return;</return></block_content></block></if></if_stmt>
+                <expr_stmt><expr><name>start</name> <operator>=</operator> <name>prev</name></expr>;</expr_stmt>
+            </block_content>}</block></while>
+
+            <comment type="line">// now walk forwards in time, in case we finished up late</comment>
+            <decl_stmt><decl><type><name>Group</name></type> <name>end</name> <init>= <expr><name><name>this</name><operator>.</operator><name>next</name></name></expr></init></decl>;</decl_stmt>
+            <while>while <condition>(<expr><name><name>end</name><operator>.</operator><name>running</name></name> <operator>==</operator> <name>FINISHED</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>end</name> <operator>=</operator> <name><name>end</name><operator>.</operator><name>next</name></name></expr>;</expr_stmt></block_content></block></while>
+
+            <comment type="line">// now walk from first to last, unlinking the prev pointer and waking up any blocking threads</comment>
+            <while>while <condition>(<expr><name>start</name> <operator>!=</operator> <name>end</name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>Group</name></type> <name>next</name> <init>= <expr><name><name>start</name><operator>.</operator><name>next</name></name></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><name><name>next</name><operator>.</operator><name>prev</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>start</name><operator>.</operator><name>waiting</name><operator>.</operator><name>signalAll</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>start</name> <operator>=</operator> <name>next</name></expr>;</expr_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * @return true if a barrier we are behind is, or may be, blocking general progress,
+         * so we should try more aggressively to progress
+         */</comment>
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isBlocking</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>isBlocking</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * register to be signalled when a barrier waiting on us is, or maybe, blocking general progress,
+         * so we should try more aggressively to progress
+         */</comment>
+        <function><type><specifier>public</specifier> <name><name>WaitQueue</name><operator>.</operator><name>Signal</name></name></type> <name>isBlockingSignal</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>isBlockingSignal</name><operator>.</operator><name>register</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * wrap the provided signal to also be signalled if the operation gets marked blocking
+         */</comment>
+        <function><type><specifier>public</specifier> <name><name>WaitQueue</name><operator>.</operator><name>Signal</name></name></type> <name>isBlockingSignal</name><parameter_list>(<parameter><decl><type><name><name>WaitQueue</name><operator>.</operator><name>Signal</name></name></type> <name>signal</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>WaitQueue</name><operator>.</operator><name>any</name></name><argument_list>(<argument><expr><name>signal</name></expr></argument>, <argument><expr><call><name>isBlockingSignal</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>int</name></type> <name>compareTo</name><parameter_list>(<parameter><decl><type><name>Group</name></type> <name>that</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// we deliberately use subtraction, as opposed to Long.compareTo() as we care about ordering</comment>
+            <comment type="line">// not which is the smaller value, so this permits wrapping in the unlikely event we exhaust the long space</comment>
+            <decl_stmt><decl><type><name>long</name></type> <name>c</name> <init>= <expr><name><name>this</name><operator>.</operator><name>id</name></name> <operator>-</operator> <name><name>that</name><operator>.</operator><name>id</name></name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>c</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="number">1</literal></expr>;</return></block_content></block></if>
+            <if type="elseif">else if <condition>(<expr><name>c</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><operator>-</operator><literal type="number">1</literal></expr>;</return></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <return>return <expr><literal type="number">0</literal></expr>;</return></block_content></block></else></if_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * This class represents a synchronisation point providing ordering guarantees on operations started
+     * against the enclosing OpOrder.  When issue() is called upon it (may only happen once per Barrier), the
+     * Barrier atomically partitions new operations from those already running (by expiring the current Group),
+     * and activates its isAfter() method
+     * which indicates if an operation was started before or after this partition. It offers methods to
+     * determine, or block until, all prior operations have finished, and a means to indicate to those operations
+     * that they are blocking forward progress. See {@link OpOrder} for idiomatic usage.
+     */</comment>
+    <class><specifier>public</specifier> <specifier>final</specifier> class <name>Barrier</name>
+    <block>{
+        <comment type="line">// this Barrier was issued after all Group operations started against orderOnOrBefore</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>Group</name></type> <name>orderOnOrBefore</name></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+         * @return true if @param group was started prior to the issuing of the barrier.
+         *
+         * (Until issue is called, always returns true, but if you rely on this behavior you are probably
+         * Doing It Wrong.)
+         */</comment>
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isAfter</name><parameter_list>(<parameter><decl><type><name>Group</name></type> <name>group</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>orderOnOrBefore</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+            <comment type="line">// we subtract to permit wrapping round the full range of Long - so we only need to ensure</comment>
+            <comment type="line">// there are never Long.MAX_VALUE * 2 total Group objects in existence at any one timem which will</comment>
+            <comment type="line">// take care of itself</comment>
+            <return>return <expr><name><name>orderOnOrBefore</name><operator>.</operator><name>id</name></name> <operator>-</operator> <name><name>group</name><operator>.</operator><name>id</name></name> <operator>&gt;=</operator> <literal type="number">0</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Issues (seals) the barrier, meaning no new operations may be issued against it, and expires the current
+         * Group.  Must be called before await() for isAfter() to be properly synchronised.
+         */</comment>
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>issue</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>orderOnOrBefore</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"Can only call issue() once on each Barrier"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><specifier>final</specifier> <name>Group</name></type> <name>current</name></decl>;</decl_stmt>
+            <synchronized>synchronized <init>(<expr><name><name>OpOrder</name><operator>.</operator><name>this</name></name></expr>)</init>
+            <block>{<block_content>
+                <expr_stmt><expr><name>current</name> <operator>=</operator> <name><name>OpOrder</name><operator>.</operator><name>this</name><operator>.</operator><name>current</name></name></expr>;</expr_stmt>
+                <expr_stmt><expr><name>orderOnOrBefore</name> <operator>=</operator> <name>current</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name><name>OpOrder</name><operator>.</operator><name>this</name><operator>.</operator><name>current</name></name> <operator>=</operator> <name><name>current</name><operator>.</operator><name>next</name></name> <operator>=</operator> <operator>new</operator> <call><name>Group</name><argument_list>(<argument><expr><name>current</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></synchronized>
+            <expr_stmt><expr><call><name><name>current</name><operator>.</operator><name>expire</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Mark all prior operations as blocking, potentially signalling them to more aggressively make progress
+         */</comment>
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>markBlocking</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Group</name></type> <name>current</name> <init>= <expr><name>orderOnOrBefore</name></expr></init></decl>;</decl_stmt>
+            <while>while <condition>(<expr><name>current</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name><name>current</name><operator>.</operator><name>isBlocking</name></name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>current</name><operator>.</operator><name>isBlockingSignal</name><operator>.</operator><name>signalAll</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>current</name> <operator>=</operator> <name><name>current</name><operator>.</operator><name>prev</name></name></expr>;</expr_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Register to be signalled once allPriorOpsAreFinished() or allPriorOpsAreFinishedOrSafe() may return true
+         */</comment>
+        <function><type><specifier>public</specifier> <name><name>WaitQueue</name><operator>.</operator><name>Signal</name></name></type> <name>register</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>orderOnOrBefore</name><operator>.</operator><name>waiting</name><operator>.</operator><name>register</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * wait for all operations started prior to issuing the barrier to complete
+         */</comment>
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>await</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Group</name></type> <name>current</name> <init>= <expr><name>orderOnOrBefore</name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>current</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"This barrier needs to have issue() called on it before prior operations can complete"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>current</name><operator>.</operator><name>await</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * returns the Group we are waiting on - any Group with {@code .compareTo(getSyncPoint()) &lt;= 0}
+         * must complete before await() returns
+         */</comment>
+        <function><type><specifier>public</specifier> <name>Group</name></type> <name>getSyncPoint</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>orderOnOrBefore</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

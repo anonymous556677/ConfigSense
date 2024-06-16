@@ -1,0 +1,1510 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/utils/memory/BufferPool.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>ref</name><operator>.</operator><name>PhantomReference</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>ref</name><operator>.</operator><name>ReferenceQueue</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteOrder</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>ArrayDeque</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Collections</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Queue</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Set</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicLong</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicLongFieldUpdater</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>LongAdder</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicReferenceFieldUpdater</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>BiPredicate</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Consumer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Supplier</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+
+<import>import <name><name>net</name><operator>.</operator><name>nicoulaj</name><operator>.</operator><name>compilecommand</name><operator>.</operator><name>annotations</name><operator>.</operator><name>Inline</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>InfiniteLoopExecutor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>FastThreadLocal</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>compress</name><operator>.</operator><name>BufferType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>FileUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>BufferPoolMetrics</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>NoSpamLogger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Ref</name></name>;</import>
+
+<import>import static <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>ImmutableList</name><operator>.</operator><name>of</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ExecutorUtils</name><operator>.</operator><name>*</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>MemoryUtil</name><operator>.</operator><name>isExactlyDirect</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A pool of ByteBuffers that can be recycled to reduce system direct memory fragmentation and improve buffer allocation
+ * performance.
+ * &lt;p/&gt;
+ *
+ * Each {@link BufferPool} instance has one {@link GlobalPool} which allocates two kinds of chunks:
+ * &lt;ul&gt;
+ *     &lt;li&gt;Macro Chunk
+ *       &lt;ul&gt;
+ *         &lt;li&gt;A memory slab that has size of MACRO_CHUNK_SIZE which is 64 * NORMAL_CHUNK_SIZE&lt;/li&gt;
+ *         &lt;li&gt;Used to allocate normal chunk with size of NORMAL_CHUNK_SIZE&lt;/li&gt;
+ *       &lt;/ul&gt;
+ *     &lt;/li&gt;
+ *     &lt;li&gt;Normal Chunk
+ *       &lt;ul&gt;
+ *         &lt;li&gt;Used by {@link LocalPool} to serve buffer allocation&lt;/li&gt;
+ *         &lt;li&gt;Minimum allocation unit is NORMAL_CHUNK_SIZE / 64&lt;/li&gt;
+ *       &lt;/ul&gt;
+ *     &lt;/li&gt;
+ * &lt;/ul&gt;
+ *
+ * {@link GlobalPool} maintains two kinds of freed chunks, fully freed chunks where all buffers are released, and
+ * partially freed chunks where some buffers are not released, eg. held by {@link org.apache.cassandra.cache.ChunkCache}.
+ * Partially freed chunks are used to improve cache utilization and have lower priority compared to fully freed chunks.
+ *
+ * &lt;p/&gt;
+ *
+ * {@link LocalPool} is a thread local pool to serve buffer allocation requests. There are two kinds of local pool:
+ * &lt;ul&gt;
+ *     &lt;li&gt;Normal Pool:
+ *       &lt;ul&gt;
+ *         &lt;li&gt;used to serve allocation size that is larger than half of NORMAL_ALLOCATION_UNIT but less than NORMAL_CHUNK_SIZE&lt;/li&gt;
+ *         &lt;li&gt;when there is insufficient space in the local queue, it will request global pool for more normal chunks&lt;/li&gt;
+ *         &lt;li&gt;when normal chunk is recycled either fully or partially, it will be passed to global pool to be used by other pools&lt;/li&gt;
+ *       &lt;/ul&gt;
+ *     &lt;/li&gt;
+ *     &lt;li&gt;Tiny Pool:
+ *       &lt;ul&gt;
+ *         &lt;li&gt;used to serve allocation size that is less than NORMAL_ALLOCATION_UNIT&lt;/li&gt;
+ *         &lt;li&gt;when there is insufficient space in the local queue, it will request parent normal pool for more tiny chunks&lt;/li&gt;
+ *         &lt;li&gt;when tiny chunk is fully freed, it will be passed to paretn normal pool and corresponding buffer in the parent normal chunk is freed&lt;/li&gt;
+ *       &lt;/ul&gt;
+ *     &lt;/li&gt;
+ * &lt;/ul&gt;
+ *
+ * Note: even though partially freed chunks improves cache utilization when chunk cache holds outstanding buffer for
+ * arbitrary period, there is still fragmentation in the partially freed chunk because of non-uniform allocation size.
+ */</comment>
+<class><specifier>public</specifier> class <name>BufferPool</name>
+<block>{
+    <comment type="block" format="javadoc">/** The size of a page aligned buffer, 128KiB */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>NORMAL_CHUNK_SIZE</name> <init>= <expr><literal type="number">128</literal> <operator>&lt;&lt;</operator> <literal type="number">10</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>NORMAL_ALLOCATION_UNIT</name> <init>= <expr><name>NORMAL_CHUNK_SIZE</name> <operator>/</operator> <literal type="number">64</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>TINY_CHUNK_SIZE</name> <init>= <expr><name>NORMAL_ALLOCATION_UNIT</name></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>TINY_ALLOCATION_UNIT</name> <init>= <expr><name>TINY_CHUNK_SIZE</name> <operator>/</operator> <literal type="number">64</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>TINY_ALLOCATION_LIMIT</name> <init>= <expr><name>TINY_CHUNK_SIZE</name> <operator>/</operator> <literal type="number">2</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>BufferPool</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>NoSpamLogger</name></type> <name>noSpamLogger</name> <init>= <expr><call><name><name>NoSpamLogger</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name>logger</name></expr></argument>, <argument><expr><literal type="number">15L</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MINUTES</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>ByteBuffer</name></type> <name>EMPTY_BUFFER</name> <init>= <expr><call><name><name>ByteBuffer</name><operator>.</operator><name>allocateDirect</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>Debug</name></type> <name>debug</name> <init>= <expr><name><name>Debug</name><operator>.</operator><name>NO_OP</name></name></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>String</name></type> <name>name</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>BufferPoolMetrics</name></type> <name>metrics</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>memoryUsageThreshold</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>String</name></type> <name>readableMemoryUsageThreshold</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Size of unpooled buffer being allocated outside of buffer pool in bytes.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>LongAdder</name></type> <name>overflowMemoryUsage</name> <init>= <expr><operator>new</operator> <call><name>LongAdder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Size of buffer being used in bytes, including pooled buffer and unpooled buffer.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>LongAdder</name></type> <name>memoryInUse</name> <init>= <expr><operator>new</operator> <call><name>LongAdder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Size of allocated buffer pool slabs in bytes
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>AtomicLong</name></type> <name>memoryAllocated</name> <init>= <expr><operator>new</operator> <call><name>AtomicLong</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/** A global pool of chunks (page aligned buffers) */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>GlobalPool</name></type> <name>globalPool</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/** Allow partially freed chunk to be recycled for allocation*/</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>recyclePartially</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/** A thread local pool of chunks, where chunks come from the global pool */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>FastThreadLocal</name><argument_list type="generic">&lt;<argument><name>LocalPool</name></argument>&gt;</argument_list></name></type> <name>localPool</name> <init>= <expr><operator>new</operator> <class><super><name><name>FastThreadLocal</name><argument_list type="generic">&lt;<argument><name>LocalPool</name></argument>&gt;</argument_list></name></super><argument_list>()</argument_list>
+    <block>{
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>protected</specifier> <name>LocalPool</name></type> <name>initialValue</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>LocalPool</name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>protected</specifier> <name>void</name></type> <name>onRemoval</name><parameter_list>(<parameter><decl><type><name>LocalPool</name></type> <name>value</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>value</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>LocalPoolRef</name></argument>&gt;</argument_list></name></type> <name>localPoolReferences</name> <init>= <expr><call><name><name>Collections</name><operator>.</operator><name>newSetFromMap</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ReferenceQueue</name><argument_list type="generic">&lt;<argument><name>Object</name></argument>&gt;</argument_list></name></type> <name>localPoolRefQueue</name> <init>= <expr><operator>new</operator> <call><name><name>ReferenceQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>InfiniteLoopExecutor</name></type> <name>localPoolCleaner</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>BufferPool</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>memoryUsageThreshold</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>recyclePartially</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>name</name></name> <operator>=</operator> <name>name</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>memoryUsageThreshold</name></name> <operator>=</operator> <name>memoryUsageThreshold</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>readableMemoryUsageThreshold</name></name> <operator>=</operator> <call><name>prettyPrintMemory</name><argument_list>(<argument><expr><name>memoryUsageThreshold</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>globalPool</name></name> <operator>=</operator> <operator>new</operator> <call><name>GlobalPool</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>metrics</name></name> <operator>=</operator> <operator>new</operator> <call><name>BufferPoolMetrics</name><argument_list>(<argument><expr><name>name</name></expr></argument>, <argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>recyclePartially</name></name> <operator>=</operator> <name>recyclePartially</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>localPoolCleaner</name></name> <operator>=</operator> <operator>new</operator> <call><name>InfiniteLoopExecutor</name><argument_list>(<argument><expr><literal type="string">"LocalPool-Cleaner-"</literal> <operator>+</operator> <name>name</name></expr></argument>, <argument><expr><name>this</name><operator>::</operator><name>cleanupOneReference</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>start</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * @return a local pool instance and caller is responsible to release the pool
+     */</comment>
+    <function><type><specifier>public</specifier> <name>LocalPool</name></type> <name>create</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>LocalPool</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ByteBuffer</name></type> <name>get</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>BufferType</name></type> <name>bufferType</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>bufferType</name> <operator>==</operator> <name><name>BufferType</name><operator>.</operator><name>ON_HEAP</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>allocate</name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name>bufferType</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>localPool</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ByteBuffer</name></type> <name>getAtLeast</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>BufferType</name></type> <name>bufferType</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>bufferType</name> <operator>==</operator> <name><name>BufferType</name><operator>.</operator><name>ON_HEAP</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>allocate</name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name>bufferType</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>localPool</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getAtLeast</name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/** Unlike the get methods, this will return null if the pool is exhausted */</comment>
+    <function><type><specifier>public</specifier> <name>ByteBuffer</name></type> <name>tryGet</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>localPool</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>tryGet</name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ByteBuffer</name></type> <name>tryGetAtLeast</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>localPool</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>tryGet</name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>ByteBuffer</name></type> <name>allocate</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>BufferType</name></type> <name>bufferType</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>updateOverflowMemoryUsage</name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><ternary><condition><expr><name>bufferType</name> <operator>==</operator> <name><name>BufferType</name><operator>.</operator><name>ON_HEAP</name></name></expr>
+               ?</condition><then> <expr><call><name><name>ByteBuffer</name><operator>.</operator><name>allocate</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>
+               </then><else>: <expr><call><name><name>ByteBuffer</name><operator>.</operator><name>allocateDirect</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>put</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name>isExactlyDirect</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>localPool</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>put</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>updateOverflowMemoryUsage</name><argument_list>(<argument><expr><operator>-</operator><call><name><name>buffer</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>putUnusedPortion</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name>isExactlyDirect</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>LocalPool</name></type> <name>pool</name> <init>= <expr><call><name><name>localPool</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>buffer</name><operator>.</operator><name>limit</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>pool</name><operator>.</operator><name>putUnusedPortion</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>pool</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>updateOverflowMemoryUsage</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>overflowMemoryUsage</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setRecycleWhenFreeForCurrentThread</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>recycleWhenFree</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>localPool</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>recycleWhenFree</name><argument_list>(<argument><expr><name>recycleWhenFree</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return buffer size being allocated, including pooled buffers and unpooled buffers
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>sizeInBytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>memoryAllocated</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call> <operator>+</operator> <call><name><name>overflowMemoryUsage</name><operator>.</operator><name>longValue</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return buffer size being used, including used pooled buffers and unpooled buffers
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>usedSizeInBytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>memoryInUse</name><operator>.</operator><name>longValue</name></name><argument_list>()</argument_list></call> <operator>+</operator> <call><name><name>overflowMemoryUsage</name><operator>.</operator><name>longValue</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return unpooled buffer size being allocated outside of buffer pool.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>overflowMemoryInBytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>overflowMemoryUsage</name><operator>.</operator><name>longValue</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return maximum pooled buffer size in bytes
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>memoryUsageThreshold</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>memoryUsageThreshold</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>GlobalPool</name></type> <name>globalPool</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>globalPool</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <interface>interface <name>Debug</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <name>Debug</name></type> <name>NO_OP</name> <init>= <expr><operator>new</operator> <class><super><name>Debug</name></super><argument_list>()</argument_list>
+        <block>{
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>registerNormal</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list> <block>{<block_content/>}</block></function>
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>recycleNormal</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>oldVersion</name></decl></parameter>, <parameter><decl><type><name>Chunk</name></type> <name>newVersion</name></decl></parameter>)</parameter_list> <block>{<block_content/>}</block></function>
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>recyclePartial</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list> <block>{<block_content> </block_content>}</block></function>
+        }</block></class></expr></init></decl>;</decl_stmt>
+
+        <function_decl><type><name>void</name></type> <name>registerNormal</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>;</function_decl>
+        <function_decl><type><name>void</name></type> <name>recycleNormal</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>oldVersion</name></decl></parameter>, <parameter><decl><type><name>Chunk</name></type> <name>newVersion</name></decl></parameter>)</parameter_list>;</function_decl>
+        <function_decl><type><name>void</name></type> <name>recyclePartial</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>;</function_decl>
+    }</block></interface>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>debug</name><parameter_list>(<parameter><decl><type><name>Debug</name></type> <name>setDebug</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><name>setDebug</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</assert>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>debug</name></name> <operator>=</operator> <name>setDebug</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <interface>interface <name>Recycler</name>
+    <block>{
+        <comment type="block" format="javadoc">/**
+         * Recycle a fully freed chunk
+         */</comment>
+        <function_decl><type><name>void</name></type> <name>recycle</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * @return true if chunk can be reused before fully freed.
+         */</comment>
+        <function_decl><type><name>boolean</name></type> <name>canRecyclePartially</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * Recycle a partially freed chunk
+         */</comment>
+        <function_decl><type><name>void</name></type> <name>recyclePartially</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>;</function_decl>
+    }</block></interface>
+
+    <comment type="block" format="javadoc">/**
+     * A queue of page aligned buffers, the chunks, which have been sliced from bigger chunks,
+     * the macro-chunks, also page aligned. Macro-chunks are allocated as long as we have not exceeded the
+     * memory maximum threshold, MEMORY_USAGE_THRESHOLD and are never released.
+     *
+     * This class is shared by multiple thread local pools and must be thread-safe.
+     */</comment>
+    <class><specifier>final</specifier> class <name>GlobalPool</name> <super_list><implements>implements <super><name><name>Supplier</name><argument_list type="generic">&lt;<argument><name>Chunk</name></argument>&gt;</argument_list></name></super>, <super><name>Recycler</name></super></implements></super_list>
+    <block>{
+        <comment type="block" format="javadoc">/** The size of a bigger chunk, 1 MiB, must be a multiple of NORMAL_CHUNK_SIZE */</comment>
+        <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MACRO_CHUNK_SIZE</name> <init>= <expr><literal type="number">64</literal> <operator>*</operator> <name>NORMAL_CHUNK_SIZE</name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>String</name></type> <name>READABLE_MACRO_CHUNK_SIZE</name> <init>= <expr><call><name>prettyPrintMemory</name><argument_list>(<argument><expr><name>MACRO_CHUNK_SIZE</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Queue</name><argument_list type="generic">&lt;<argument><name>Chunk</name></argument>&gt;</argument_list></name></type> <name>macroChunks</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentLinkedQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// TODO (future): it would be preferable to use a CLStack to improve cache occupancy; it would also be preferable to use "CoreLocal" storage</comment>
+        <comment type="line">// It contains fully free chunks and when it runs out, partially freed chunks will be used.</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Queue</name><argument_list type="generic">&lt;<argument><name>Chunk</name></argument>&gt;</argument_list></name></type> <name>chunks</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentLinkedQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// Partially freed chunk which is recirculated whenever chunk has free spaces to</comment>
+        <comment type="line">// improve buffer utilization when chunk cache is holding a piece of buffer for a long period.</comment>
+        <comment type="line">// Note: fragmentation still exists, as holes are with different sizes.</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Queue</name><argument_list type="generic">&lt;<argument><name>Chunk</name></argument>&gt;</argument_list></name></type> <name>partiallyFreedChunks</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentLinkedQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/** Used in logging statements to lazily build a human-readable current memory usage. */</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Object</name></type> <name>readableMemoryUsage</name> <init>=
+            <expr><operator>new</operator> <class><super><name>Object</name></super><argument_list>()</argument_list> <block>{ <function><annotation>@<name>Override</name></annotation> <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list> <block>{<block_content> <return>return <expr><call><name>prettyPrintMemory</name><argument_list>(<argument><expr><call><name>sizeInBytes</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return> </block_content>}</block></function> }</block></class></expr></init></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>GlobalPool</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><call><name><name>Integer</name><operator>.</operator><name>bitCount</name></name><argument_list>(<argument><expr><name>NORMAL_CHUNK_SIZE</name></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="number">1</literal></expr>;</assert> <comment type="line">// must be a power of 2</comment>
+            <assert>assert <expr><call><name><name>Integer</name><operator>.</operator><name>bitCount</name></name><argument_list>(<argument><expr><name>MACRO_CHUNK_SIZE</name></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="number">1</literal></expr>;</assert> <comment type="line">// must be a power of 2</comment>
+            <assert>assert <expr><name>MACRO_CHUNK_SIZE</name> <operator>%</operator> <name>NORMAL_CHUNK_SIZE</name> <operator>==</operator> <literal type="number">0</literal></expr>;</assert> <comment type="line">// must be a multiple</comment>
+        </block_content>}</block></constructor>
+
+        <comment type="block" format="javadoc">/** Return a chunk, the caller will take owership of the parent chunk. */</comment>
+        <function><type><specifier>public</specifier> <name>Chunk</name></type> <name>get</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Chunk</name></type> <name>chunk</name> <init>= <expr><call><name><name>chunks</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>chunk</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name>chunk</name></expr>;</return></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><name>chunk</name> <operator>=</operator> <call><name>allocateMoreChunks</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>chunk</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name>chunk</name></expr>;</return></block_content></block></if></if_stmt>
+
+            <comment type="line">// another thread may have just allocated last macro chunk, so make one final attempt before returning null</comment>
+            <expr_stmt><expr><name>chunk</name> <operator>=</operator> <call><name><name>chunks</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <comment type="line">// try to use partially freed chunk if there is no more fully freed chunk.</comment>
+            <return>return <expr><ternary><condition><expr><name>chunk</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name><name>partiallyFreedChunks</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr> </then><else>: <expr><name>chunk</name></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * This method might be called by multiple threads and that's fine if we add more
+         * than one chunk at the same time as long as we don't exceed the MEMORY_USAGE_THRESHOLD.
+         */</comment>
+        <function><type><specifier>private</specifier> <name>Chunk</name></type> <name>allocateMoreChunks</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>long</name></type> <name>cur</name> <init>= <expr><call><name><name>memoryAllocated</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>cur</name> <operator>+</operator> <name>MACRO_CHUNK_SIZE</name> <operator>&gt;</operator> <name>memoryUsageThreshold</name></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><name>memoryUsageThreshold</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><call><name><name>noSpamLogger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Maximum memory usage reached ({}), cannot allocate chunk of {}"</literal></expr></argument>,
+                                          <argument><expr><name>readableMemoryUsageThreshold</name></expr></argument>, <argument><expr><name>READABLE_MACRO_CHUNK_SIZE</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                    <return>return <expr><literal type="null">null</literal></expr>;</return>
+                </block_content>}</block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>memoryAllocated</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>cur</name></expr></argument>, <argument><expr><name>cur</name> <operator>+</operator> <name>MACRO_CHUNK_SIZE</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <break>break;</break></block_content></block></if></if_stmt>
+            </block_content>}</block></while>
+
+            <comment type="line">// allocate a large chunk</comment>
+            <decl_stmt><decl><type><name>Chunk</name></type> <name>chunk</name></decl>;</decl_stmt>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><name>chunk</name> <operator>=</operator> <operator>new</operator> <call><name>Chunk</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><call><name>allocateDirectAligned</name><argument_list>(<argument><expr><name>MACRO_CHUNK_SIZE</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>OutOfMemoryError</name></type> <name>oom</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>noSpamLogger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"{} buffer pool failed to allocate chunk of {}, current size {} ({}). "</literal> <operator>+</operator>
+                                   <literal type="string">"Attempting to continue; buffers will be allocated in on-heap memory which can degrade performance. "</literal> <operator>+</operator>
+                                   <literal type="string">"Make sure direct memory size (-XX:MaxDirectMemorySize) is large enough to accommodate off-heap memtables and caches."</literal></expr></argument>,
+                                   <argument><expr><name>name</name></expr></argument>, <argument><expr><name>READABLE_MACRO_CHUNK_SIZE</name></expr></argument>, <argument><expr><name>readableMemoryUsage</name></expr></argument>, <argument><expr><call><name><name>oom</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getName</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><literal type="null">null</literal></expr>;</return>
+            </block_content>}</block></catch></try>
+
+            <expr_stmt><expr><call><name><name>chunk</name><operator>.</operator><name>acquire</name></name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>macroChunks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>chunk</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <decl_stmt><decl><type><specifier>final</specifier> <name>Chunk</name></type> <name>callerChunk</name> <init>= <expr><operator>new</operator> <call><name>Chunk</name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><call><name><name>chunk</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>NORMAL_CHUNK_SIZE</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>debug</name><operator>.</operator><name>registerNormal</name></name><argument_list>(<argument><expr><name>callerChunk</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><name>NORMAL_CHUNK_SIZE</name></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>MACRO_CHUNK_SIZE</name></expr>;</condition> <incr><expr><name>i</name> <operator>+=</operator> <name>NORMAL_CHUNK_SIZE</name></expr></incr>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>Chunk</name></type> <name>add</name> <init>= <expr><operator>new</operator> <call><name>Chunk</name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><call><name><name>chunk</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>NORMAL_CHUNK_SIZE</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>chunks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>add</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>debug</name><operator>.</operator><name>registerNormal</name></name><argument_list>(<argument><expr><name>add</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <return>return <expr><name>callerChunk</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>recycle</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Chunk</name></type> <name>recycleAs</name> <init>= <expr><operator>new</operator> <call><name>Chunk</name><argument_list>(<argument><expr><name>chunk</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>debug</name><operator>.</operator><name>recycleNormal</name></name><argument_list>(<argument><expr><name>chunk</name></expr></argument>, <argument><expr><name>recycleAs</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>chunks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>recycleAs</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>recyclePartially</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>debug</name><operator>.</operator><name>recyclePartial</name></name><argument_list>(<argument><expr><name>chunk</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>partiallyFreedChunks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>chunk</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>canRecyclePartially</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>recyclePartially</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/** This is not thread safe and should only be used for unit testing. */</comment>
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <type><name>void</name></type> <name>unsafeFree</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <while>while <condition>(<expr><operator>!</operator><call><name><name>chunks</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>chunks</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>unsafeFree</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></while>
+
+            <while>while <condition>(<expr><operator>!</operator><call><name><name>partiallyFreedChunks</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>partiallyFreedChunks</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>unsafeFree</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></while>
+
+            <while>while <condition>(<expr><operator>!</operator><call><name><name>macroChunks</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>macroChunks</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>unsafeFree</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></while>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <type><name>boolean</name></type> <name>isPartiallyFreed</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>partiallyFreedChunks</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>chunk</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <type><name>boolean</name></type> <name>isFullyFreed</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>chunks</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>chunk</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>MicroQueueOfChunks</name>
+    <block>{
+
+        <comment type="line">// a microqueue of Chunks:</comment>
+        <comment type="line">//  * if any are null, they are at the end;</comment>
+        <comment type="line">//  * new Chunks are added to the last null index</comment>
+        <comment type="line">//  * if no null indexes available, the smallest is swapped with the last index, and this replaced</comment>
+        <comment type="line">//  * this results in a queue that will typically be visited in ascending order of available space, so that</comment>
+        <comment type="line">//    small allocations preferentially slice from the Chunks with the smallest space available to furnish them</comment>
+        <comment type="line">// WARNING: if we ever change the size of this, we must update removeFromLocalQueue, and addChunk</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>Chunk</name></type> <name>chunk0</name></decl>, <decl><type ref="prev"/><name>chunk1</name></decl>, <decl><type ref="prev"/><name>chunk2</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>count</name></decl>;</decl_stmt>
+
+        <comment type="line">// add a new chunk, if necessary evicting the chunk with the least available memory (returning the evicted chunk)</comment>
+        <function><type><specifier>private</specifier> <name>Chunk</name></type> <name>add</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <switch>switch <condition>(<expr><name>count</name></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><literal type="number">0</literal></expr>:</case>
+                    <expr_stmt><expr><name>chunk0</name> <operator>=</operator> <name>chunk</name></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>count</name> <operator>=</operator> <literal type="number">1</literal></expr>;</expr_stmt>
+                    <break>break;</break>
+                <case>case <expr><literal type="number">1</literal></expr>:</case>
+                    <expr_stmt><expr><name>chunk1</name> <operator>=</operator> <name>chunk</name></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>count</name> <operator>=</operator> <literal type="number">2</literal></expr>;</expr_stmt>
+                    <break>break;</break>
+                <case>case <expr><literal type="number">2</literal></expr>:</case>
+                    <expr_stmt><expr><name>chunk2</name> <operator>=</operator> <name>chunk</name></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>count</name> <operator>=</operator> <literal type="number">3</literal></expr>;</expr_stmt>
+                    <break>break;</break>
+                <case>case <expr><literal type="number">3</literal></expr>:</case>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>Chunk</name></type> <name>release</name></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>int</name></type> <name>chunk0Free</name> <init>= <expr><call><name><name>chunk0</name><operator>.</operator><name>freeSlotCount</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>int</name></type> <name>chunk1Free</name> <init>= <expr><call><name><name>chunk1</name><operator>.</operator><name>freeSlotCount</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>int</name></type> <name>chunk2Free</name> <init>= <expr><call><name><name>chunk2</name><operator>.</operator><name>freeSlotCount</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>chunk0Free</name> <operator>&lt;</operator> <name>chunk1Free</name></expr>)</condition>
+                    <block>{<block_content>
+                        <if_stmt><if>if <condition>(<expr><name>chunk0Free</name> <operator>&lt;</operator> <name>chunk2Free</name></expr>)</condition>
+                        <block>{<block_content>
+                            <expr_stmt><expr><name>release</name> <operator>=</operator> <name>chunk0</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>chunk0</name> <operator>=</operator> <name>chunk</name></expr>;</expr_stmt>
+                        </block_content>}</block></if>
+                        <else>else
+                        <block>{<block_content>
+                            <expr_stmt><expr><name>release</name> <operator>=</operator> <name>chunk2</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>chunk2</name> <operator>=</operator> <name>chunk</name></expr>;</expr_stmt>
+                        </block_content>}</block></else></if_stmt>
+                    </block_content>}</block></if>
+                    <else>else
+                    <block>{<block_content>
+                        <if_stmt><if>if <condition>(<expr><name>chunk1Free</name> <operator>&lt;</operator> <name>chunk2Free</name></expr>)</condition>
+                        <block>{<block_content>
+                            <expr_stmt><expr><name>release</name> <operator>=</operator> <name>chunk1</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>chunk1</name> <operator>=</operator> <name>chunk</name></expr>;</expr_stmt>
+                        </block_content>}</block></if>
+                        <else>else
+                        <block>{<block_content>
+                            <expr_stmt><expr><name>release</name> <operator>=</operator> <name>chunk2</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>chunk2</name> <operator>=</operator> <name>chunk</name></expr>;</expr_stmt>
+                        </block_content>}</block></else></if_stmt>
+                    </block_content>}</block></else></if_stmt>
+                    <return>return <expr><name>release</name></expr>;</return>
+                </block_content>}</block>
+                <default>default:</default>
+                    <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>()</argument_list></call></expr>;</throw>
+            </block_content>}</block></switch>
+            <return>return <expr><literal type="null">null</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>remove</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// since we only have three elements in the queue, it is clearer, easier and faster to just hard code the options</comment>
+            <if_stmt><if>if <condition>(<expr><name>chunk0</name> <operator>==</operator> <name>chunk</name></expr>)</condition>
+            <block>{<block_content>   <comment type="line">// remove first by shifting back second two</comment>
+                <expr_stmt><expr><name>chunk0</name> <operator>=</operator> <name>chunk1</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name>chunk1</name> <operator>=</operator> <name>chunk2</name></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><name>chunk1</name> <operator>==</operator> <name>chunk</name></expr>)</condition>
+            <block>{<block_content>   <comment type="line">// remove second by shifting back last</comment>
+                <expr_stmt><expr><name>chunk1</name> <operator>=</operator> <name>chunk2</name></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><name>chunk2</name> <operator>!=</operator> <name>chunk</name></expr>)</condition>
+            <block>{<block_content>
+                <return>return;</return>
+            </block_content>}</block></if></if_stmt>
+            <comment type="line">// whatever we do, the last element must be null</comment>
+            <expr_stmt><expr><name>chunk2</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><operator>--</operator><name>count</name></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><name>ByteBuffer</name></type> <name>get</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>sizeIsLowerBound</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>reuse</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><literal type="null">null</literal> <operator>!=</operator> <name>chunk0</name></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><literal type="null">null</literal> <operator>!=</operator> <operator>(</operator><name>buffer</name> <operator>=</operator> <call><name><name>chunk0</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name>sizeIsLowerBound</name></expr></argument>, <argument><expr><name>reuse</name></expr></argument>)</argument_list></call><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><name>buffer</name></expr>;</return></block_content></block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><literal type="null">null</literal> <operator>!=</operator> <name>chunk1</name></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><literal type="null">null</literal> <operator>!=</operator> <operator>(</operator><name>buffer</name> <operator>=</operator> <call><name><name>chunk1</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name>sizeIsLowerBound</name></expr></argument>, <argument><expr><name>reuse</name></expr></argument>)</argument_list></call><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+                        <return>return <expr><name>buffer</name></expr>;</return></block_content></block></if></if_stmt>
+                    <if_stmt><if>if <condition>(<expr><literal type="null">null</literal> <operator>!=</operator> <name>chunk2</name> <operator>&amp;&amp;</operator> <literal type="null">null</literal> <operator>!=</operator> <operator>(</operator><name>buffer</name> <operator>=</operator> <call><name><name>chunk2</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name>sizeIsLowerBound</name></expr></argument>, <argument><expr><name>reuse</name></expr></argument>)</argument_list></call><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+                        <return>return <expr><name>buffer</name></expr>;</return></block_content></block></if></if_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+            <return>return <expr><literal type="null">null</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>forEach</name><parameter_list>(<parameter><decl><type><name><name>Consumer</name><argument_list type="generic">&lt;<argument><name>Chunk</name></argument>&gt;</argument_list></name></type> <name>consumer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>forEach</name><argument_list>(<argument><expr><name>consumer</name></expr></argument>, <argument><expr><name>count</name></expr></argument>, <argument><expr><name>chunk0</name></expr></argument>, <argument><expr><name>chunk1</name></expr></argument>, <argument><expr><name>chunk2</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>clearForEach</name><parameter_list>(<parameter><decl><type><name><name>Consumer</name><argument_list type="generic">&lt;<argument><name>Chunk</name></argument>&gt;</argument_list></name></type> <name>consumer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Chunk</name></type> <name>chunk0</name> <init>= <expr><name><name>this</name><operator>.</operator><name>chunk0</name></name></expr></init></decl>, <decl><type ref="prev"/><name>chunk1</name> <init>= <expr><name><name>this</name><operator>.</operator><name>chunk1</name></name></expr></init></decl>, <decl><type ref="prev"/><name>chunk2</name> <init>= <expr><name><name>this</name><operator>.</operator><name>chunk2</name></name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>chunk0</name></name> <operator>=</operator> <name><name>this</name><operator>.</operator><name>chunk1</name></name> <operator>=</operator> <name><name>this</name><operator>.</operator><name>chunk2</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>forEach</name><argument_list>(<argument><expr><name>consumer</name></expr></argument>, <argument><expr><name>count</name></expr></argument>, <argument><expr><name>chunk0</name></expr></argument>, <argument><expr><name>chunk1</name></expr></argument>, <argument><expr><name>chunk2</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>count</name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>forEach</name><parameter_list>(<parameter><decl><type><name><name>Consumer</name><argument_list type="generic">&lt;<argument><name>Chunk</name></argument>&gt;</argument_list></name></type> <name>consumer</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>count</name></decl></parameter>, <parameter><decl><type><name>Chunk</name></type> <name>chunk0</name></decl></parameter>, <parameter><decl><type><name>Chunk</name></type> <name>chunk1</name></decl></parameter>, <parameter><decl><type><name>Chunk</name></type> <name>chunk2</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <switch>switch <condition>(<expr><name>count</name></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><literal type="number">3</literal></expr>:</case>
+                    <expr_stmt><expr><call><name><name>consumer</name><operator>.</operator><name>accept</name></name><argument_list>(<argument><expr><name>chunk2</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <case>case <expr><literal type="number">2</literal></expr>:</case>
+                    <expr_stmt><expr><call><name><name>consumer</name><operator>.</operator><name>accept</name></name><argument_list>(<argument><expr><name>chunk1</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <case>case <expr><literal type="number">1</literal></expr>:</case>
+                    <expr_stmt><expr><call><name><name>consumer</name><operator>.</operator><name>accept</name></name><argument_list>(<argument><expr><name>chunk0</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></switch>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <parameter_list type="generic">&lt;<parameter><name>T</name></parameter>&gt;</parameter_list> <name>void</name></type> <name>removeIf</name><parameter_list>(<parameter><decl><type><name><name>BiPredicate</name><argument_list type="generic">&lt;<argument><name>Chunk</name></argument>, <argument><name>T</name></argument>&gt;</argument_list></name></type> <name>predicate</name></decl></parameter>, <parameter><decl><type><name>T</name></type> <name>value</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// do not release matching chunks before we move null chunks to the back of the queue;</comment>
+            <comment type="line">// because, with current buffer release from another thread, "chunk#release()" may eventually come back to</comment>
+            <comment type="line">// "removeIf" causing NPE as null chunks are not at the back of the queue.</comment>
+            <decl_stmt><decl><type><name>Chunk</name></type> <name>toRelease0</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>, <decl><type ref="prev"/><name>toRelease1</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>, <decl><type ref="prev"/><name>toRelease2</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+
+            <try>try
+            <block>{<block_content>
+                <switch>switch <condition>(<expr><name>count</name></expr>)</condition>
+                <block>{<block_content>
+                    <case>case <expr><literal type="number">3</literal></expr>:</case>
+                        <if_stmt><if>if <condition>(<expr><call><name><name>predicate</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name>chunk2</name></expr></argument>, <argument><expr><name>value</name></expr></argument>)</argument_list></call></expr>)</condition>
+                        <block>{<block_content>
+                            <expr_stmt><expr><operator>--</operator><name>count</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>toRelease2</name> <operator>=</operator> <name>chunk2</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>chunk2</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                        </block_content>}</block></if></if_stmt>
+                    <case>case <expr><literal type="number">2</literal></expr>:</case>
+                        <if_stmt><if>if <condition>(<expr><call><name><name>predicate</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name>chunk1</name></expr></argument>, <argument><expr><name>value</name></expr></argument>)</argument_list></call></expr>)</condition>
+                        <block>{<block_content>
+                            <expr_stmt><expr><operator>--</operator><name>count</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>toRelease1</name> <operator>=</operator> <name>chunk1</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>chunk1</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                        </block_content>}</block></if></if_stmt>
+                    <case>case <expr><literal type="number">1</literal></expr>:</case>
+                        <if_stmt><if>if <condition>(<expr><call><name><name>predicate</name><operator>.</operator><name>test</name></name><argument_list>(<argument><expr><name>chunk0</name></expr></argument>, <argument><expr><name>value</name></expr></argument>)</argument_list></call></expr>)</condition>
+                        <block>{<block_content>
+                            <expr_stmt><expr><operator>--</operator><name>count</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>toRelease0</name> <operator>=</operator> <name>chunk0</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>chunk0</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                        </block_content>}</block></if></if_stmt>
+                        <break>break;</break>
+                    <case>case <expr><literal type="number">0</literal></expr>:</case>
+                        <return>return;</return>
+                </block_content>}</block></switch>
+                <switch>switch <condition>(<expr><name>count</name></expr>)</condition>
+                <block>{<block_content>
+                    <case>case <expr><literal type="number">2</literal></expr>:</case>
+                        <comment type="line">// Find the only null item, and shift non-null so that null is at chunk2</comment>
+                        <if_stmt><if>if <condition>(<expr><name>chunk0</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+                        <block>{<block_content>
+                            <expr_stmt><expr><name>chunk0</name> <operator>=</operator> <name>chunk1</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>chunk1</name> <operator>=</operator> <name>chunk2</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>chunk2</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                        </block_content>}</block></if>
+                        <if type="elseif">else if <condition>(<expr><name>chunk1</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+                        <block>{<block_content>
+                            <expr_stmt><expr><name>chunk1</name> <operator>=</operator> <name>chunk2</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>chunk2</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                        </block_content>}</block></if></if_stmt>
+                        <break>break;</break>
+                    <case>case <expr><literal type="number">1</literal></expr>:</case>
+                        <comment type="line">// Find the only non-null item, and shift it to chunk0</comment>
+                        <if_stmt><if>if <condition>(<expr><name>chunk1</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                        <block>{<block_content>
+                            <expr_stmt><expr><name>chunk0</name> <operator>=</operator> <name>chunk1</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>chunk1</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                        </block_content>}</block></if>
+                        <if type="elseif">else if <condition>(<expr><name>chunk2</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                        <block>{<block_content>
+                            <expr_stmt><expr><name>chunk0</name> <operator>=</operator> <name>chunk2</name></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>chunk2</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                        </block_content>}</block></if></if_stmt>
+                        <break>break;</break>
+                </block_content>}</block></switch>
+            </block_content>}</block>
+            <finally>finally
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>toRelease0</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>toRelease0</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>toRelease1</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>toRelease1</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>toRelease2</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>toRelease2</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></finally></try>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>release</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>clearForEach</name><argument_list>(<argument><expr><name>Chunk</name><operator>::</operator><name>release</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>unsafeRecycle</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>clearForEach</name><argument_list>(<argument><expr><name>Chunk</name><operator>::</operator><name>unsafeRecycle</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * A thread local class that grabs chunks from the global pool for this thread allocations.
+     * Only one thread can do the allocations but multiple threads can release the allocations.
+     */</comment>
+    <class><specifier>public</specifier> <specifier>final</specifier> class <name>LocalPool</name> <super_list><implements>implements <super><name>Recycler</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Queue</name><argument_list type="generic">&lt;<argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>reuseObjects</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Supplier</name><argument_list type="generic">&lt;<argument><name>Chunk</name></argument>&gt;</argument_list></name></type> <name>parent</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>LocalPoolRef</name></type> <name>leakRef</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>MicroQueueOfChunks</name></type> <name>chunks</name> <init>= <expr><operator>new</operator> <call><name>MicroQueueOfChunks</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="block" format="javadoc">/**
+         * If we are on outer LocalPool, whose chunks are == NORMAL_CHUNK_SIZE, we may service allocation requests
+         * for buffers much smaller than
+         */</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>LocalPool</name></type> <name>tinyPool</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>tinyLimit</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>recycleWhenFree</name> <init>= <expr><literal type="boolean">true</literal></expr></init></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>LocalPool</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>parent</name></name> <operator>=</operator> <name>globalPool</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>tinyLimit</name></name> <operator>=</operator> <name>TINY_ALLOCATION_LIMIT</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>reuseObjects</name></name> <operator>=</operator> <operator>new</operator> <call><name><name>ArrayDeque</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>localPoolReferences</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>leakRef</name> <operator>=</operator> <operator>new</operator> <call><name>LocalPoolRef</name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>localPoolRefQueue</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <comment type="block" format="javadoc">/**
+         * Invoked by an existing LocalPool, to create a child pool
+         */</comment>
+        <constructor><specifier>private</specifier> <name>LocalPool</name><parameter_list>(<parameter><decl><type><name>LocalPool</name></type> <name>parent</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>parent</name></name> <operator>=</operator> <lambda><parameter_list>()</parameter_list> -&gt; <block>{<block_content>
+                <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>buffer</name> <init>= <expr><call><name><name>parent</name><operator>.</operator><name>tryGetInternal</name></name><argument_list>(<argument><expr><name>TINY_CHUNK_SIZE</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <return>return <expr><ternary><condition><expr><name>buffer</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><operator>new</operator> <call><name>Chunk</name><argument_list>(<argument><expr><name>parent</name></expr></argument>, <argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+            </block_content>}</block></lambda></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>tinyLimit</name></name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt> <comment type="line">// we only currently permit one layer of nesting (which brings us down to 32 byte allocations, so is plenty)</comment>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>reuseObjects</name></name> <operator>=</operator> <name><name>parent</name><operator>.</operator><name>reuseObjects</name></name></expr>;</expr_stmt> <comment type="line">// we share the same ByteBuffer object reuse pool, as we both have the same exclusive access to it</comment>
+            <expr_stmt><expr><call><name><name>localPoolReferences</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>leakRef</name> <operator>=</operator> <operator>new</operator> <call><name>LocalPoolRef</name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>localPoolRefQueue</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>private</specifier> <name>LocalPool</name></type> <name>tinyPool</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>tinyPool</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>tinyPool</name> <operator>=</operator> <operator>new</operator> <call><name>LocalPool</name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>recycleWhenFree</name><argument_list>(<argument><expr><name>recycleWhenFree</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <return>return <expr><name>tinyPool</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>put</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Chunk</name></type> <name>chunk</name> <init>= <expr><call><name><name>Chunk</name><operator>.</operator><name>getParentChunk</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><call><name><name>buffer</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>chunk</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>FileUtils</name><operator>.</operator><name>clean</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name>updateOverflowMemoryUsage</name><argument_list>(<argument><expr><operator>-</operator><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>put</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><name>chunk</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>memoryInUse</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>-</operator><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>put</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>, <parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>LocalPool</name></type> <name>owner</name> <init>= <expr><name><name>chunk</name><operator>.</operator><name>owner</name></name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>owner</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>owner</name> <operator>==</operator> <name>tinyPool</name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>tinyPool</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><name>chunk</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <comment type="line">// ask the free method to take exclusive ownership of the act of recycling if chunk is owned by ourselves</comment>
+            <decl_stmt><decl><type><name>long</name></type> <name>free</name> <init>= <expr><call><name><name>chunk</name><operator>.</operator><name>free</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><name>owner</name> <operator>==</operator> <name>this</name> <operator>&amp;&amp;</operator> <name>recycleWhenFree</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <comment type="line">// free:</comment>
+            <comment type="line">// *     0L: current pool must be the owner. we can fully recyle the chunk.</comment>
+            <comment type="line">// *    -1L:</comment>
+            <comment type="line">//          * for normal chunk:</comment>
+            <comment type="line">//              a) if it has owner, do nothing.</comment>
+            <comment type="line">//              b) if it not owner, try to recyle it either fully or partially if not already recyled.</comment>
+            <comment type="line">//          * for tiny chunk:</comment>
+            <comment type="line">//              a) if it has owner, do nothing.</comment>
+            <comment type="line">//              b) if it has not owner, recycle the tiny chunk back to parent chunk</comment>
+            <comment type="line">// * others:</comment>
+            <comment type="line">//          * for normal chunk:  partial recycle the chunk if it can be partially recycled but not yet recycled.</comment>
+            <comment type="line">//          * for tiny chunk: do nothing.</comment>
+            <if_stmt><if>if <condition>(<expr><name>free</name> <operator>==</operator> <literal type="number">0L</literal></expr>)</condition>
+            <block>{<block_content>
+                <assert>assert <expr><name>owner</name> <operator>==</operator> <name>this</name></expr>;</assert>
+                <comment type="line">// 0L =&gt; we own recycling responsibility, so must recycle;</comment>
+                <comment type="line">// We must remove the Chunk from our local queue</comment>
+                <expr_stmt><expr><call><name>remove</name><argument_list>(<argument><expr><name>chunk</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>chunk</name><operator>.</operator><name>recycle</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><name>free</name> <operator>==</operator> <operator>-</operator><literal type="number">1L</literal> <operator>&amp;&amp;</operator> <name>owner</name> <operator>!=</operator> <name>this</name> <operator>&amp;&amp;</operator> <name><name>chunk</name><operator>.</operator><name>owner</name></name> <operator>==</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>chunk</name><operator>.</operator><name>recycler</name><operator>.</operator><name>canRecyclePartially</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// although we try to take recycle ownership cheaply, it is not always possible to do so if the owner is racing to unset.</comment>
+                <comment type="line">// we must also check after completely freeing if the owner has since been unset, and try to recycle</comment>
+                <expr_stmt><expr><call><name><name>chunk</name><operator>.</operator><name>tryRecycle</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><name><name>chunk</name><operator>.</operator><name>owner</name></name> <operator>==</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>chunk</name><operator>.</operator><name>recycler</name><operator>.</operator><name>canRecyclePartially</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>chunk</name><operator>.</operator><name>setInUse</name></name><argument_list>(<argument><expr><name><name>Chunk</name><operator>.</operator><name>Status</name><operator>.</operator><name>EVICTED</name></name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// re-cirlate partially freed normal chunk to global list</comment>
+                <expr_stmt><expr><call><name><name>chunk</name><operator>.</operator><name>partiallyRecycle</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>owner</name> <operator>==</operator> <name>this</name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>MemoryUtil</name><operator>.</operator><name>setAttachment</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>MemoryUtil</name><operator>.</operator><name>setDirectByteBuffer</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>reuseObjects</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>putUnusedPortion</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Chunk</name></type> <name>chunk</name> <init>= <expr><call><name><name>Chunk</name><operator>.</operator><name>getParentChunk</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><call><name><name>buffer</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call> <operator>-</operator> <call><name><name>buffer</name><operator>.</operator><name>limit</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>chunk</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>updateOverflowMemoryUsage</name><argument_list>(<argument><expr><operator>-</operator><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>chunk</name><operator>.</operator><name>freeUnusedPortion</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>memoryInUse</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>-</operator><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>ByteBuffer</name></type> <name>get</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>get</name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>ByteBuffer</name></type> <name>getAtLeast</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>get</name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>ByteBuffer</name></type> <name>get</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>sizeIsLowerBound</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>ret</name> <init>= <expr><call><name>tryGet</name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name>sizeIsLowerBound</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>ret</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>hits</name><operator>.</operator><name>mark</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>memoryInUse</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>ret</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><name>ret</name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>size</name> <operator>&gt;</operator> <name>NORMAL_CHUNK_SIZE</name></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Requested buffer size {} is bigger than {}; allocating directly"</literal></expr></argument>,
+                                 <argument><expr><call><name>prettyPrintMemory</name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr></argument>,
+                                 <argument><expr><call><name>prettyPrintMemory</name><argument_list>(<argument><expr><name>NORMAL_CHUNK_SIZE</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Requested buffer size {} has been allocated directly due to lack of capacity"</literal></expr></argument>, <argument><expr><call><name>prettyPrintMemory</name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></else></if_stmt>
+
+            <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>misses</name><operator>.</operator><name>mark</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><call><name>allocate</name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name><name>BufferType</name><operator>.</operator><name>OFF_HEAP</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>ByteBuffer</name></type> <name>tryGet</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>sizeIsLowerBound</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>LocalPool</name></type> <name>pool</name> <init>= <expr><name>this</name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>size</name> <operator>&lt;=</operator> <name>tinyLimit</name></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>size</name> <operator>&lt;=</operator> <literal type="number">0</literal></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><name>size</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                        <return>return <expr><name>EMPTY_BUFFER</name></expr>;</return></block_content></block></if></if_stmt>
+                    <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Size must be non-negative ("</literal> <operator>+</operator> <name>size</name> <operator>+</operator> <literal type="char">')'</literal></expr></argument>)</argument_list></call></expr>;</throw>
+                </block_content>}</block></if></if_stmt>
+
+                <expr_stmt><expr><name>pool</name> <operator>=</operator> <call><name>tinyPool</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><name>size</name> <operator>&gt;</operator> <name>NORMAL_CHUNK_SIZE</name></expr>)</condition>
+            <block>{<block_content>
+                <return>return <expr><literal type="null">null</literal></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <return>return <expr><call><name><name>pool</name><operator>.</operator><name>tryGetInternal</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name>sizeIsLowerBound</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Inline</name></annotation>
+        <type><specifier>private</specifier> <name>ByteBuffer</name></type> <name>tryGetInternal</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>sizeIsLowerBound</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>reuse</name> <init>= <expr><call><name><name>this</name><operator>.</operator><name>reuseObjects</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>buffer</name> <init>= <expr><call><name><name>chunks</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name>sizeIsLowerBound</name></expr></argument>, <argument><expr><name>reuse</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>buffer</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <return>return <expr><name>buffer</name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <comment type="line">// else ask the global pool</comment>
+            <decl_stmt><decl><type><name>Chunk</name></type> <name>chunk</name> <init>= <expr><call><name>addChunkFromParent</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>chunk</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>result</name> <init>= <expr><call><name><name>chunk</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name>sizeIsLowerBound</name></expr></argument>, <argument><expr><name>reuse</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>result</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><name>result</name></expr>;</return></block_content></block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>reuse</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>this</name><operator>.</operator><name>reuseObjects</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>reuse</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <return>return <expr><literal type="null">null</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="line">// recycle entire tiny chunk from tiny pool back to local pool</comment>
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>recycle</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>buffer</name> <init>= <expr><name><name>chunk</name><operator>.</operator><name>slab</name></name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Chunk</name></type> <name>parentChunk</name> <init>= <expr><call><name><name>Chunk</name><operator>.</operator><name>getParentChunk</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name>put</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><name>parentChunk</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>recyclePartially</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>UnsupportedOperationException</name><argument_list>(<argument><expr><literal type="string">"Tiny chunk doesn't support partial recycle."</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>canRecyclePartially</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// tiny pool doesn't support partial recycle, as we want to have tiny chunk fully freed and put back to</comment>
+            <comment type="line">// parent normal chunk.</comment>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>remove</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>chunks</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>chunk</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>tinyPool</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>tinyPool</name><operator>.</operator><name>chunks</name><operator>.</operator><name>removeIf</name></name><argument_list>(<argument><expr><lambda><parameter_list>(<parameter><decl><name>child</name></decl></parameter>, <parameter><decl><name>parent</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>Chunk</name><operator>.</operator><name>getParentChunk</name></name><argument_list>(<argument><expr><name><name>child</name><operator>.</operator><name>slab</name></name></expr></argument>)</argument_list></call> <operator>==</operator> <name>parent</name></expr></block_content></block></lambda></expr></argument>, <argument><expr><name>chunk</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>Chunk</name></type> <name>addChunkFromParent</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Chunk</name></type> <name>chunk</name> <init>= <expr><call><name><name>parent</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>chunk</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name>addChunk</name><argument_list>(<argument><expr><name>chunk</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>chunk</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>addChunk</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>chunk</name><operator>.</operator><name>acquire</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>Chunk</name></type> <name>evict</name> <init>= <expr><call><name><name>chunks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>chunk</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>evict</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>tinyPool</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <comment type="line">// releasing tiny chunks may result in releasing current evicted chunk</comment>
+                    <expr_stmt><expr><call><name><name>tinyPool</name><operator>.</operator><name>chunks</name><operator>.</operator><name>removeIf</name></name><argument_list>(<argument><expr><lambda><parameter_list>(<parameter><decl><name>child</name></decl></parameter>, <parameter><decl><name>parent</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>Chunk</name><operator>.</operator><name>getParentChunk</name></name><argument_list>(<argument><expr><name><name>child</name><operator>.</operator><name>slab</name></name></expr></argument>)</argument_list></call> <operator>==</operator> <name>parent</name></expr></block_content></block></lambda></expr></argument>, <argument><expr><name>evict</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>evict</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <comment type="line">// Mark it as evicted and will be eligible for partial recyle if recycler allows</comment>
+                <expr_stmt><expr><call><name><name>evict</name><operator>.</operator><name>setEvicted</name></name><argument_list>(<argument><expr><name><name>Chunk</name><operator>.</operator><name>Status</name><operator>.</operator><name>IN_USE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>release</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>chunks</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>reuseObjects</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>localPoolReferences</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>leakRef</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>leakRef</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>tinyPool</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>tinyPool</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <type><name>void</name></type> <name>unsafeRecycle</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>chunks</name><operator>.</operator><name>unsafeRecycle</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>isTinyPool</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>!</operator><operator>(</operator><name>parent</name> <operator>instanceof</operator> <name>GlobalPool</name><operator>)</operator></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>LocalPool</name></type> <name>recycleWhenFree</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>recycleWhenFree</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>recycleWhenFree</name></name> <operator>=</operator> <name>recycleWhenFree</name></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>tinyPool</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name><name>tinyPool</name><operator>.</operator><name>recycleWhenFree</name></name> <operator>=</operator> <name>recycleWhenFree</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>LocalPoolRef</name> <super_list><extends>extends <super><name><name>PhantomReference</name><argument_list type="generic">&lt;<argument><name>LocalPool</name></argument>&gt;</argument_list></name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>MicroQueueOfChunks</name></type> <name>chunks</name></decl>;</decl_stmt>
+        <constructor><specifier>public</specifier> <name>LocalPoolRef</name><parameter_list>(<parameter><decl><type><name>LocalPool</name></type> <name>localPool</name></decl></parameter>, <parameter><decl><type><name><name>ReferenceQueue</name><argument_list type="generic">&lt;<argument><name>?</name> <super>super <name>LocalPool</name></super></argument>&gt;</argument_list></name></type> <name>q</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>localPool</name></expr></argument>, <argument><expr><name>q</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>chunks</name> <operator>=</operator> <name><name>localPool</name><operator>.</operator><name>chunks</name></name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>release</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>chunks</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>cleanupOneReference</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>InterruptedException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Object</name></type> <name>obj</name> <init>= <expr><call><name><name>localPoolRefQueue</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><literal type="number">100</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>obj</name> <operator>instanceof</operator> <name>LocalPoolRef</name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><operator>(</operator><operator>(</operator><name>LocalPoolRef</name><operator>)</operator> <name>obj</name><operator>)</operator><operator>.</operator><call><name>release</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>localPoolReferences</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>obj</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>ByteBuffer</name></type> <name>allocateDirectAligned</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>capacity</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>align</name> <init>= <expr><call><name><name>MemoryUtil</name><operator>.</operator><name>pageSize</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>Integer</name><operator>.</operator><name>bitCount</name></name><argument_list>(<argument><expr><name>align</name></expr></argument>)</argument_list></call> <operator>!=</operator> <literal type="number">1</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Alignment must be a power of 2"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>buffer</name> <init>= <expr><call><name><name>ByteBuffer</name><operator>.</operator><name>allocateDirect</name></name><argument_list>(<argument><expr><name>capacity</name> <operator>+</operator> <name>align</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>address</name> <init>= <expr><call><name><name>MemoryUtil</name><operator>.</operator><name>getAddress</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>offset</name> <init>= <expr><name>address</name> <operator>&amp;</operator> <operator>(</operator><name>align</name> <operator>-</operator><literal type="number">1</literal><operator>)</operator></expr></init></decl>;</decl_stmt> <comment type="line">// (address % align)</comment>
+
+        <if_stmt><if>if <condition>(<expr><name>offset</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition>
+        <block>{<block_content> <comment type="line">// already aligned</comment>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>limit</name></name><argument_list>(<argument><expr><name>capacity</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content> <comment type="line">// shift by offset</comment>
+            <decl_stmt><decl><type><name>int</name></type> <name>pos</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator><operator>(</operator><name>align</name> <operator>-</operator> <name>offset</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>position</name></name><argument_list>(<argument><expr><name>pos</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>limit</name></name><argument_list>(<argument><expr><name>pos</name> <operator>+</operator> <name>capacity</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+
+        <return>return <expr><call><name><name>buffer</name><operator>.</operator><name>slice</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * A memory chunk: it takes a buffer (the slab) and slices it
+     * into smaller buffers when requested.
+     *
+     * It divides the slab into 64 units and keeps a long mask, freeSlots,
+     * indicating if a unit is in use or not. Each bit in freeSlots corresponds
+     * to a unit, if the bit is set then the unit is free (available for allocation)
+     * whilst if it is not set then the unit is in use.
+     *
+     * When we receive a request of a given size we round up the size to the nearest
+     * multiple of allocation units required. Then we search for n consecutive free units,
+     * where n is the number of units required. We also align to page boundaries.
+     *
+     * When we reiceve a release request we work out the position by comparing the buffer
+     * address to our base address and we simply release the units.
+     */</comment>
+    <class><specifier>final</specifier> <specifier>static</specifier> class <name>Chunk</name>
+    <block>{
+        <enum>enum <name>Status</name>
+        <block>{
+            <comment type="block" format="javadoc">/** The slab is serving or ready to serve requests */</comment>
+            <decl><name>IN_USE</name></decl>,
+            <comment type="block" format="javadoc">/** The slab is not serving requests and ready for partial recycle*/</comment>
+            <decl><name>EVICTED</name></decl>;
+        }</block></enum>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ByteBuffer</name></type> <name>slab</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>baseAddress</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>shift</name></decl>;</decl_stmt>
+
+        <comment type="line">// it may be 0L when all slots are allocated after "get" or when all slots are freed after "free"</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>long</name></type> <name>freeSlots</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicLongFieldUpdater</name><argument_list type="generic">&lt;<argument><name>Chunk</name></argument>&gt;</argument_list></name></type> <name>freeSlotsUpdater</name> <init>= <expr><call><name><name>AtomicLongFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>Chunk</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"freeSlots"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// the pool that is _currently allocating_ from this Chunk</comment>
+        <comment type="line">// if this is set, it means the chunk may not be recycled because we may still allocate from it;</comment>
+        <comment type="line">// if it has been unset the local pool has finished with it, and it may be recycled</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>LocalPool</name></type> <name>owner</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Recycler</name></type> <name>recycler</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicReferenceFieldUpdater</name><argument_list type="generic">&lt;<argument><name>Chunk</name></argument>, <argument><name>Status</name></argument>&gt;</argument_list></name></type> <name>statusUpdater</name> <init>=
+                <expr><call><name><name>AtomicReferenceFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>Chunk</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><name><name>Status</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"status"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>Status</name></type> <name>status</name> <init>= <expr><name><name>Status</name><operator>.</operator><name>IN_USE</name></name></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><annotation>@<name>VisibleForTesting</name></annotation>
+        <type><name>Object</name></type> <name>debugAttachment</name></decl>;</decl_stmt>
+
+        <constructor><name>Chunk</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>recycle</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><name><name>recycle</name><operator>.</operator><name>freeSlots</name></name> <operator>==</operator> <literal type="number">0L</literal></expr>;</assert>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>slab</name></name> <operator>=</operator> <name><name>recycle</name><operator>.</operator><name>slab</name></name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>baseAddress</name></name> <operator>=</operator> <name><name>recycle</name><operator>.</operator><name>baseAddress</name></name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>shift</name></name> <operator>=</operator> <name><name>recycle</name><operator>.</operator><name>shift</name></name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>freeSlots</name></name> <operator>=</operator> <operator>-</operator><literal type="number">1L</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>recycler</name></name> <operator>=</operator> <name><name>recycle</name><operator>.</operator><name>recycler</name></name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><name>Chunk</name><parameter_list>(<parameter><decl><type><name>Recycler</name></type> <name>recycler</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>slab</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><call><name><name>MemoryUtil</name><operator>.</operator><name>isExactlyDirect</name></name><argument_list>(<argument><expr><name>slab</name></expr></argument>)</argument_list></call></expr>;</assert>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>recycler</name></name> <operator>=</operator> <name>recycler</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>slab</name></name> <operator>=</operator> <name>slab</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>baseAddress</name></name> <operator>=</operator> <call><name><name>MemoryUtil</name><operator>.</operator><name>getAddress</name></name><argument_list>(<argument><expr><name>slab</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <comment type="line">// The number of bits by which we need to shift to obtain a unit</comment>
+            <comment type="line">// "31 &amp;" is because numberOfTrailingZeros returns 32 when the capacity is zero</comment>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>shift</name></name> <operator>=</operator> <literal type="number">31</literal> <operator>&amp;</operator> <operator>(</operator><call><name><name>Integer</name><operator>.</operator><name>numberOfTrailingZeros</name></name><argument_list>(<argument><expr><call><name><name>slab</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call> <operator>/</operator> <literal type="number">64</literal></expr></argument>)</argument_list></call><operator>)</operator></expr>;</expr_stmt>
+            <comment type="line">// -1 means all free whilst 0 means all in use</comment>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>freeSlots</name></name> <operator>=</operator> <ternary><condition><expr><call><name><name>slab</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><literal type="number">0L</literal></expr> </then><else>: <expr><operator>-</operator><literal type="number">1L</literal></expr></else></ternary></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <comment type="block" format="javadoc">/**
+         * Acquire the chunk for future allocations: set the owner and prep
+         * the free slots mask.
+         */</comment>
+        <function><type><name>void</name></type> <name>acquire</name><parameter_list>(<parameter><decl><type><name>LocalPool</name></type> <name>owner</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><name><name>this</name><operator>.</operator><name>owner</name></name> <operator>==</operator> <literal type="null">null</literal></expr>;</assert>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>owner</name></name> <operator>=</operator> <name>owner</name></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Set the owner to null and return the chunk to the global pool if the chunk is fully free.
+         * This method must be called by the LocalPool when it is certain that
+         * the local pool shall never try to allocate any more buffers from this chunk.
+         */</comment>
+        <function><type><name>void</name></type> <name>release</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>owner</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>tryRecycle</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><name>void</name></type> <name>tryRecycle</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><name>owner</name> <operator>==</operator> <literal type="null">null</literal></expr>;</assert>
+            <if_stmt><if>if <condition>(<expr><call><name>isFree</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>freeSlotsUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><operator>-</operator><literal type="number">1L</literal></expr></argument>, <argument><expr><literal type="number">0L</literal></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>recycle</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><name>void</name></type> <name>recycle</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><name>freeSlots</name> <operator>==</operator> <literal type="number">0L</literal></expr>;</assert>
+            <expr_stmt><expr><call><name><name>recycler</name><operator>.</operator><name>recycle</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>partiallyRecycle</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><name>owner</name> <operator>==</operator> <literal type="null">null</literal></expr>;</assert>
+            <expr_stmt><expr><call><name><name>recycler</name><operator>.</operator><name>recyclePartially</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * We stash the chunk in the attachment of a buffer
+         * that was returned by get(), this method simply
+         * retrives the chunk that sliced a buffer, if any.
+         */</comment>
+        <function><type><specifier>static</specifier> <name>Chunk</name></type> <name>getParentChunk</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Object</name></type> <name>attachment</name> <init>= <expr><call><name><name>MemoryUtil</name><operator>.</operator><name>getAttachment</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>attachment</name> <operator>instanceof</operator> <name>Chunk</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><operator>(</operator><name>Chunk</name><operator>)</operator> <name>attachment</name></expr>;</return></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>attachment</name> <operator>instanceof</operator> <name>Ref</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><operator>(</operator><operator>(</operator><name><name>Ref</name><argument_list type="generic">&lt;<argument><name>Chunk</name></argument>&gt;</argument_list></name><operator>)</operator> <name>attachment</name><operator>)</operator><operator>.</operator><call><name>get</name><argument_list>()</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+            <return>return <expr><literal type="null">null</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>void</name></type> <name>setAttachment</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name><name>Ref</name><operator>.</operator><name>DEBUG_ENABLED</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>MemoryUtil</name><operator>.</operator><name>setAttachment</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><operator>new</operator> <call><name><name>Ref</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>MemoryUtil</name><operator>.</operator><name>setAttachment</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><name>boolean</name></type> <name>releaseAttachment</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Object</name></type> <name>attachment</name> <init>= <expr><call><name><name>MemoryUtil</name><operator>.</operator><name>getAttachment</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>attachment</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name><name>Ref</name><operator>.</operator><name>DEBUG_ENABLED</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><operator>(</operator><operator>(</operator><name><name>Ref</name><argument_list type="generic">&lt;<argument><name>Chunk</name></argument>&gt;</argument_list></name><operator>)</operator> <name>attachment</name><operator>)</operator><operator>.</operator><call><name>release</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <type><name>long</name></type> <name>setFreeSlots</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>val</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>ret</name> <init>= <expr><name>freeSlots</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>freeSlots</name> <operator>=</operator> <name>val</name></expr>;</expr_stmt>
+            <return>return <expr><name>ret</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>int</name></type> <name>capacity</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="number">64</literal> <operator>&lt;&lt;</operator> <name>shift</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>final</specifier> <name>int</name></type> <name>unit</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="number">1</literal> <operator>&lt;&lt;</operator> <name>shift</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>final</specifier> <name>boolean</name></type> <name>isFree</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>freeSlots</name> <operator>==</operator> <operator>-</operator><literal type="number">1L</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/** The total free size */</comment>
+        <function><type><name>int</name></type> <name>free</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>Long</name><operator>.</operator><name>bitCount</name></name><argument_list>(<argument><expr><name>freeSlots</name></expr></argument>)</argument_list></call> <operator>*</operator> <call><name>unit</name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>int</name></type> <name>freeSlotCount</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>Long</name><operator>.</operator><name>bitCount</name></name><argument_list>(<argument><expr><name>freeSlots</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>ByteBuffer</name></type> <name>get</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>get</name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Return the next available slice of this size. If
+         * we have exceeded the capacity we return null.
+         */</comment>
+        <function><type><name>ByteBuffer</name></type> <name>get</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>sizeIsLowerBound</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>into</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// how many multiples of our units is the size?</comment>
+            <comment type="line">// we add (unit - 1), so that when we divide by unit (&gt;&gt;&gt; shift), we effectively round up</comment>
+            <decl_stmt><decl><type><name>int</name></type> <name>slotCount</name> <init>= <expr><operator>(</operator><name>size</name> <operator>-</operator> <literal type="number">1</literal> <operator>+</operator> <call><name>unit</name><argument_list>()</argument_list></call><operator>)</operator> <operator>&gt;&gt;&gt;</operator> <name>shift</name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>sizeIsLowerBound</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>size</name> <operator>=</operator> <name>slotCount</name> <operator>&lt;&lt;</operator> <name>shift</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <comment type="line">// if we require more than 64 slots, we cannot possibly accommodate the allocation</comment>
+            <if_stmt><if>if <condition>(<expr><name>slotCount</name> <operator>&gt;</operator> <literal type="number">64</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <comment type="line">// convert the slotCount into the bits needed in the bitmap, but at the bottom of the register</comment>
+            <decl_stmt><decl><type><name>long</name></type> <name>slotBits</name> <init>= <expr><operator>-</operator><literal type="number">1L</literal> <operator>&gt;&gt;&gt;</operator> <operator>(</operator><literal type="number">64</literal> <operator>-</operator> <name>slotCount</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+
+            <comment type="line">// in order that we always allocate page aligned results, we require that any allocation is "somewhat" aligned</comment>
+            <comment type="line">// i.e. any single unit allocation can go anywhere; any 2 unit allocation must begin in one of the first 3 slots</comment>
+            <comment type="line">// of a page; a 3 unit must go in the first two slots; and any four unit allocation must be fully page-aligned</comment>
+
+            <comment type="line">// to achieve this, we construct a searchMask that constrains the bits we find to those we permit starting</comment>
+            <comment type="line">// a match from. as we find bits, we remove them from the mask to continue our search.</comment>
+            <comment type="line">// this has an odd property when it comes to concurrent alloc/free, as we can safely skip backwards if</comment>
+            <comment type="line">// a new slot is freed up, but we always make forward progress (i.e. never check the same bits twice),</comment>
+            <comment type="line">// so running time is bounded</comment>
+            <decl_stmt><decl><type><name>long</name></type> <name>searchMask</name> <init>= <expr><literal type="number">0x1111111111111111L</literal></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>searchMask</name> <operator>*=</operator> <literal type="number">15L</literal> <operator>&gt;&gt;&gt;</operator> <operator>(</operator><operator>(</operator><name>slotCount</name> <operator>-</operator> <literal type="number">1</literal><operator>)</operator> <operator>&amp;</operator> <literal type="number">3</literal><operator>)</operator></expr>;</expr_stmt>
+            <comment type="line">// i.e. switch (slotCount &amp; 3)</comment>
+            <comment type="line">// case 1: searchMask = 0xFFFFFFFFFFFFFFFFL</comment>
+            <comment type="line">// case 2: searchMask = 0x7777777777777777L</comment>
+            <comment type="line">// case 3: searchMask = 0x3333333333333333L</comment>
+            <comment type="line">// case 0: searchMask = 0x1111111111111111L</comment>
+
+            <comment type="line">// truncate the mask, removing bits that have too few slots proceeding them</comment>
+            <expr_stmt><expr><name>searchMask</name> <operator>&amp;=</operator> <operator>-</operator><literal type="number">1L</literal> <operator>&gt;&gt;&gt;</operator> <operator>(</operator><name>slotCount</name> <operator>-</operator> <literal type="number">1</literal><operator>)</operator></expr>;</expr_stmt>
+
+            <comment type="line">// this loop is very unroll friendly, and would achieve high ILP, but not clear if the compiler will exploit this.</comment>
+            <comment type="line">// right now, not worth manually exploiting, but worth noting for future</comment>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>long</name></type> <name>cur</name> <init>= <expr><name>freeSlots</name></expr></init></decl>;</decl_stmt>
+                <comment type="line">// find the index of the lowest set bit that also occurs in our mask (i.e. is permitted alignment, and not yet searched)</comment>
+                <comment type="line">// we take the index, rather than finding the lowest bit, since we must obtain it anyway, and shifting is more efficient</comment>
+                <comment type="line">// than multiplication</comment>
+                <decl_stmt><decl><type><name>int</name></type> <name>index</name> <init>= <expr><call><name><name>Long</name><operator>.</operator><name>numberOfTrailingZeros</name></name><argument_list>(<argument><expr><name>cur</name> <operator>&amp;</operator> <name>searchMask</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                <comment type="line">// if no bit was actually found, we cannot serve this request, so return null.</comment>
+                <comment type="line">// due to truncating the searchMask this immediately terminates any search when we run out of indexes</comment>
+                <comment type="line">// that could accommodate the allocation, i.e. is equivalent to checking (64 - index) &lt; slotCount</comment>
+                <if_stmt><if>if <condition>(<expr><name>index</name> <operator>==</operator> <literal type="number">64</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+                <comment type="line">// remove this bit from our searchMask, so we don't return here next round</comment>
+                <expr_stmt><expr><name>searchMask</name> <operator>^=</operator> <literal type="number">1L</literal> <operator>&lt;&lt;</operator> <name>index</name></expr>;</expr_stmt>
+                <comment type="line">// if our bits occur starting at the index, remove ourselves from the bitmask and return</comment>
+                <decl_stmt><decl><type><name>long</name></type> <name>candidate</name> <init>= <expr><name>slotBits</name> <operator>&lt;&lt;</operator> <name>index</name></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><operator>(</operator><name>candidate</name> <operator>&amp;</operator> <name>cur</name><operator>)</operator> <operator>==</operator> <name>candidate</name></expr>)</condition>
+                <block>{<block_content>
+                    <comment type="line">// here we are sure we will manage to CAS successfully without changing candidate because</comment>
+                    <comment type="line">// there is only one thread allocating at the moment, the concurrency is with the release</comment>
+                    <comment type="line">// operations only</comment>
+                    <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+                    <block>{<block_content>
+                        <comment type="line">// clear the candidate bits (freeSlots &amp;= ~candidate)</comment>
+                        <if_stmt><if>if <condition>(<expr><call><name><name>freeSlotsUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>cur</name></expr></argument>, <argument><expr><name>cur</name> <operator>&amp;</operator> <operator>~</operator><name>candidate</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                            <break>break;</break></block_content></block></if></if_stmt>
+
+                        <expr_stmt><expr><name>cur</name> <operator>=</operator> <name>freeSlots</name></expr>;</expr_stmt>
+                        <comment type="line">// make sure no other thread has cleared the candidate bits</comment>
+                        <assert>assert <expr><operator>(</operator><operator>(</operator><name>candidate</name> <operator>&amp;</operator> <name>cur</name><operator>)</operator> <operator>==</operator> <name>candidate</name><operator>)</operator></expr>;</assert>
+                    </block_content>}</block></while>
+                    <return>return <expr><call><name>set</name><argument_list>(<argument><expr><name>index</name> <operator>&lt;&lt;</operator> <name>shift</name></expr></argument>, <argument><expr><name>size</name></expr></argument>, <argument><expr><name>into</name></expr></argument>)</argument_list></call></expr>;</return>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>ByteBuffer</name></type> <name>set</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>offset</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>into</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>into</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>into</name> <operator>=</operator> <call><name><name>MemoryUtil</name><operator>.</operator><name>getHollowDirectByteBuffer</name></name><argument_list>(<argument><expr><name><name>ByteOrder</name><operator>.</operator><name>BIG_ENDIAN</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>MemoryUtil</name><operator>.</operator><name>sliceDirectByteBuffer</name></name><argument_list>(<argument><expr><name>slab</name></expr></argument>, <argument><expr><name>into</name></expr></argument>, <argument><expr><name>offset</name></expr></argument>, <argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>setAttachment</name><argument_list>(<argument><expr><name>into</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>into</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Round the size to the next unit multiple.
+         */</comment>
+        <function><type><name>int</name></type> <name>roundUp</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>v</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>BufferPool</name><operator>.</operator><name>roundUp</name></name><argument_list>(<argument><expr><name>v</name></expr></argument>, <argument><expr><call><name>unit</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Release a buffer. Return:
+         *    0L if the buffer must be recycled after the call;
+         *   -1L if it is free (and so we should tryRecycle if owner is now null)
+         *    some other value otherwise
+         **/</comment>
+        <function><type><name>long</name></type> <name>free</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>tryRelease</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>releaseAttachment</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="number">1L</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><call><name>roundUp</name><argument_list>(<argument><expr><call><name><name>buffer</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>address</name> <init>= <expr><call><name><name>MemoryUtil</name><operator>.</operator><name>getAddress</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <assert>assert <expr><operator>(</operator><name>address</name> <operator>&gt;=</operator> <name>baseAddress</name><operator>)</operator> <operator>&amp;</operator> <operator>(</operator><name>address</name> <operator>+</operator> <name>size</name> <operator>&lt;=</operator> <name>baseAddress</name> <operator>+</operator> <call><name>capacity</name><argument_list>()</argument_list></call><operator>)</operator></expr>;</assert>
+
+            <decl_stmt><decl><type><name>int</name></type> <name>position</name> <init>= <expr><operator>(</operator><operator>(</operator><name>int</name><operator>)</operator><operator>(</operator><name>address</name> <operator>-</operator> <name>baseAddress</name><operator>)</operator><operator>)</operator> <operator>&gt;&gt;</operator> <name>shift</name></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>int</name></type> <name>slotCount</name> <init>= <expr><name>size</name> <operator>&gt;&gt;</operator> <name>shift</name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>slotBits</name> <init>= <expr><literal type="number">0xffffffffffffffffL</literal> <operator>&gt;&gt;&gt;</operator> <operator>(</operator><literal type="number">64</literal> <operator>-</operator> <name>slotCount</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>shiftedSlotBits</name> <init>= <expr><operator>(</operator><name>slotBits</name> <operator>&lt;&lt;</operator> <name>position</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>long</name></type> <name>next</name></decl>;</decl_stmt>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>long</name></type> <name>cur</name> <init>= <expr><name>freeSlots</name></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><name>next</name> <operator>=</operator> <name>cur</name> <operator>|</operator> <name>shiftedSlotBits</name></expr>;</expr_stmt>
+                <assert>assert <expr><name>next</name> <operator>==</operator> <operator>(</operator><name>cur</name> <operator>^</operator> <name>shiftedSlotBits</name><operator>)</operator></expr>;</assert> <comment type="line">// ensure no double free</comment>
+                <if_stmt><if>if <condition>(<expr><name>tryRelease</name> <operator>&amp;&amp;</operator> <operator>(</operator><name>next</name> <operator>==</operator> <operator>-</operator><literal type="number">1L</literal><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>next</name> <operator>=</operator> <literal type="number">0L</literal></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>freeSlotsUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>cur</name></expr></argument>, <argument><expr><name>next</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><name>next</name></expr>;</return></block_content></block></if></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <function><type><name>void</name></type> <name>freeUnusedPortion</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><call><name>roundUp</name><argument_list>(<argument><expr><call><name><name>buffer</name><operator>.</operator><name>limit</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>capacity</name> <init>= <expr><call><name>roundUp</name><argument_list>(<argument><expr><call><name><name>buffer</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>size</name> <operator>==</operator> <name>capacity</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>long</name></type> <name>address</name> <init>= <expr><call><name><name>MemoryUtil</name><operator>.</operator><name>getAddress</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <assert>assert <expr><operator>(</operator><name>address</name> <operator>&gt;=</operator> <name>baseAddress</name><operator>)</operator> <operator>&amp;</operator> <operator>(</operator><name>address</name> <operator>+</operator> <name>size</name> <operator>&lt;=</operator> <name>baseAddress</name> <operator>+</operator> <call><name>capacity</name><argument_list>()</argument_list></call><operator>)</operator></expr>;</assert>
+
+            <comment type="line">// free any spare slots above the size we are using</comment>
+            <decl_stmt><decl><type><name>int</name></type> <name>position</name> <init>= <expr><operator>(</operator><operator>(</operator><name>int</name><operator>)</operator><operator>(</operator><name>address</name> <operator>+</operator> <name>size</name> <operator>-</operator> <name>baseAddress</name><operator>)</operator><operator>)</operator> <operator>&gt;&gt;</operator> <name>shift</name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>slotCount</name> <init>= <expr><operator>(</operator><name>capacity</name> <operator>-</operator> <name>size</name><operator>)</operator> <operator>&gt;&gt;</operator> <name>shift</name></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>long</name></type> <name>slotBits</name> <init>= <expr><literal type="number">0xffffffffffffffffL</literal> <operator>&gt;&gt;&gt;</operator> <operator>(</operator><literal type="number">64</literal> <operator>-</operator> <name>slotCount</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>shiftedSlotBits</name> <init>= <expr><operator>(</operator><name>slotBits</name> <operator>&lt;&lt;</operator> <name>position</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>long</name></type> <name>next</name></decl>;</decl_stmt>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>long</name></type> <name>cur</name> <init>= <expr><name>freeSlots</name></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><name>next</name> <operator>=</operator> <name>cur</name> <operator>|</operator> <name>shiftedSlotBits</name></expr>;</expr_stmt>
+                <assert>assert <expr><name>next</name> <operator>==</operator> <operator>(</operator><name>cur</name> <operator>^</operator> <name>shiftedSlotBits</name><operator>)</operator></expr>;</assert> <comment type="line">// ensure no double free</comment>
+                <if_stmt><if>if <condition>(<expr><call><name><name>freeSlotsUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>cur</name></expr></argument>, <argument><expr><name>next</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <break>break;</break></block_content></block></if></if_stmt>
+            </block_content>}</block></while>
+            <expr_stmt><expr><call><name><name>MemoryUtil</name><operator>.</operator><name>setByteBufferCapacity</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"[slab %s, slots bitmap %s, capacity %d, free %d]"</literal></expr></argument>, <argument><expr><name>slab</name></expr></argument>, <argument><expr><call><name><name>Long</name><operator>.</operator><name>toBinaryString</name></name><argument_list>(<argument><expr><name>freeSlots</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name>capacity</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>free</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <type><specifier>public</specifier> <name>LocalPool</name></type> <name>owner</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name><name>this</name><operator>.</operator><name>owner</name></name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <type><name>void</name></type> <name>unsafeFree</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Chunk</name></type> <name>parent</name> <init>= <expr><call><name>getParentChunk</name><argument_list>(<argument><expr><name>slab</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>parent</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>parent</name><operator>.</operator><name>free</name></name><argument_list>(<argument><expr><name>slab</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>FileUtils</name><operator>.</operator><name>clean</name></name><argument_list>(<argument><expr><name>slab</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>static</specifier> <name>void</name></type> <name>unsafeRecycle</name><parameter_list>(<parameter><decl><type><name>Chunk</name></type> <name>chunk</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>chunk</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name><name>chunk</name><operator>.</operator><name>owner</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                <expr_stmt><expr><name><name>chunk</name><operator>.</operator><name>freeSlots</name></name> <operator>=</operator> <literal type="number">0L</literal></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>chunk</name><operator>.</operator><name>recycle</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><name>Status</name></type> <name>status</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>status</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>boolean</name></type> <name>setStatus</name><parameter_list>(<parameter><decl><type><name>Status</name></type> <name>current</name></decl></parameter>, <parameter><decl><type><name>Status</name></type> <name>update</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>statusUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>current</name></expr></argument>, <argument><expr><name>update</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>boolean</name></type> <name>setInUse</name><parameter_list>(<parameter><decl><type><name>Status</name></type> <name>prev</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>setStatus</name><argument_list>(<argument><expr><name>prev</name></expr></argument>, <argument><expr><name><name>Status</name><operator>.</operator><name>IN_USE</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>boolean</name></type> <name>setEvicted</name><parameter_list>(<parameter><decl><type><name>Status</name></type> <name>prev</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>setStatus</name><argument_list>(<argument><expr><name>prev</name></expr></argument>, <argument><expr><name><name>Status</name><operator>.</operator><name>EVICTED</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>int</name></type> <name>roundUp</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>size</name> <operator>&lt;=</operator> <name>TINY_ALLOCATION_LIMIT</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>roundUp</name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name>TINY_ALLOCATION_UNIT</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+        <return>return <expr><call><name>roundUp</name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name>NORMAL_ALLOCATION_UNIT</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>int</name></type> <name>roundUp</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>unit</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>mask</name> <init>= <expr><name>unit</name> <operator>-</operator> <literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>(</operator><name>size</name> <operator>+</operator> <name>mask</name><operator>)</operator> <operator>&amp;</operator> <operator>~</operator><name>mask</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>shutdownLocalCleaner</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>timeout</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>unit</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>InterruptedException</name></expr></argument>, <argument><expr><name>TimeoutException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>shutdownNow</name><argument_list>(<argument><expr><call><name>of</name><argument_list>(<argument><expr><name>localPoolCleaner</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>awaitTermination</name><argument_list>(<argument><expr><name>timeout</name></expr></argument>, <argument><expr><name>unit</name></expr></argument>, <argument><expr><call><name>of</name><argument_list>(<argument><expr><name>localPoolCleaner</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>BufferPoolMetrics</name></type> <name>metrics</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>metrics</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/** This is not thread safe and should only be used for unit testing. */</comment>
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>unsafeReset</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>overflowMemoryUsage</name><operator>.</operator><name>reset</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>memoryInUse</name><operator>.</operator><name>reset</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>memoryAllocated</name><operator>.</operator><name>set</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>localPool</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>unsafeRecycle</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>globalPool</name><operator>.</operator><name>unsafeFree</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><name>Chunk</name></type> <name>unsafeCurrentChunk</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>localPool</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call><operator>.</operator><name><name>chunks</name><operator>.</operator><name>chunk0</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><name>int</name></type> <name>unsafeNumChunks</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>LocalPool</name></type> <name>pool</name> <init>= <expr><call><name><name>localPool</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return   <expr><operator>(</operator><ternary><condition><expr><name><name>pool</name><operator>.</operator><name>chunks</name><operator>.</operator><name>chunk0</name></name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="number">1</literal></expr> </then><else>: <expr><literal type="number">0</literal></expr></else></ternary><operator>)</operator>
+                 <operator>+</operator> <operator>(</operator><ternary><condition><expr><name><name>pool</name><operator>.</operator><name>chunks</name><operator>.</operator><name>chunk1</name></name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="number">1</literal></expr> </then><else>: <expr><literal type="number">0</literal></expr></else></ternary><operator>)</operator>
+                 <operator>+</operator> <operator>(</operator><ternary><condition><expr><name><name>pool</name><operator>.</operator><name>chunks</name><operator>.</operator><name>chunk2</name></name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="number">1</literal></expr> </then><else>: <expr><literal type="number">0</literal></expr></else></ternary><operator>)</operator></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

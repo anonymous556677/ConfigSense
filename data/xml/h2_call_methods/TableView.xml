@@ -1,0 +1,825 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/h2database/h2/src/main/org/h2/table/TableView.java"><comment type="block">/*
+ * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Initial Developer: H2 Group
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>ArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Arrays</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>HashSet</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>api</name><operator>.</operator><name>ErrorCode</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>command</name><operator>.</operator><name>Prepared</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>command</name><operator>.</operator><name>ddl</name><operator>.</operator><name>CreateTableData</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>command</name><operator>.</operator><name>query</name><operator>.</operator><name>AllColumnsForPlan</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>command</name><operator>.</operator><name>query</name><operator>.</operator><name>Query</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>Database</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>DbObject</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>SessionLocal</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>User</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>Expression</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>ExpressionVisitor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>Parameter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>index</name><operator>.</operator><name>Index</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>index</name><operator>.</operator><name>IndexType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>index</name><operator>.</operator><name>ViewIndex</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>message</name><operator>.</operator><name>DbException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>result</name><operator>.</operator><name>ResultInterface</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>result</name><operator>.</operator><name>Row</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>result</name><operator>.</operator><name>SortOrder</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>schema</name><operator>.</operator><name>Schema</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>StringUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>Utils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>TypeInfo</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>Value</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A view is a virtual table that is defined by a query.
+ * @author Thomas Mueller
+ * @author Nicolas Fortin, Atelier SIG, IRSTV FR CNRS 24888
+ */</comment>
+<class><specifier>public</specifier> class <name>TableView</name> <super_list><extends>extends <super><name>Table</name></super></extends></super_list> <block>{
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>ROW_COUNT_APPROXIMATION</name> <init>= <expr><literal type="number">100</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>String</name></type> <name>querySQL</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Table</name></argument>&gt;</argument_list></name></type> <name>tables</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>Column</name><index>[]</index></name></type> <name>columnTemplates</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Query</name></type> <name>viewQuery</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>ViewIndex</name></type> <name>index</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>allowRecursive</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>DbException</name></type> <name>createException</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>lastModificationCheck</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>maxDataModificationId</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>User</name></type> <name>owner</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Query</name></type> <name>topQuery</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>ResultInterface</name></type> <name>recursiveResult</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>isRecursiveQueryDetected</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>isTableExpression</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>TableView</name><parameter_list>(<parameter><decl><type><name>Schema</name></type> <name>schema</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>querySQL</name></decl></parameter>,
+            <parameter><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Parameter</name></argument>&gt;</argument_list></name></type> <name>params</name></decl></parameter>, <parameter><decl><type><name><name>Column</name><index>[]</index></name></type> <name>columnTemplates</name></decl></parameter>, <parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>,
+            <parameter><decl><type><name>boolean</name></type> <name>allowRecursive</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>literalsChecked</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isTableExpression</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isTemporary</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>schema</name></expr></argument>, <argument><expr><name>id</name></expr></argument>, <argument><expr><name>name</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>setTemporary</name><argument_list>(<argument><expr><name>isTemporary</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>init</name><argument_list>(<argument><expr><name>querySQL</name></expr></argument>, <argument><expr><name>params</name></expr></argument>, <argument><expr><name>columnTemplates</name></expr></argument>, <argument><expr><name>session</name></expr></argument>, <argument><expr><name>allowRecursive</name></expr></argument>, <argument><expr><name>literalsChecked</name></expr></argument>, <argument><expr><name>isTableExpression</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Try to replace the SQL statement of the view and re-compile this and all
+     * dependent views.
+     *
+     * @param querySQL the SQL statement
+     * @param newColumnTemplates the columns
+     * @param session the session
+     * @param recursive whether this is a recursive view
+     * @param force if errors should be ignored
+     * @param literalsChecked if literals have been checked
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>replace</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>querySQL</name></decl></parameter>,  <parameter><decl><type><name><name>Column</name><index>[]</index></name></type> <name>newColumnTemplates</name></decl></parameter>, <parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>,
+            <parameter><decl><type><name>boolean</name></type> <name>recursive</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>force</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>literalsChecked</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>oldQuerySQL</name> <init>= <expr><name><name>this</name><operator>.</operator><name>querySQL</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Column</name><index>[]</index></name></type> <name>oldColumnTemplates</name> <init>= <expr><name><name>this</name><operator>.</operator><name>columnTemplates</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>oldRecursive</name> <init>= <expr><name><name>this</name><operator>.</operator><name>allowRecursive</name></name></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>init</name><argument_list>(<argument><expr><name>querySQL</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>newColumnTemplates</name></expr></argument>, <argument><expr><name>session</name></expr></argument>, <argument><expr><name>recursive</name></expr></argument>, <argument><expr><name>literalsChecked</name></expr></argument>, <argument><expr><name>isTableExpression</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>DbException</name></type> <name>e</name> <init>= <expr><call><name>recompile</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>force</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>e</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name>init</name><argument_list>(<argument><expr><name>oldQuerySQL</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>oldColumnTemplates</name></expr></argument>, <argument><expr><name>session</name></expr></argument>, <argument><expr><name>oldRecursive</name></expr></argument>,
+                    <argument><expr><name>literalsChecked</name></expr></argument>, <argument><expr><name>isTableExpression</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>recompile</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <throw>throw <expr><name>e</name></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>init</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>querySQL</name></decl></parameter>, <parameter><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Parameter</name></argument>&gt;</argument_list></name></type> <name>params</name></decl></parameter>,
+            <parameter><decl><type><name><name>Column</name><index>[]</index></name></type> <name>columnTemplates</name></decl></parameter>, <parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>allowRecursive</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>literalsChecked</name></decl></parameter>,
+            <parameter><decl><type><name>boolean</name></type> <name>isTableExpression</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>querySQL</name></name> <operator>=</operator> <name>querySQL</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columnTemplates</name></name> <operator>=</operator> <name>columnTemplates</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>allowRecursive</name></name> <operator>=</operator> <name>allowRecursive</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>isRecursiveQueryDetected</name></name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>isTableExpression</name></name> <operator>=</operator> <name>isTableExpression</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name>index</name> <operator>=</operator> <operator>new</operator> <call><name>ViewIndex</name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>querySQL</name></expr></argument>, <argument><expr><name>params</name></expr></argument>, <argument><expr><name>allowRecursive</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>initColumnsAndTables</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>literalsChecked</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>Query</name></type> <name>compileViewQuery</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>sql</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>literalsChecked</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>Prepared</name></type> <name>p</name></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>setParsingCreateView</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <try>try <block>{<block_content>
+            <expr_stmt><expr><name>p</name> <operator>=</operator> <call><name><name>session</name><operator>.</operator><name>prepare</name></name><argument_list>(<argument><expr><name>sql</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><name>literalsChecked</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block> <finally>finally <block>{<block_content>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>setParsingCreateView</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></finally></try>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><operator>(</operator><name>p</name> <operator>instanceof</operator> <name>Query</name><operator>)</operator></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getSyntaxError</name></name><argument_list>(<argument><expr><name>sql</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>Query</name></type> <name>q</name> <init>= <expr><operator>(</operator><name>Query</name><operator>)</operator> <name>p</name></expr></init></decl>;</decl_stmt>
+        <comment type="line">// only potentially recursive cte queries need to be non-lazy</comment>
+        <if_stmt><if>if <condition>(<expr><name>isTableExpression</name> <operator>&amp;&amp;</operator> <name>allowRecursive</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>q</name><operator>.</operator><name>setNeverLazy</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>q</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Re-compile the view query and all views that depend on this object.
+     *
+     * @param session the session
+     * @param force if exceptions should be ignored
+     * @param clearIndexCache if we need to clear view index cache
+     * @return the exception if re-compiling this or any dependent view failed
+     *         (only when force is disabled)
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>DbException</name></type> <name>recompile</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>force</name></decl></parameter>,
+            <parameter><decl><type><name>boolean</name></type> <name>clearIndexCache</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <try>try <block>{<block_content>
+            <expr_stmt><expr><call><name>compileViewQuery</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>querySQL</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>DbException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><name>force</name></expr>)</condition> <block>{<block_content>
+                <return>return <expr><name>e</name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></catch></try>
+        <decl_stmt><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>TableView</name></argument>&gt;</argument_list></name></type> <name>dependentViews</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name>getDependentViews</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>initColumnsAndTables</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <for>for <control>(<init><decl><type><name>TableView</name></type> <name>v</name> <range>: <expr><name>dependentViews</name></expr></range></decl></init>)</control> <block>{<block_content>
+            <decl_stmt><decl><type><name>DbException</name></type> <name>e</name> <init>= <expr><call><name><name>v</name><operator>.</operator><name>recompile</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>force</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>e</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><name>force</name></expr>)</condition> <block>{<block_content>
+                <return>return <expr><name>e</name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+        <if_stmt><if>if <condition>(<expr><name>clearIndexCache</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name>clearIndexCaches</name><argument_list>(<argument><expr><name>database</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><ternary><condition><expr><name>force</name></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><name>createException</name></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>initColumnsAndTables</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>literalsChecked</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Column</name><index>[]</index></name></type> <name>cols</name></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>removeCurrentViewFromOtherTables</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>setTableExpression</name><argument_list>(<argument><expr><name>isTableExpression</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <try>try <block>{<block_content>
+            <decl_stmt><decl><type><name>Query</name></type> <name>compiledQuery</name> <init>= <expr><call><name>compileViewQuery</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>querySQL</name></expr></argument>, <argument><expr><name>literalsChecked</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>querySQL</name></name> <operator>=</operator> <call><name><name>compiledQuery</name><operator>.</operator><name>getPlanSQL</name></name><argument_list>(<argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>tables</name> <operator>=</operator> <operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>compiledQuery</name><operator>.</operator><name>getTables</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Expression</name></argument>&gt;</argument_list></name></type> <name>expressions</name> <init>= <expr><call><name><name>compiledQuery</name><operator>.</operator><name>getExpressions</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>count</name> <init>= <expr><call><name><name>compiledQuery</name><operator>.</operator><name>getColumnCount</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Column</name></argument>&gt;</argument_list></name></type> <name>list</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>count</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>count</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+                <decl_stmt><decl><type><name>Expression</name></type> <name>expr</name> <init>= <expr><call><name><name>expressions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>String</name></type> <name>name</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>TypeInfo</name></type> <name>type</name> <init>= <expr><name><name>TypeInfo</name><operator>.</operator><name>TYPE_UNKNOWN</name></name></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>columnTemplates</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name><name>columnTemplates</name><operator>.</operator><name>length</name></name> <operator>&gt;</operator> <name>i</name></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>name</name> <operator>=</operator> <name><name>columnTemplates</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><call><name>getName</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>type</name> <operator>=</operator> <name><name>columnTemplates</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><call><name>getType</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><name>name</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>name</name> <operator>=</operator> <call><name><name>expr</name><operator>.</operator><name>getColumnNameForView</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>i</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>type</name><operator>.</operator><name>getValueType</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Value</name><operator>.</operator><name>UNKNOWN</name></name></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>type</name> <operator>=</operator> <call><name><name>expr</name><operator>.</operator><name>getType</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>list</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>Column</name><argument_list>(<argument><expr><name>name</name></expr></argument>, <argument><expr><name>type</name></expr></argument>, <argument><expr><name>this</name></expr></argument>, <argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <expr_stmt><expr><name>cols</name> <operator>=</operator> <call><name><name>list</name><operator>.</operator><name>toArray</name></name><argument_list>(<argument><expr><operator>new</operator> <name><name>Column</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>createException</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><name>viewQuery</name> <operator>=</operator> <name>compiledQuery</name></expr>;</expr_stmt>
+        </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>DbException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>e</name><operator>.</operator><name>getErrorCode</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>ErrorCode</name><operator>.</operator><name>COLUMN_ALIAS_IS_NOT_SPECIFIED_1</name></name></expr>)</condition> <block>{<block_content>
+                <throw>throw <expr><name>e</name></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>e</name><operator>.</operator><name>addSQL</name></name><argument_list>(<argument><expr><call><name>getCreateSQL</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>createException</name> <operator>=</operator> <name>e</name></expr>;</expr_stmt>
+            <comment type="line">// If it can't be compiled, then it's a 'zero column table'</comment>
+            <comment type="line">// this avoids problems when creating the view when opening the</comment>
+            <comment type="line">// database.</comment>
+            <comment type="line">// If it can not be compiled - it could also be a recursive common</comment>
+            <comment type="line">// table expression query.</comment>
+            <if_stmt><if>if <condition>(<expr><call><name>isRecursiveQueryExceptionDetected</name><argument_list>(<argument><expr><name>createException</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name><name>this</name><operator>.</operator><name>isRecursiveQueryDetected</name></name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>tables</name> <operator>=</operator> <call><name><name>Utils</name><operator>.</operator><name>newSmallArrayList</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>cols</name> <operator>=</operator> <operator>new</operator> <name><name>Column</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>allowRecursive</name> <operator>&amp;&amp;</operator> <name>columnTemplates</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>cols</name> <operator>=</operator> <operator>new</operator> <name><name>Column</name><index>[<expr><name><name>columnTemplates</name><operator>.</operator><name>length</name></name></expr>]</index></name></expr>;</expr_stmt>
+                <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>columnTemplates</name><operator>.</operator><name>length</name></name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+                    <expr_stmt><expr><name><name>cols</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <name><name>columnTemplates</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><call><name>getClone</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></for>
+                <expr_stmt><expr><call><name><name>index</name><operator>.</operator><name>setRecursive</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>createException</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></catch></try>
+        <expr_stmt><expr><call><name>setColumns</name><argument_list>(<argument><expr><name>cols</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name>getId</name><argument_list>()</argument_list></call> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name>addDependentViewToTables</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>isView</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check if this view is currently invalid.
+     *
+     * @return true if it is
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isInvalid</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>createException</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>PlanItem</name></type> <name>getBestPlanItem</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name><name>int</name><index>[]</index></name></type> <name>masks</name></decl></parameter>,
+            <parameter><decl><type><name><name>TableFilter</name><index>[]</index></name></type> <name>filters</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>filter</name></decl></parameter>, <parameter><decl><type><name>SortOrder</name></type> <name>sortOrder</name></decl></parameter>,
+            <parameter><decl><type><name>AllColumnsForPlan</name></type> <name>allColumnsSet</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>CacheKey</name></type> <name>cacheKey</name> <init>= <expr><operator>new</operator> <call><name>CacheKey</name><argument_list>(<argument><expr><name>masks</name></expr></argument>, <argument><expr><name>this</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>Object</name></argument>, <argument><name>ViewIndex</name></argument>&gt;</argument_list></name></type> <name>indexCache</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>getViewIndexCache</name></name><argument_list>(<argument><expr><name>topQuery</name> <operator>!=</operator> <literal type="null">null</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ViewIndex</name></type> <name>i</name> <init>= <expr><call><name><name>indexCache</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>cacheKey</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>i</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>i</name><operator>.</operator><name>isExpired</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>i</name> <operator>=</operator> <operator>new</operator> <call><name>ViewIndex</name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>index</name></expr></argument>, <argument><expr><name>session</name></expr></argument>, <argument><expr><name>masks</name></expr></argument>, <argument><expr><name>filters</name></expr></argument>, <argument><expr><name>filter</name></expr></argument>, <argument><expr><name>sortOrder</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>indexCache</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>cacheKey</name></expr></argument>, <argument><expr><name>i</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>PlanItem</name></type> <name>item</name> <init>= <expr><operator>new</operator> <call><name>PlanItem</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name><name>item</name><operator>.</operator><name>cost</name></name> <operator>=</operator> <call><name><name>i</name><operator>.</operator><name>getCost</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>masks</name></expr></argument>, <argument><expr><name>filters</name></expr></argument>, <argument><expr><name>filter</name></expr></argument>, <argument><expr><name>sortOrder</name></expr></argument>, <argument><expr><name>allColumnsSet</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>item</name><operator>.</operator><name>setIndex</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>item</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>isQueryComparable</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>super</name><operator>.</operator><name>isQueryComparable</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <for>for <control>(<init><decl><type><name>Table</name></type> <name>t</name> <range>: <expr><name>tables</name></expr></range></decl></init>)</control> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>t</name><operator>.</operator><name>isQueryComparable</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+        <if_stmt><if>if <condition>(<expr><name>topQuery</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator>
+                <operator>!</operator><call><name><name>topQuery</name><operator>.</operator><name>isEverything</name></name><argument_list>(<argument><expr><name><name>ExpressionVisitor</name><operator>.</operator><name>QUERY_COMPARABLE_VISITOR</name></name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Query</name></type> <name>getTopQuery</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>topQuery</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>getDropSQL</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getSQL</name><argument_list>(<argument><expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>(<argument><expr><literal type="string">"DROP VIEW IF EXISTS "</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">" CASCADE"</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>getCreateSQLForCopy</name><parameter_list>(<parameter><decl><type><name>Table</name></type> <name>table</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>quotedName</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getCreateSQL</name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><name>quotedName</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>getCreateSQL</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getCreateSQL</name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Generate "CREATE" SQL statement for the view.
+     *
+     * @param orReplace if true, then include the OR REPLACE clause
+     * @param force if true, then include the FORCE clause
+     * @return the SQL statement
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getCreateSQL</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>orReplace</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>force</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getCreateSQL</name><argument_list>(<argument><expr><name>orReplace</name></expr></argument>, <argument><expr><name>force</name></expr></argument>, <argument><expr><call><name>getSQL</name><argument_list>(<argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>String</name></type> <name>getCreateSQL</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>orReplace</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>force</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>quotedName</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>builder</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>(<argument><expr><literal type="string">"CREATE "</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>orReplace</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"OR REPLACE "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>force</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"FORCE "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"VIEW "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>isTableExpression</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"TABLE_EXPRESSION "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name>quotedName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>comment</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" COMMENT "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>StringUtils</name><operator>.</operator><name>quoteStringSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>comment</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>columns</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name><name>columns</name><operator>.</operator><name>length</name></name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">'('</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>Column</name><operator>.</operator><name>writeColumns</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">')'</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>columnTemplates</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">'('</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>Column</name><operator>.</operator><name>writeColumns</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>columnTemplates</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">')'</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" AS\n"</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>querySQL</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <comment type="line">// nothing to do</comment>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Index</name></type> <name>addIndex</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>indexName</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>indexId</name></decl></parameter>, <parameter><decl><type><name><name>IndexColumn</name><index>[]</index></name></type> <name>cols</name></decl></parameter>,
+            <parameter><decl><type><name>int</name></type> <name>uniqueColumnCount</name></decl></parameter>, <parameter><decl><type><name>IndexType</name></type> <name>indexType</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>create</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>indexComment</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getUnsupportedException</name></name><argument_list>(<argument><expr><literal type="string">"VIEW"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>isInsertable</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>removeRow</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getUnsupportedException</name></name><argument_list>(<argument><expr><literal type="string">"VIEW"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>addRow</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getUnsupportedException</name></name><argument_list>(<argument><expr><literal type="string">"VIEW"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>checkSupportAlter</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getUnsupportedException</name></name><argument_list>(<argument><expr><literal type="string">"VIEW"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>long</name></type> <name>truncate</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getUnsupportedException</name></name><argument_list>(<argument><expr><literal type="string">"VIEW"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>long</name></type> <name>getRowCount</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getInternalError</name></name><argument_list>(<argument><expr><call><name>toString</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>canGetRowCount</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <comment type="line">// TODO view: could get the row count, but not that easy</comment>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>canDrop</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>TableType</name></type> <name>getTableType</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name><name>TableType</name><operator>.</operator><name>VIEW</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>removeChildrenAndResources</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>removeCurrentViewFromOtherTables</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>super</name><operator>.</operator><name>removeChildrenAndResources</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>database</name><operator>.</operator><name>removeMeta</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><call><name>getId</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>querySQL</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>index</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>clearIndexCaches</name><argument_list>(<argument><expr><name>database</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>invalidate</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Clear the cached indexes for all sessions.
+     *
+     * @param database the database
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>clearIndexCaches</name><parameter_list>(<parameter><decl><type><name>Database</name></type> <name>database</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>SessionLocal</name></type> <name>s</name> <range>: <expr><call><name><name>database</name><operator>.</operator><name>getSessions</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr></range></decl></init>)</control> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>s</name><operator>.</operator><name>clearViewIndexCache</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>StringBuilder</name></type> <name>getSQL</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>sqlFlags</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name>isTemporary</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <name>querySQL</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"(\n"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><call><name><name>StringUtils</name><operator>.</operator><name>indent</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>querySQL</name></expr></argument>, <argument><expr><literal type="number">4</literal></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="char">')'</literal></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name><name>super</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getQuery</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>querySQL</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Index</name></type> <name>getScanIndex</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getBestPlanItem</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><operator>-</operator><literal type="number">1</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>getIndex</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Index</name></type> <name>getScanIndex</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name><name>int</name><index>[]</index></name></type> <name>masks</name></decl></parameter>,
+            <parameter><decl><type><name><name>TableFilter</name><index>[]</index></name></type> <name>filters</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>filter</name></decl></parameter>, <parameter><decl><type><name>SortOrder</name></type> <name>sortOrder</name></decl></parameter>,
+            <parameter><decl><type><name>AllColumnsForPlan</name></type> <name>allColumnsSet</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>createException</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>msg</name> <init>= <expr><call><name><name>createException</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>VIEW_IS_INVALID_2</name></name></expr></argument>, <argument><expr><name>createException</name></expr></argument>, <argument><expr><call><name>getTraceSQL</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>msg</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>PlanItem</name></type> <name>item</name> <init>= <expr><call><name>getBestPlanItem</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>masks</name></expr></argument>, <argument><expr><name>filters</name></expr></argument>, <argument><expr><name>filter</name></expr></argument>, <argument><expr><name>sortOrder</name></expr></argument>, <argument><expr><name>allColumnsSet</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>item</name><operator>.</operator><name>getIndex</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>canReference</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Index</name></argument>&gt;</argument_list></name></type> <name>getIndexes</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>long</name></type> <name>getMaxDataModificationId</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>createException</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <return>return <expr><name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>viewQuery</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <return>return <expr><name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <comment type="line">// if nothing was modified in the database since the last check, and the</comment>
+        <comment type="line">// last is known, then we don't need to check again</comment>
+        <comment type="line">// this speeds up nested views</comment>
+        <decl_stmt><decl><type><name>long</name></type> <name>dbMod</name> <init>= <expr><call><name><name>database</name><operator>.</operator><name>getModificationDataId</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>dbMod</name> <operator>&gt;</operator> <name>lastModificationCheck</name> <operator>&amp;&amp;</operator> <name>maxDataModificationId</name> <operator>&lt;=</operator> <name>dbMod</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>maxDataModificationId</name> <operator>=</operator> <call><name><name>viewQuery</name><operator>.</operator><name>getMaxDataModificationId</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>lastModificationCheck</name> <operator>=</operator> <name>dbMod</name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>maxDataModificationId</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>removeCurrentViewFromOtherTables</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>tables</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>Table</name></type> <name>t</name> <range>: <expr><name>tables</name></expr></range></decl></init>)</control> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>t</name><operator>.</operator><name>removeDependentView</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <expr_stmt><expr><call><name><name>tables</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>addDependentViewToTables</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>Table</name></type> <name>t</name> <range>: <expr><name>tables</name></expr></range></decl></init>)</control> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>t</name><operator>.</operator><name>addDependentView</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>setOwner</name><parameter_list>(<parameter><decl><type><name>User</name></type> <name>owner</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>owner</name></name> <operator>=</operator> <name>owner</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>User</name></type> <name>getOwner</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>owner</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create a temporary view out of the given query.
+     *
+     * @param session the session
+     * @param owner the owner of the query
+     * @param name the view name
+     * @param columnTemplates column templates, or {@code null}
+     * @param query the query
+     * @param topQuery the top level query
+     * @return the view table
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>TableView</name></type> <name>createTempView</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>User</name></type> <name>owner</name></decl></parameter>,
+            <parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>, <parameter><decl><type><name><name>Column</name><index>[]</index></name></type> <name>columnTemplates</name></decl></parameter>, <parameter><decl><type><name>Query</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>Query</name></type> <name>topQuery</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>Schema</name></type> <name>mainSchema</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>getDatabase</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getMainSchema</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>String</name></type> <name>querySQL</name> <init>= <expr><call><name><name>query</name><operator>.</operator><name>getPlanSQL</name></name><argument_list>(<argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>TableView</name></type> <name>v</name> <init>= <expr><operator>new</operator> <call><name>TableView</name><argument_list>(<argument><expr><name>mainSchema</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>name</name></expr></argument>,
+                <argument><expr><name>querySQL</name></expr></argument>, <argument><expr><call><name><name>query</name><operator>.</operator><name>getParameters</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>columnTemplates</name></expr></argument>, <argument><expr><name>session</name></expr></argument>,
+                <argument><expr><literal type="boolean">false</literal></expr></argument><comment type="block">/* allow recursive */</comment>, <argument><expr><literal type="boolean">true</literal></expr></argument> <comment type="block">/* literals have already been checked when parsing original query */</comment>,
+                <argument><expr><literal type="boolean">false</literal></expr></argument> <comment type="block">/* is table expression */</comment>, <argument><expr><literal type="boolean">true</literal></expr></argument><comment type="block">/*temporary*/</comment>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name><name>v</name><operator>.</operator><name>createException</name></name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><name><name>v</name><operator>.</operator><name>createException</name></name></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>v</name><operator>.</operator><name>setTopQuery</name></name><argument_list>(<argument><expr><name>topQuery</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>v</name><operator>.</operator><name>setOwner</name></name><argument_list>(<argument><expr><name>owner</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>v</name><operator>.</operator><name>setTemporary</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>v</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>setTopQuery</name><parameter_list>(<parameter><decl><type><name>Query</name></type> <name>topQuery</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>topQuery</name></name> <operator>=</operator> <name>topQuery</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>long</name></type> <name>getRowCountApproximation</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><name>ROW_COUNT_APPROXIMATION</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the index of the first parameter.
+     *
+     * @param additionalParameters additional parameters
+     * @return the index of the first parameter
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getParameterOffset</name><parameter_list>(<parameter><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Parameter</name></argument>&gt;</argument_list></name></type> <name>additionalParameters</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>result</name> <init>= <expr><ternary><condition><expr><name>topQuery</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><operator>-</operator><literal type="number">1</literal></expr> </then><else>: <expr><call><name>getMaxParameterIndex</name><argument_list>(<argument><expr><call><name><name>topQuery</name><operator>.</operator><name>getParameters</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>additionalParameters</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>result</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>result</name></expr></argument>, <argument><expr><call><name>getMaxParameterIndex</name><argument_list>(<argument><expr><name>additionalParameters</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>result</name> <operator>+</operator> <literal type="number">1</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>int</name></type> <name>getMaxParameterIndex</name><parameter_list>(<parameter><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Parameter</name></argument>&gt;</argument_list></name></type> <name>parameters</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>result</name> <init>= <expr><operator>-</operator><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>Parameter</name></type> <name>p</name> <range>: <expr><name>parameters</name></expr></range></decl></init>)</control> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>p</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>result</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>result</name></expr></argument>, <argument><expr><call><name><name>p</name><operator>.</operator><name>getIndex</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><name>result</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isRecursive</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>allowRecursive</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>isDeterministic</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>allowRecursive</name> <operator>||</operator> <name>viewQuery</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name><name>viewQuery</name><operator>.</operator><name>isEverything</name></name><argument_list>(<argument><expr><name><name>ExpressionVisitor</name><operator>.</operator><name>DETERMINISTIC_VISITOR</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setRecursiveResult</name><parameter_list>(<parameter><decl><type><name>ResultInterface</name></type> <name>value</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>recursiveResult</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>recursiveResult</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>recursiveResult</name></name> <operator>=</operator> <name>value</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ResultInterface</name></type> <name>getRecursiveResult</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>recursiveResult</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>addDependencies</name><parameter_list>(<parameter><decl><type><name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>DbObject</name></argument>&gt;</argument_list></name></type> <name>dependencies</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>super</name><operator>.</operator><name>addDependencies</name></name><argument_list>(<argument><expr><name>dependencies</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>tables</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>Table</name></type> <name>t</name> <range>: <expr><name>tables</name></expr></range></decl></init>)</control> <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name><name>TableType</name><operator>.</operator><name>VIEW</name></name> <operator>!=</operator> <call><name><name>t</name><operator>.</operator><name>getTableType</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>t</name><operator>.</operator><name>addDependencies</name></name><argument_list>(<argument><expr><name>dependencies</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * The key of the index cache for views.
+     */</comment>
+    <class><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>CacheKey</name> <block>{
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>int</name><index>[]</index></name></type> <name>masks</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>TableView</name></type> <name>view</name></decl>;</decl_stmt>
+
+        <constructor><name>CacheKey</name><parameter_list>(<parameter><decl><type><name><name>int</name><index>[]</index></name></type> <name>masks</name></decl></parameter>, <parameter><decl><type><name>TableView</name></type> <name>view</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>masks</name></name> <operator>=</operator> <name>masks</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>view</name></name> <operator>=</operator> <name>view</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>int</name></type> <name>hashCode</name><parameter_list>()</parameter_list> <block>{<block_content>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>prime</name> <init>= <expr><literal type="number">31</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>result</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>result</name> <operator>=</operator> <name>prime</name> <operator>*</operator> <name>result</name> <operator>+</operator> <call><name><name>Arrays</name><operator>.</operator><name>hashCode</name></name><argument_list>(<argument><expr><name>masks</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>result</name> <operator>=</operator> <name>prime</name> <operator>*</operator> <name>result</name> <operator>+</operator> <call><name><name>view</name><operator>.</operator><name>hashCode</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>result</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>obj</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>this</name> <operator>==</operator> <name>obj</name></expr>)</condition> <block>{<block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><name>obj</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name>getClass</name><argument_list>()</argument_list></call> <operator>!=</operator> <call><name><name>obj</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <decl_stmt><decl><type><name>CacheKey</name></type> <name>other</name> <init>= <expr><operator>(</operator><name>CacheKey</name><operator>)</operator> <name>obj</name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>view</name> <operator>!=</operator> <name><name>other</name><operator>.</operator><name>view</name></name></expr>)</condition> <block>{<block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <return>return <expr><call><name><name>Arrays</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>masks</name></expr></argument>, <argument><expr><name><name>other</name><operator>.</operator><name>masks</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * Was query recursion detected during compiling.
+     *
+     * @return true if yes
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isRecursiveQueryDetected</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>isRecursiveQueryDetected</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Does exception indicate query recursion?
+     */</comment>
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>isRecursiveQueryExceptionDetected</name><parameter_list>(<parameter><decl><type><name>DbException</name></type> <name>exception</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>exception</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>errorCode</name> <init>= <expr><call><name><name>exception</name><operator>.</operator><name>getErrorCode</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>errorCode</name> <operator>!=</operator> <name><name>ErrorCode</name><operator>.</operator><name>TABLE_OR_VIEW_NOT_FOUND_1</name></name> <operator>&amp;&amp;</operator>
+                <name>errorCode</name> <operator>!=</operator> <name><name>ErrorCode</name><operator>.</operator><name>TABLE_OR_VIEW_NOT_FOUND_DATABASE_EMPTY_1</name></name> <operator>&amp;&amp;</operator>
+                <name>errorCode</name> <operator>!=</operator> <name><name>ErrorCode</name><operator>.</operator><name>TABLE_OR_VIEW_NOT_FOUND_WITH_CANDIDATES_2</name></name></expr>
+        )</condition> <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name><name>exception</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>contains</name><argument_list>(<argument><expr><literal type="string">"\""</literal> <operator>+</operator> <call><name><name>this</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="string">"\""</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>Table</name></argument>&gt;</argument_list></name></type> <name>getTables</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>tables</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create a view.
+     *
+     * @param schema the schema
+     * @param id the view id
+     * @param name the view name
+     * @param querySQL the query
+     * @param parameters the parameters
+     * @param columnTemplates the columns
+     * @param session the session
+     * @param literalsChecked whether literals in the query are checked
+     * @param isTableExpression if this is a table expression
+     * @param isTemporary whether the view is persisted
+     * @param db the database
+     * @return the view
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>TableView</name></type> <name>createTableViewMaybeRecursive</name><parameter_list>(<parameter><decl><type><name>Schema</name></type> <name>schema</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>querySQL</name></decl></parameter>,
+            <parameter><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Parameter</name></argument>&gt;</argument_list></name></type> <name>parameters</name></decl></parameter>, <parameter><decl><type><name><name>Column</name><index>[]</index></name></type> <name>columnTemplates</name></decl></parameter>, <parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>,
+            <parameter><decl><type><name>boolean</name></type> <name>literalsChecked</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isTableExpression</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isTemporary</name></decl></parameter>, <parameter><decl><type><name>Database</name></type> <name>db</name></decl></parameter>)</parameter_list> <block>{<block_content>
+
+
+        <decl_stmt><decl><type><name>Table</name></type> <name>recursiveTable</name> <init>= <expr><call><name>createShadowTableForRecursiveTableExpression</name><argument_list>(<argument><expr><name>isTemporary</name></expr></argument>, <argument><expr><name>session</name></expr></argument>, <argument><expr><name>name</name></expr></argument>,
+                <argument><expr><name>schema</name></expr></argument>, <argument><expr><call><name><name>Arrays</name><operator>.</operator><name>asList</name></name><argument_list>(<argument><expr><name>columnTemplates</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>db</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>Column</name></argument>&gt;</argument_list></name></type> <name>columnTemplateList</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>String</name><index>[]</index></name></type> <name>querySQLOutput</name> <init>= <expr><operator>new</operator> <name><name>String</name><index>[<expr><literal type="number">1</literal></expr>]</index></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>columnNames</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>Column</name></type> <name>columnTemplate</name><range>: <expr><name>columnTemplates</name></expr></range></decl></init>)</control> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>columnNames</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>columnTemplate</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <try>try <block>{<block_content>
+            <decl_stmt><decl><type><name>Prepared</name></type> <name>withQuery</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>prepare</name></name><argument_list>(<argument><expr><name>querySQL</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><name>isTemporary</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>withQuery</name><operator>.</operator><name>setSession</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>columnTemplateList</name> <operator>=</operator> <call><name><name>TableView</name><operator>.</operator><name>createQueryColumnTemplateList</name></name><argument_list>(<argument><expr><call><name><name>columnNames</name><operator>.</operator><name>toArray</name></name><argument_list>(<argument><expr><operator>new</operator> <name><name>String</name><index>[<expr><literal type="number">1</literal></expr>]</index></name></expr></argument>)</argument_list></call></expr></argument>,
+                    <argument><expr><operator>(</operator><name>Query</name><operator>)</operator> <name>withQuery</name></expr></argument>, <argument><expr><name>querySQLOutput</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        </block_content>}</block> <finally>finally <block>{<block_content>
+            <expr_stmt><expr><call><name>destroyShadowTableForRecursiveExpression</name><argument_list>(<argument><expr><name>isTemporary</name></expr></argument>, <argument><expr><name>session</name></expr></argument>, <argument><expr><name>recursiveTable</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></finally></try>
+
+        <comment type="line">// build with recursion turned on</comment>
+        <decl_stmt><decl><type><name>TableView</name></type> <name>view</name> <init>= <expr><operator>new</operator> <call><name>TableView</name><argument_list>(<argument><expr><name>schema</name></expr></argument>, <argument><expr><name>id</name></expr></argument>, <argument><expr><name>name</name></expr></argument>, <argument><expr><name>querySQL</name></expr></argument>,
+                <argument><expr><name>parameters</name></expr></argument>, <argument><expr><call><name><name>columnTemplateList</name><operator>.</operator><name>toArray</name></name><argument_list>(<argument><expr><name>columnTemplates</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>session</name></expr></argument>,
+                <argument><expr><literal type="boolean">true</literal></expr></argument><comment type="block">/* try recursive */</comment>, <argument><expr><name>literalsChecked</name></expr></argument>, <argument><expr><name>isTableExpression</name></expr></argument>, <argument><expr><name>isTemporary</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// is recursion really detected ? if not - recreate it without recursion flag</comment>
+        <comment type="line">// and no recursive index</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>view</name><operator>.</operator><name>isRecursiveQueryDetected</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><name>isTemporary</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>db</name><operator>.</operator><name>addSchemaObject</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>view</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>view</name><operator>.</operator><name>lock</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name><name>Table</name><operator>.</operator><name>EXCLUSIVE_LOCK</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>getDatabase</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>removeSchemaObject</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>view</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <comment type="line">// during database startup - this method does not normally get called - and it</comment>
+                <comment type="line">// needs to be to correctly un-register the table which the table expression</comment>
+                <comment type="line">// uses...</comment>
+                <expr_stmt><expr><call><name><name>view</name><operator>.</operator><name>removeChildrenAndResources</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>removeLocalTempTable</name></name><argument_list>(<argument><expr><name>view</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+            <expr_stmt><expr><name>view</name> <operator>=</operator> <operator>new</operator> <call><name>TableView</name><argument_list>(<argument><expr><name>schema</name></expr></argument>, <argument><expr><name>id</name></expr></argument>, <argument><expr><name>name</name></expr></argument>, <argument><expr><name>querySQL</name></expr></argument>, <argument><expr><name>parameters</name></expr></argument>,
+                    <argument><expr><name>columnTemplates</name></expr></argument>, <argument><expr><name>session</name></expr></argument>,
+                    <argument><expr><literal type="boolean">false</literal></expr></argument><comment type="block">/* detected not recursive */</comment>, <argument><expr><name>literalsChecked</name></expr></argument>, <argument><expr><name>isTableExpression</name></expr></argument>, <argument><expr><name>isTemporary</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <return>return <expr><name>view</name></expr>;</return>
+    </block_content>}</block></function>
+
+
+    <comment type="block" format="javadoc">/**
+     * Creates a list of column templates from a query (usually from WITH query,
+     * but could be any query)
+     *
+     * @param cols - an optional list of column names (can be specified by WITH
+     *            clause overriding usual select names)
+     * @param theQuery - the query object we want the column list for
+     * @param querySQLOutput - array of length 1 to receive extra 'output' field
+     *            in addition to return value - containing the SQL query of the
+     *            Query object
+     * @return a list of column object returned by withQuery
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>Column</name></argument>&gt;</argument_list></name></type> <name>createQueryColumnTemplateList</name><parameter_list>(<parameter><decl><type><name><name>String</name><index>[]</index></name></type> <name>cols</name></decl></parameter>,
+            <parameter><decl><type><name>Query</name></type> <name>theQuery</name></decl></parameter>, <parameter><decl><type><name><name>String</name><index>[]</index></name></type> <name>querySQLOutput</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>Column</name></argument>&gt;</argument_list></name></type> <name>columnTemplateList</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>theQuery</name><operator>.</operator><name>prepare</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// String array of length 1 is to receive extra 'output' field in addition to</comment>
+        <comment type="line">// return value</comment>
+        <expr_stmt><expr><name><name>querySQLOutput</name><index>[<expr><literal type="number">0</literal></expr>]</index></name> <operator>=</operator> <call><name><name>StringUtils</name><operator>.</operator><name>cache</name></name><argument_list>(<argument><expr><call><name><name>theQuery</name><operator>.</operator><name>getPlanSQL</name></name><argument_list>(<argument><expr><name>ADD_PLAN_INFORMATION</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>SessionLocal</name></type> <name>session</name> <init>= <expr><call><name><name>theQuery</name><operator>.</operator><name>getSession</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Expression</name></argument>&gt;</argument_list></name></type> <name>withExpressions</name> <init>= <expr><call><name><name>theQuery</name><operator>.</operator><name>getExpressions</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>withExpressions</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><operator>++</operator><name>i</name></expr></incr>)</control> <block>{<block_content>
+            <decl_stmt><decl><type><name>Expression</name></type> <name>columnExp</name> <init>= <expr><call><name><name>withExpressions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <comment type="line">// use the passed in column name if supplied, otherwise use alias</comment>
+            <comment type="line">// (if found) otherwise use column name derived from column</comment>
+            <comment type="line">// expression</comment>
+            <decl_stmt><decl><type><name>String</name></type> <name>columnName</name> <init>= <expr><ternary><condition><expr><name>cols</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name><name>cols</name><operator>.</operator><name>length</name></name> <operator>&gt;</operator> <name>i</name></expr> ?</condition><then> <expr><name><name>cols</name><index>[<expr><name>i</name></expr>]</index></name></expr> </then><else>: <expr><call><name><name>columnExp</name><operator>.</operator><name>getColumnNameForView</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>columnTemplateList</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>Column</name><argument_list>(<argument><expr><name>columnName</name></expr></argument>, <argument><expr><call><name><name>columnExp</name><operator>.</operator><name>getType</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        </block_content>}</block></for>
+        <return>return <expr><name>columnTemplateList</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create a table for a recursive query.
+     *
+     * @param isTemporary whether the table is persisted
+     * @param targetSession the session
+     * @param cteViewName the name
+     * @param schema the schema
+     * @param columns the columns
+     * @param db the database
+     * @return the table
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>Table</name></type> <name>createShadowTableForRecursiveTableExpression</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>isTemporary</name></decl></parameter>, <parameter><decl><type><name>SessionLocal</name></type> <name>targetSession</name></decl></parameter>,
+            <parameter><decl><type><name>String</name></type> <name>cteViewName</name></decl></parameter>, <parameter><decl><type><name>Schema</name></type> <name>schema</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>Column</name></argument>&gt;</argument_list></name></type> <name>columns</name></decl></parameter>, <parameter><decl><type><name>Database</name></type> <name>db</name></decl></parameter>)</parameter_list> <block>{<block_content>
+
+        <comment type="line">// create table data object</comment>
+        <decl_stmt><decl><type><name>CreateTableData</name></type> <name>recursiveTableData</name> <init>= <expr><operator>new</operator> <call><name>CreateTableData</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name><name>recursiveTableData</name><operator>.</operator><name>id</name></name> <operator>=</operator> <call><name><name>db</name><operator>.</operator><name>allocateObjectId</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>recursiveTableData</name><operator>.</operator><name>columns</name></name> <operator>=</operator> <operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>columns</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>recursiveTableData</name><operator>.</operator><name>tableName</name></name> <operator>=</operator> <name>cteViewName</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>recursiveTableData</name><operator>.</operator><name>temporary</name></name> <operator>=</operator> <name>isTemporary</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>recursiveTableData</name><operator>.</operator><name>persistData</name></name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>recursiveTableData</name><operator>.</operator><name>persistIndexes</name></name> <operator>=</operator> <operator>!</operator><name>isTemporary</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>recursiveTableData</name><operator>.</operator><name>session</name></name> <operator>=</operator> <name>targetSession</name></expr>;</expr_stmt>
+
+        <comment type="line">// this gets a meta table lock that is not released</comment>
+        <decl_stmt><decl><type><name>Table</name></type> <name>recursiveTable</name> <init>= <expr><call><name><name>schema</name><operator>.</operator><name>createTable</name></name><argument_list>(<argument><expr><name>recursiveTableData</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>isTemporary</name></expr>)</condition> <block>{<block_content>
+            <comment type="line">// this unlock is to prevent lock leak from schema.createTable()</comment>
+            <expr_stmt><expr><call><name><name>db</name><operator>.</operator><name>unlockMeta</name></name><argument_list>(<argument><expr><name>targetSession</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <synchronized>synchronized <init>(<expr><name>targetSession</name></expr>)</init> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>db</name><operator>.</operator><name>addSchemaObject</name></name><argument_list>(<argument><expr><name>targetSession</name></expr></argument>, <argument><expr><name>recursiveTable</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></synchronized>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><call><name><name>targetSession</name><operator>.</operator><name>addLocalTempTable</name></name><argument_list>(<argument><expr><name>recursiveTable</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <return>return <expr><name>recursiveTable</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Remove a table for a recursive query.
+     *
+     * @param isTemporary whether the table is persisted
+     * @param targetSession the session
+     * @param recursiveTable the table
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>destroyShadowTableForRecursiveExpression</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>isTemporary</name></decl></parameter>, <parameter><decl><type><name>SessionLocal</name></type> <name>targetSession</name></decl></parameter>,
+            <parameter><decl><type><name>Table</name></type> <name>recursiveTable</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>recursiveTable</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><name>isTemporary</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>recursiveTable</name><operator>.</operator><name>lock</name></name><argument_list>(<argument><expr><name>targetSession</name></expr></argument>, <argument><expr><name><name>Table</name><operator>.</operator><name>EXCLUSIVE_LOCK</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>targetSession</name><operator>.</operator><name>getDatabase</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>removeSchemaObject</name><argument_list>(<argument><expr><name>targetSession</name></expr></argument>, <argument><expr><name>recursiveTable</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><call><name><name>targetSession</name><operator>.</operator><name>removeLocalTempTable</name></name><argument_list>(<argument><expr><name>recursiveTable</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+
+            <comment type="line">// both removeSchemaObject and removeLocalTempTable hold meta locks - release them here</comment>
+            <expr_stmt><expr><call><name><name>targetSession</name><operator>.</operator><name>getDatabase</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>unlockMeta</name><argument_list>(<argument><expr><name>targetSession</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

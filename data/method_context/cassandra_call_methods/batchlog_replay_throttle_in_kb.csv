@@ -1,0 +1,148 @@
+function,option,Method,Method_short,class_name,xml_path,Method_body
+org.apache.cassandra.config.DatabaseDescriptor:getBatchlogReplayThrottleInKB(),batchlog_replay_throttle_in_kb,(M)org.apache.cassandra.service.StorageService:getTokenMetadata(),getTokenMetadata,StorageService,../data/xml/cassandra_call_methods/StorageService.xml,"
+public TokenMetadata getTokenMetadata()
+    {
+        return tokenMetadata;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getBatchlogReplayThrottleInKB(),batchlog_replay_throttle_in_kb,(M)org.apache.cassandra.locator.TokenMetadata:getSizeOfAllEndpoints(),getSizeOfAllEndpoints,TokenMetadata,../data/xml/cassandra_call_methods/TokenMetadata.xml,"
+public int getSizeOfAllEndpoints()
+    {
+        lock.readLock().lock();
+        try
+        {
+            return endpointToHostIdMap.size();
+        }
+        finally
+        {
+            lock.readLock().unlock();
+        }
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getBatchlogReplayThrottleInKB(),batchlog_replay_throttle_in_kb,(S)org.apache.cassandra.config.DatabaseDescriptor:getBatchlogReplayThrottleInKB(),getBatchlogReplayThrottleInKB,DatabaseDescriptor,../data/xml/cassandra_call_methods/DatabaseDescriptor.xml,"
+public static int getBatchlogReplayThrottleInKB()
+    {
+        return conf.batchlog_replay_throttle_in_kb;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getBatchlogReplayThrottleInKB(),batchlog_replay_throttle_in_kb,(M)org.apache.cassandra.batchlog.BatchlogManager:setRate(int),setRate,BatchlogManager,../data/xml/cassandra_call_methods/BatchlogManager.xml,"/**
+     * Sets the rate for the current rate limiter. When {@code throttleInKB} is 0, this sets the rate to
+     * {@link Double#MAX_VALUE} bytes per second.
+     *
+     * @param throttleInKB throughput to set in KB per second
+     */
+public void setRate(final int throttleInKB)
+    {
+        int endpointsCount = StorageService.instance.getTokenMetadata().getSizeOfAllEndpoints();
+        if (endpointsCount > 0)
+        {
+            int endpointThrottleInKB = throttleInKB / endpointsCount;
+            double throughput = endpointThrottleInKB == 0 ? Double.MAX_VALUE : endpointThrottleInKB * 1024.0;
+            if (rateLimiter.getRate() != throughput)
+            {
+                logger.debug(""Updating batchlog replay throttle to {} KB/s, {} KB/s per endpoint"", throttleInKB, endpointThrottleInKB);
+                rateLimiter.setRate(throughput);
+            }
+        }
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getBatchlogReplayThrottleInKB(),batchlog_replay_throttle_in_kb,(S)org.apache.cassandra.batchlog.BatchlogManager:getBatchlogTimeout(),getBatchlogTimeout,BatchlogManager,../data/xml/cassandra_call_methods/BatchlogManager.xml,"
+public static long getBatchlogTimeout()
+    {
+        return BATCHLOG_REPLAY_TIMEOUT; // enough time for the actual write + BM removal mutation
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getBatchlogReplayThrottleInKB(),batchlog_replay_throttle_in_kb,(S)org.apache.cassandra.utils.UUIDGen:maxTimeUUID(long),maxTimeUUID,UUIDGen,../data/xml/cassandra_call_methods/UUIDGen.xml,"/**
+     * Returns the biggest possible type 1 UUID having the provided timestamp.
+     *
+     * <b>Warning:</b> this method should only be used for querying as this
+     * doesn't at all guarantee the uniqueness of the resulting UUID.
+     */
+public static UUID maxTimeUUID(long timestamp)
+    {
+        // unix timestamp are milliseconds precision, uuid timestamp are 100's
+        // nanoseconds precision. If we ask for the biggest uuid have unix
+        // timestamp 1ms, then we should not extend 100's nanoseconds
+        // precision by taking 10000, but rather 19999.
+        long uuidTstamp = fromUnixTimestamp(timestamp + 1) - 1;
+        return new UUID(createTime(uuidTstamp), MAX_CLOCK_SEQ_AND_NODE);
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getBatchlogReplayThrottleInKB(),batchlog_replay_throttle_in_kb,(S)org.apache.cassandra.batchlog.BatchlogManager:calculatePageSize(org.apache.cassandra.db.ColumnFamilyStore),calculatePageSize,BatchlogManager,../data/xml/cassandra_call_methods/BatchlogManager.xml,"// read less rows (batches) per page if they are very large
+static int calculatePageSize(ColumnFamilyStore store)
+    {
+        double averageRowSize = store.getMeanPartitionSize();
+        if (averageRowSize <= 0)
+            return DEFAULT_PAGE_SIZE;
+
+        return (int) Math.max(1, Math.min(DEFAULT_PAGE_SIZE, 4 * 1024 * 1024 / averageRowSize));
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getBatchlogReplayThrottleInKB(),batchlog_replay_throttle_in_kb,"(O)org.apache.cassandra.batchlog.BatchlogManager:processBatchlogEntries(org.apache.cassandra.cql3.UntypedResultSet,int,com.google.common.util.concurrent.RateLimiter)",processBatchlogEntries,BatchlogManager,../data/xml/cassandra_call_methods/BatchlogManager.xml,"
+private void processBatchlogEntries(UntypedResultSet batches, int pageSize, RateLimiter rateLimiter)
+    {
+        int positionInPage = 0;
+        ArrayList<ReplayingBatch> unfinishedBatches = new ArrayList<>(pageSize);
+
+        Set<UUID> hintedNodes = new HashSet<>();
+        Set<UUID> replayedBatches = new HashSet<>();
+        Exception caughtException = null;
+        int skipped = 0;
+
+        // Sending out batches for replay without waiting for them, so that one stuck batch doesn't affect others
+        for (UntypedResultSet.Row row : batches)
+        {
+            UUID id = row.getUUID(""id"");
+            int version = row.getInt(""version"");
+            try
+            {
+                ReplayingBatch batch = new ReplayingBatch(id, version, row.getList(""mutations"", BytesType.instance));
+                if (batch.replay(rateLimiter, hintedNodes) > 0)
+                {
+                    unfinishedBatches.add(batch);
+                }
+                else
+                {
+                    remove(id); // no write mutations were sent (either expired or all CFs involved truncated).
+                    ++totalBatchesReplayed;
+                }
+            }
+            catch (IOException e)
+            {
+                logger.warn(""Skipped batch replay of {} due to {}"", id, e.getMessage());
+                caughtException = e;
+                remove(id);
+                ++skipped;
+            }
+
+            if (++positionInPage == pageSize)
+            {
+                // We have reached the end of a batch. To avoid keeping more than a page of mutations in memory,
+                // finish processing the page before requesting the next row.
+                finishAndClearBatches(unfinishedBatches, hintedNodes, replayedBatches);
+                positionInPage = 0;
+            }
+        }
+
+        // finalize the incomplete last page of batches
+        if (positionInPage > 0)
+            finishAndClearBatches(unfinishedBatches, hintedNodes, replayedBatches);
+
+        if (caughtException != null)
+            logger.warn(String.format(""Encountered %d unexpected exceptions while sending out batches"", skipped), caughtException);
+
+        // to preserve batch guarantees, we must ensure that hints (if any) have made it to disk, before deleting the batches
+        HintsService.instance.flushAndFsyncBlockingly(hintedNodes);
+
+        // once all generated hints are fsynced, actually delete the batches
+        replayedBatches.forEach(BatchlogManager::remove);
+    }
+
+    "

@@ -1,0 +1,426 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/locator/DynamicEndpointSnitch.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>InetAddress</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>UnknownHostException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentHashMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ScheduledFuture</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>stream</name><operator>.</operator><name>Collectors</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>codahale</name><operator>.</operator><name>metrics</name><operator>.</operator><name>ExponentiallyDecayingReservoir</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>codahale</name><operator>.</operator><name>metrics</name><operator>.</operator><name>Snapshot</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ScheduledExecutors</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>ApplicationState</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>EndpointState</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>Gossiper</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>VersionedValue</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>LatencySubscribers</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>MessagingService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>StorageService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>MBeanWrapper</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A dynamic snitch that sorts endpoints by latency with an adapted phi failure detector
+ */</comment>
+<class><specifier>public</specifier> class <name>DynamicEndpointSnitch</name> <super_list><extends>extends <super><name>AbstractEndpointSnitch</name></super></extends> <implements>implements <super><name><name>LatencySubscribers</name><operator>.</operator><name>Subscriber</name></name></super>, <super><name>DynamicEndpointSnitchMBean</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>USE_SEVERITY</name> <init>= <expr><operator>!</operator><call><name><name>Boolean</name><operator>.</operator><name>getBoolean</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.ignore_dynamic_snitch_severity"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>double</name></type> <name>ALPHA</name> <init>= <expr><literal type="number">0.75</literal></expr></init></decl>;</decl_stmt> <comment type="line">// set to 0.75 to make EDS more biased to towards the newer values</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>WINDOW_SIZE</name> <init>= <expr><literal type="number">100</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>int</name></type> <name>dynamicUpdateInterval</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getDynamicUpdateInterval</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>int</name></type> <name>dynamicResetInterval</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getDynamicResetInterval</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>double</name></type> <name>dynamicBadnessThreshold</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getDynamicBadnessThreshold</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// the score for a merged set of endpoints must be this much worse than the score for separate endpoints to</comment>
+    <comment type="line">// warrant not merging two ranges into a single range</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>double</name></type> <name>RANGE_MERGING_PREFERENCE</name> <init>= <expr><literal type="number">1.5</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>String</name></type> <name>mbeanName</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>registered</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name><name>HashMap</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>scores</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>ExponentiallyDecayingReservoir</name></argument>&gt;</argument_list></name></type> <name>samples</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>IEndpointSnitch</name></type> <name>subsnitch</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name><name>ScheduledFuture</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>updateSchedular</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name><name>ScheduledFuture</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>resetSchedular</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Runnable</name></type> <name>update</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Runnable</name></type> <name>reset</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>DynamicEndpointSnitch</name><parameter_list>(<parameter><decl><type><name>IEndpointSnitch</name></type> <name>snitch</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>snitch</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>public</specifier> <name>DynamicEndpointSnitch</name><parameter_list>(<parameter><decl><type><name>IEndpointSnitch</name></type> <name>snitch</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>instance</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>mbeanName</name> <operator>=</operator> <literal type="string">"org.apache.cassandra.db:type=DynamicEndpointSnitch"</literal></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>instance</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>mbeanName</name> <operator>+=</operator> <literal type="string">",instance="</literal> <operator>+</operator> <name>instance</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <expr_stmt><expr><name>subsnitch</name> <operator>=</operator> <name>snitch</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name>update</name> <operator>=</operator> <operator>new</operator> <class><super><name>Runnable</name></super><argument_list>()</argument_list>
+        <block>{
+            <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>updateScores</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+        }</block></class></expr>;</expr_stmt>
+        <expr_stmt><expr><name>reset</name> <operator>=</operator> <operator>new</operator> <class><super><name>Runnable</name></super><argument_list>()</argument_list>
+        <block>{
+            <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <comment type="line">// we do this so that a host considered bad has a chance to recover, otherwise would we never try</comment>
+                <comment type="line">// to read from it, which would cause its score to never change</comment>
+                <expr_stmt><expr><call><name>reset</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+        }</block></class></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>isDaemonInitialized</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>updateSchedular</name> <operator>=</operator> <call><name><name>ScheduledExecutors</name><operator>.</operator><name>scheduledTasks</name><operator>.</operator><name>scheduleWithFixedDelay</name></name><argument_list>(<argument><expr><name>update</name></expr></argument>, <argument><expr><name>dynamicUpdateInterval</name></expr></argument>, <argument><expr><name>dynamicUpdateInterval</name></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>resetSchedular</name> <operator>=</operator> <call><name><name>ScheduledExecutors</name><operator>.</operator><name>scheduledTasks</name><operator>.</operator><name>scheduleWithFixedDelay</name></name><argument_list>(<argument><expr><name>reset</name></expr></argument>, <argument><expr><name>dynamicResetInterval</name></expr></argument>, <argument><expr><name>dynamicResetInterval</name></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>registerMBean</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Update configuration from {@link DatabaseDescriptor} and estart the update-scheduler and reset-scheduler tasks
+     * if the configured rates for these tasks have changed.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>applyConfigChanges</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>dynamicUpdateInterval</name> <operator>!=</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getDynamicUpdateInterval</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>dynamicUpdateInterval</name> <operator>=</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getDynamicUpdateInterval</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>isDaemonInitialized</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>updateSchedular</name><operator>.</operator><name>cancel</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>updateSchedular</name> <operator>=</operator> <call><name><name>ScheduledExecutors</name><operator>.</operator><name>scheduledTasks</name><operator>.</operator><name>scheduleWithFixedDelay</name></name><argument_list>(<argument><expr><name>update</name></expr></argument>, <argument><expr><name>dynamicUpdateInterval</name></expr></argument>, <argument><expr><name>dynamicUpdateInterval</name></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>dynamicResetInterval</name> <operator>!=</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getDynamicResetInterval</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>dynamicResetInterval</name> <operator>=</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getDynamicResetInterval</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>isDaemonInitialized</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>resetSchedular</name><operator>.</operator><name>cancel</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>resetSchedular</name> <operator>=</operator> <call><name><name>ScheduledExecutors</name><operator>.</operator><name>scheduledTasks</name><operator>.</operator><name>scheduleWithFixedDelay</name></name><argument_list>(<argument><expr><name>reset</name></expr></argument>, <argument><expr><name>dynamicResetInterval</name></expr></argument>, <argument><expr><name>dynamicResetInterval</name></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <expr_stmt><expr><name>dynamicBadnessThreshold</name> <operator>=</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getDynamicBadnessThreshold</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>registerMBean</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>MBeanWrapper</name><operator>.</operator><name>instance</name><operator>.</operator><name>registerMBean</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>mbeanName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>updateSchedular</name><operator>.</operator><name>cancel</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>resetSchedular</name><operator>.</operator><name>cancel</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>MBeanWrapper</name><operator>.</operator><name>instance</name><operator>.</operator><name>unregisterMBean</name></name><argument_list>(<argument><expr><name>mbeanName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>gossiperStarting</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>subsnitch</name><operator>.</operator><name>gossiperStarting</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getRack</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>subsnitch</name><operator>.</operator><name>getRack</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getDatacenter</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>subsnitch</name><operator>.</operator><name>getDatacenter</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <parameter_list type="generic">&lt;<parameter><name>C</name> <extends>extends <name><name>ReplicaCollection</name><argument_list type="generic">&lt;<argument><name>?</name> <extends>extends <name>C</name></extends></argument>&gt;</argument_list></name></extends></parameter>&gt;</parameter_list> <name>C</name></type> <name>sortedByProximity</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>address</name></decl></parameter>, <parameter><decl><type><name>C</name></type> <name>unsortedAddresses</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><call><name><name>address</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</assert> <comment type="line">// we only know about ourself</comment>
+        <return>return <expr><ternary><condition><expr><name>dynamicBadnessThreshold</name> <operator>==</operator> <literal type="number">0</literal></expr>
+                ?</condition><then> <expr><call><name>sortedByProximityWithScore</name><argument_list>(<argument><expr><name>address</name></expr></argument>, <argument><expr><name>unsortedAddresses</name></expr></argument>)</argument_list></call></expr>
+                </then><else>: <expr><call><name>sortedByProximityWithBadness</name><argument_list>(<argument><expr><name>address</name></expr></argument>, <argument><expr><name>unsortedAddresses</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <parameter_list type="generic">&lt;<parameter><name>C</name> <extends>extends <name><name>ReplicaCollection</name><argument_list type="generic">&lt;<argument><name>?</name> <extends>extends <name>C</name></extends></argument>&gt;</argument_list></name></extends></parameter>&gt;</parameter_list> <name>C</name></type> <name>sortedByProximityWithScore</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>address</name></decl></parameter>, <parameter><decl><type><name>C</name></type> <name>unsortedAddresses</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// Scores can change concurrently from a call to this method. But Collections.sort() expects</comment>
+        <comment type="line">// its comparator to be "stable", that is 2 endpoint should compare the same way for the duration</comment>
+        <comment type="line">// of the sort() call. As we copy the scores map on write, it is thus enough to alias the current</comment>
+        <comment type="line">// version of it during this call.</comment>
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>HashMap</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>scores</name> <init>= <expr><name><name>this</name><operator>.</operator><name>scores</name></name></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>unsortedAddresses</name><operator>.</operator><name>sorted</name></name><argument_list>(<argument><expr><lambda><parameter_list>(<parameter><decl><name>r1</name></decl></parameter>, <parameter><decl><name>r2</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name>compareEndpoints</name><argument_list>(<argument><expr><name>address</name></expr></argument>, <argument><expr><name>r1</name></expr></argument>, <argument><expr><name>r2</name></expr></argument>, <argument><expr><name>scores</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <parameter_list type="generic">&lt;<parameter><name>C</name> <extends>extends <name><name>ReplicaCollection</name><argument_list type="generic">&lt;<argument><name>?</name> <extends>extends <name>C</name></extends></argument>&gt;</argument_list></name></extends></parameter>&gt;</parameter_list> <name>C</name></type> <name>sortedByProximityWithBadness</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>address</name></decl></parameter>, <parameter><decl><type><name>C</name></type> <name>replicas</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>replicas</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <literal type="number">2</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>replicas</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// TODO: avoid copy</comment>
+        <expr_stmt><expr><name>replicas</name> <operator>=</operator> <call><name><name>subsnitch</name><operator>.</operator><name>sortedByProximity</name></name><argument_list>(<argument><expr><name>address</name></expr></argument>, <argument><expr><name>replicas</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name><name>HashMap</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>scores</name> <init>= <expr><name><name>this</name><operator>.</operator><name>scores</name></name></expr></init></decl>;</decl_stmt> <comment type="line">// Make sure the score don't change in the middle of the loop below</comment>
+                                                           <comment type="line">// (which wouldn't really matter here but its cleaner that way).</comment>
+        <decl_stmt><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>subsnitchOrderedScores</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>replicas</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>Replica</name></type> <name>replica</name> <range>: <expr><name>replicas</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Double</name></type> <name>score</name> <init>= <expr><call><name><name>scores</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>replica</name><operator>.</operator><name>endpoint</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>score</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>score</name> <operator>=</operator> <literal type="number">0.0</literal></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>subsnitchOrderedScores</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>score</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <comment type="line">// Sort the scores and then compare them (positionally) to the scores in the subsnitch order.</comment>
+        <comment type="line">// If any of the subsnitch-ordered scores exceed the optimal/sorted score by dynamicBadnessThreshold, use</comment>
+        <comment type="line">// the score-sorted ordering instead of the subsnitch ordering.</comment>
+        <decl_stmt><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>sortedScores</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>subsnitchOrderedScores</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>Collections</name><operator>.</operator><name>sort</name></name><argument_list>(<argument><expr><name>sortedScores</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// only calculate this once b/c its volatile and shouldn't be modified during the loop either</comment>
+        <decl_stmt><decl><type><name>double</name></type> <name>badnessThreshold</name> <init>= <expr><literal type="number">1.0</literal> <operator>+</operator> <name>dynamicBadnessThreshold</name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>sortedScoreIterator</name> <init>= <expr><call><name><name>sortedScores</name><operator>.</operator><name>iterator</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>Double</name></type> <name>subsnitchScore</name> <range>: <expr><name>subsnitchOrderedScores</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>subsnitchScore</name> <operator>&gt;</operator> <operator>(</operator><call><name><name>sortedScoreIterator</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call> <operator>*</operator> <name>badnessThreshold</name><operator>)</operator></expr>)</condition>
+            <block>{<block_content>
+                <return>return <expr><call><name>sortedByProximityWithScore</name><argument_list>(<argument><expr><name>address</name></expr></argument>, <argument><expr><name>replicas</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+
+        <return>return <expr><name>replicas</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// Compare endpoints given an immutable snapshot of the scores</comment>
+    <function><type><specifier>private</specifier> <name>int</name></type> <name>compareEndpoints</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>target</name></decl></parameter>, <parameter><decl><type><name>Replica</name></type> <name>a1</name></decl></parameter>, <parameter><decl><type><name>Replica</name></type> <name>a2</name></decl></parameter>, <parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>scores</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Double</name></type> <name>scored1</name> <init>= <expr><call><name><name>scores</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>a1</name><operator>.</operator><name>endpoint</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Double</name></type> <name>scored2</name> <init>= <expr><call><name><name>scores</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>a2</name><operator>.</operator><name>endpoint</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        
+        <if_stmt><if>if <condition>(<expr><name>scored1</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>scored1</name> <operator>=</operator> <literal type="number">0.0</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>scored2</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>scored2</name> <operator>=</operator> <literal type="number">0.0</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>scored1</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>scored2</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>subsnitch</name><operator>.</operator><name>compareEndpoints</name></name><argument_list>(<argument><expr><name>target</name></expr></argument>, <argument><expr><name>a1</name></expr></argument>, <argument><expr><name>a2</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>scored1</name> <operator>&lt;</operator> <name>scored2</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><operator>-</operator><literal type="number">1</literal></expr>;</return></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <return>return <expr><literal type="number">1</literal></expr>;</return></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>compareEndpoints</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>target</name></decl></parameter>, <parameter><decl><type><name>Replica</name></type> <name>a1</name></decl></parameter>, <parameter><decl><type><name>Replica</name></type> <name>a2</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// That function is fundamentally unsafe because the scores can change at any time and so the result of that</comment>
+        <comment type="line">// method is not stable for identical arguments. This is why we don't rely on super.sortByProximity() in</comment>
+        <comment type="line">// sortByProximityWithScore().</comment>
+        <throw>throw <expr><operator>new</operator> <call><name>UnsupportedOperationException</name><argument_list>(<argument><expr><literal type="string">"You shouldn't wrap the DynamicEndpointSnitch (within itself or otherwise)"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>receiveTiming</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>host</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>latency</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>unit</name></decl></parameter>)</parameter_list> <comment type="line">// this is cheap</comment>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ExponentiallyDecayingReservoir</name></type> <name>sample</name> <init>= <expr><call><name><name>samples</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>host</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>sample</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ExponentiallyDecayingReservoir</name></type> <name>maybeNewSample</name> <init>= <expr><operator>new</operator> <call><name>ExponentiallyDecayingReservoir</name><argument_list>(<argument><expr><name>WINDOW_SIZE</name></expr></argument>, <argument><expr><name>ALPHA</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>sample</name> <operator>=</operator> <call><name><name>samples</name><operator>.</operator><name>putIfAbsent</name></name><argument_list>(<argument><expr><name>host</name></expr></argument>, <argument><expr><name>maybeNewSample</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>sample</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>sample</name> <operator>=</operator> <name>maybeNewSample</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>sample</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><call><name><name>unit</name><operator>.</operator><name>toMillis</name></name><argument_list>(<argument><expr><name>latency</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>updateScores</name><parameter_list>()</parameter_list> <comment type="line">// this is expensive</comment>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>isGossipActive</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>registered</name></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>MessagingService</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>MessagingService</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>latencySubscribers</name><operator>.</operator><name>subscribe</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>registered</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>double</name></type> <name>maxLatency</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Snapshot</name></argument>&gt;</argument_list></name></type> <name>snapshots</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>samples</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>ExponentiallyDecayingReservoir</name></argument>&gt;</argument_list></name></name></type> <name>entry</name> <range>: <expr><call><name><name>samples</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>snapshots</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>entry</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getSnapshot</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <comment type="line">// We're going to weight the latency for each host against the worst one we see, to</comment>
+        <comment type="line">// arrive at sort of a 'badness percentage' for them. First, find the worst for each:</comment>
+        <decl_stmt><decl><type><name><name>HashMap</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>newScores</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Snapshot</name></argument>&gt;</argument_list></name></name></type> <name>entry</name> <range>: <expr><call><name><name>snapshots</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>double</name></type> <name>mean</name> <init>= <expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getMedian</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>mean</name> <operator>&gt;</operator> <name>maxLatency</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>maxLatency</name> <operator>=</operator> <name>mean</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+        <comment type="line">// now make another pass to do the weighting based on the maximums we found before</comment>
+        <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>, <argument><name>Snapshot</name></argument>&gt;</argument_list></name></name></type> <name>entry</name> <range>: <expr><call><name><name>snapshots</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>double</name></type> <name>score</name> <init>= <expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getMedian</name><argument_list>()</argument_list></call> <operator>/</operator> <name>maxLatency</name></expr></init></decl>;</decl_stmt>
+            <comment type="line">// finally, add the severity without any weighting, since hosts scale this relative to their own load and the size of the task causing the severity.</comment>
+            <comment type="line">// "Severity" is basically a measure of compaction activity (CASSANDRA-3722).</comment>
+            <if_stmt><if>if <condition>(<expr><name>USE_SEVERITY</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>score</name> <operator>+=</operator> <call><name>getSeverity</name><argument_list>(<argument><expr><call><name><name>entry</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <comment type="line">// lowest score (least amount of badness) wins.</comment>
+            <expr_stmt><expr><call><name><name>newScores</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>entry</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>score</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <expr_stmt><expr><name>scores</name> <operator>=</operator> <name>newScores</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>reset</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+       <expr_stmt><expr><call><name><name>samples</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>InetAddress</name></argument>, <argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>getScores</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>scores</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>stream</name><argument_list>()</argument_list></call><operator>.</operator><call><name>collect</name><argument_list>(<argument><expr><call><name><name>Collectors</name><operator>.</operator><name>toMap</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>address</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>address</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call><operator>.</operator><name>address</name></expr></block_content></block></lambda></expr></argument>, <argument><expr><name><name>Map</name><operator>.</operator><name>Entry</name></name><operator>::</operator><name>getValue</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>getScoresWithPort</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>scores</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>stream</name><argument_list>()</argument_list></call><operator>.</operator><call><name>collect</name><argument_list>(<argument><expr><call><name><name>Collectors</name><operator>.</operator><name>toMap</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>address</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>address</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>, <argument><expr><name><name>Map</name><operator>.</operator><name>Entry</name></name><operator>::</operator><name>getValue</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getUpdateInterval</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>dynamicUpdateInterval</name></expr>;</return>
+    </block_content>}</block></function>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getResetInterval</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>dynamicResetInterval</name></expr>;</return>
+    </block_content>}</block></function>
+    <function><type><specifier>public</specifier> <name>double</name></type> <name>getBadnessThreshold</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>dynamicBadnessThreshold</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getSubsnitchClassName</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>subsnitch</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getName</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>dumpTimings</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>hostname</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>UnknownHostException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>host</name> <init>= <expr><call><name><name>InetAddressAndPort</name><operator>.</operator><name>getByName</name></name><argument_list>(<argument><expr><name>hostname</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Double</name></argument>&gt;</argument_list></name></type> <name>timings</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Double</name></argument>&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ExponentiallyDecayingReservoir</name></type> <name>sample</name> <init>= <expr><call><name><name>samples</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>host</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>sample</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>double</name></type> <name>time</name><range>: <expr><call><name><name>sample</name><operator>.</operator><name>getSnapshot</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getValues</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>timings</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>time</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>timings</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setSeverity</name><parameter_list>(<parameter><decl><type><name>double</name></type> <name>severity</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>Gossiper</name><operator>.</operator><name>instance</name><operator>.</operator><name>addLocalApplicationState</name></name><argument_list>(<argument><expr><name><name>ApplicationState</name><operator>.</operator><name>SEVERITY</name></name></expr></argument>, <argument><expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>valueFactory</name><operator>.</operator><name>severity</name></name><argument_list>(<argument><expr><name>severity</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>double</name></type> <name>getSeverity</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>EndpointState</name></type> <name>state</name> <init>= <expr><call><name><name>Gossiper</name><operator>.</operator><name>instance</name><operator>.</operator><name>getEndpointStateForEndpoint</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>state</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="number">0.0</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>VersionedValue</name></type> <name>event</name> <init>= <expr><call><name><name>state</name><operator>.</operator><name>getApplicationState</name></name><argument_list>(<argument><expr><name><name>ApplicationState</name><operator>.</operator><name>SEVERITY</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>event</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="number">0.0</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name><name>Double</name><operator>.</operator><name>parseDouble</name></name><argument_list>(<argument><expr><name><name>event</name><operator>.</operator><name>value</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>double</name></type> <name>getSeverity</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>getSeverity</name><argument_list>(<argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isWorthMergingForRangeQuery</name><parameter_list>(<parameter><decl><type><name><name>ReplicaCollection</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>merged</name></decl></parameter>, <parameter><decl><type><name><name>ReplicaCollection</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>l1</name></decl></parameter>, <parameter><decl><type><name><name>ReplicaCollection</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>l2</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>subsnitch</name><operator>.</operator><name>isWorthMergingForRangeQuery</name></name><argument_list>(<argument><expr><name>merged</name></expr></argument>, <argument><expr><name>l1</name></expr></argument>, <argument><expr><name>l2</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// skip checking scores in the single-node case</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>l1</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">1</literal> <operator>&amp;&amp;</operator> <call><name><name>l2</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">1</literal> <operator>&amp;&amp;</operator> <call><name><name>l1</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><call><name><name>l2</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// Make sure we return the subsnitch decision (i.e true if we're here) if we lack too much scores</comment>
+        <decl_stmt><decl><type><name>double</name></type> <name>maxMerged</name> <init>= <expr><call><name>maxScore</name><argument_list>(<argument><expr><name>merged</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>double</name></type> <name>maxL1</name> <init>= <expr><call><name>maxScore</name><argument_list>(<argument><expr><name>l1</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>double</name></type> <name>maxL2</name> <init>= <expr><call><name>maxScore</name><argument_list>(<argument><expr><name>l2</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>maxMerged</name> <operator>&lt;</operator> <literal type="number">0</literal> <operator>||</operator> <name>maxL1</name> <operator>&lt;</operator> <literal type="number">0</literal> <operator>||</operator> <name>maxL2</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><name>maxMerged</name> <operator>&lt;=</operator> <operator>(</operator><name>maxL1</name> <operator>+</operator> <name>maxL2</name><operator>)</operator> <operator>*</operator> <name>RANGE_MERGING_PREFERENCE</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// Return the max score for the endpoint in the provided list, or -1.0 if no node have a score.</comment>
+    <function><type><specifier>private</specifier> <name>double</name></type> <name>maxScore</name><parameter_list>(<parameter><decl><type><name><name>ReplicaCollection</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>endpoints</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>double</name></type> <name>maxScore</name> <init>= <expr><operator>-</operator><literal type="number">1.0</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>Replica</name></type> <name>replica</name> <range>: <expr><name>endpoints</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Double</name></type> <name>score</name> <init>= <expr><call><name><name>scores</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>replica</name><operator>.</operator><name>endpoint</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>score</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <continue>continue;</continue></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>score</name> <operator>&gt;</operator> <name>maxScore</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>maxScore</name> <operator>=</operator> <name>score</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><name>maxScore</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>validate</name><parameter_list>(<parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>datacenters</name></decl></parameter>, <parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>racks</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>subsnitch</name><operator>.</operator><name>validate</name></name><argument_list>(<argument><expr><name>datacenters</name></expr></argument>, <argument><expr><name>racks</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

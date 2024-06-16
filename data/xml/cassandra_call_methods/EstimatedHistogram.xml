@@ -1,0 +1,438 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/utils/EstimatedHistogram.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Arrays</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicLongArray</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Objects</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>TypeSizes</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>ISerializer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataInputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputPlus</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>EstimatedHistogram</name>
+<block>{
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>EstimatedHistogramSerializer</name></type> <name>serializer</name> <init>= <expr><operator>new</operator> <call><name>EstimatedHistogramSerializer</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The series of values to which the counts in `buckets` correspond:
+     * 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 17, 20, etc.
+     * Thus, a `buckets` of [0, 0, 1, 10] would mean we had seen one value of 3 and 10 values of 4.
+     *
+     * The series starts at 1 and grows by 1.2 each time (rounding and removing duplicates). It goes from 1
+     * to around 36M by default (creating 90+1 buckets), which will give us timing resolution from microseconds to
+     * 36 seconds, with less precision as the numbers get larger.
+     *
+     * Each bucket represents values from (previous bucket offset, current offset].
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>long</name><index>[]</index></name></type> <name>bucketOffsets</name></decl>;</decl_stmt>
+
+    <comment type="line">// buckets is one element longer than bucketOffsets -- the last element is values greater than the last offset</comment>
+    <decl_stmt><decl><type><specifier>final</specifier> <name>AtomicLongArray</name></type> <name>buckets</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>EstimatedHistogram</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><literal type="number">90</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>public</specifier> <name>EstimatedHistogram</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>bucketCount</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>bucketCount</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>public</specifier> <name>EstimatedHistogram</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>bucketCount</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>considerZeroes</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>bucketOffsets</name> <operator>=</operator> <call><name>newOffsets</name><argument_list>(<argument><expr><name>bucketCount</name></expr></argument>, <argument><expr><name>considerZeroes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>buckets</name> <operator>=</operator> <operator>new</operator> <call><name>AtomicLongArray</name><argument_list>(<argument><expr><name><name>bucketOffsets</name><operator>.</operator><name>length</name></name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Create EstimatedHistogram from only bucket data.
+     *
+     * @param bucketData bucket data
+     */</comment>
+    <constructor><specifier>public</specifier> <name>EstimatedHistogram</name><parameter_list>(<parameter><decl><type><name><name>long</name><index>[]</index></name></type> <name>bucketData</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><name>bucketData</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name><name>bucketData</name><operator>.</operator><name>length</name></name> <operator>&gt;</operator> <literal type="number">0</literal> <operator>:</operator> <literal type="string">"Bucket data must be an array of size more than 0"</literal></expr>;</assert>
+        <expr_stmt><expr><name>bucketOffsets</name> <operator>=</operator> <call><name>newOffsets</name><argument_list>(<argument><expr><name><name>bucketData</name><operator>.</operator><name>length</name></name> <operator>-</operator> <literal type="number">1</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>buckets</name> <operator>=</operator> <operator>new</operator> <call><name>AtomicLongArray</name><argument_list>(<argument><expr><name>bucketData</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>public</specifier> <name>EstimatedHistogram</name><parameter_list>(<parameter><decl><type><name><name>long</name><index>[]</index></name></type> <name>offsets</name></decl></parameter>, <parameter><decl><type><name><name>long</name><index>[]</index></name></type> <name>bucketData</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><name><name>bucketData</name><operator>.</operator><name>length</name></name> <operator>==</operator> <name><name>offsets</name><operator>.</operator><name>length</name></name> <operator>+</operator><literal type="number">1</literal></expr>;</assert>
+        <expr_stmt><expr><name>bucketOffsets</name> <operator>=</operator> <name>offsets</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name>buckets</name> <operator>=</operator> <operator>new</operator> <call><name>AtomicLongArray</name><argument_list>(<argument><expr><name>bucketData</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>long</name><index>[]</index></name></type> <name>newOffsets</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>considerZeroes</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>long</name><index>[]</index></name></type> <name>result</name> <init>= <expr><operator>new</operator> <name><name>long</name><index>[<expr><name>size</name> <operator>+</operator> <operator>(</operator><ternary><condition><expr><name>considerZeroes</name></expr> ?</condition><then> <expr><literal type="number">1</literal></expr> </then><else>: <expr><literal type="number">0</literal></expr></else></ternary><operator>)</operator></expr>]</index></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>considerZeroes</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name><name>result</name><index>[<expr><name>i</name><operator>++</operator></expr>]</index></name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>last</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name><name>result</name><index>[<expr><name>i</name><operator>++</operator></expr>]</index></name> <operator>=</operator> <name>last</name></expr>;</expr_stmt>
+        <for>for <control>(<init>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>result</name><operator>.</operator><name>length</name></name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>next</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>round</name></name><argument_list>(<argument><expr><name>last</name> <operator>*</operator> <literal type="number">1.2</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>next</name> <operator>==</operator> <name>last</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>next</name><operator>++</operator></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <expr_stmt><expr><name><name>result</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <name>next</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>last</name> <operator>=</operator> <name>next</name></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <return>return <expr><name>result</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return the histogram values corresponding to each bucket index
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>long</name><index>[]</index></name></type> <name>getBucketOffsets</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>bucketOffsets</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>int</name></type> <name>findIndex</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>n</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>index</name> <init>= <expr><call><name><name>Arrays</name><operator>.</operator><name>binarySearch</name></name><argument_list>(<argument><expr><name>bucketOffsets</name></expr></argument>, <argument><expr><name>n</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>index</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// inexact match, take the first bucket higher than n</comment>
+            <expr_stmt><expr><name>index</name> <operator>=</operator> <operator>-</operator><name>index</name> <operator>-</operator> <literal type="number">1</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>index</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Increments the count of the bucket closest to n, rounding UP.
+     * @param n
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>add</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>n</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>buckets</name><operator>.</operator><name>incrementAndGet</name></name><argument_list>(<argument><expr><call><name>findIndex</name><argument_list>(<argument><expr><name>n</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Increments the count of the bucket closest to n, rounding UP by delta
+     * @param n
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>add</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>n</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>delta</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>buckets</name><operator>.</operator><name>addAndGet</name></name><argument_list>(<argument><expr><call><name>findIndex</name><argument_list>(<argument><expr><name>n</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>delta</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return the count in the given bucket
+     */</comment>
+    <function><type><name>long</name></type> <name>get</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>bucket</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>buckets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>bucket</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @param reset zero out buckets afterwards if true
+     * @return a long[] containing the current histogram buckets
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>long</name><index>[]</index></name></type> <name>getBuckets</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>reset</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>len</name> <init>= <expr><call><name><name>buckets</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>long</name><index>[]</index></name></type> <name>rv</name> <init>= <expr><operator>new</operator> <name><name>long</name><index>[<expr><name>len</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>reset</name></expr>)</condition><block type="pseudo"><block_content>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>len</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><name><name>rv</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <call><name><name>buckets</name><operator>.</operator><name>getAndSet</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>, <argument><expr><literal type="number">0L</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>len</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><name><name>rv</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <call><name><name>buckets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for></block_content></block></else></if_stmt>
+
+        <return>return <expr><name>rv</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return the smallest value that could have been added to this histogram
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>min</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>buckets</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>buckets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><ternary><condition><expr><name>i</name> <operator>==</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><literal type="number">0</literal></expr> </then><else>: <expr><literal type="number">1</literal> <operator>+</operator> <name><name>bucketOffsets</name><index>[<expr><name>i</name> <operator>-</operator> <literal type="number">1</literal></expr>]</index></name></expr></else></ternary></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return the largest value that could have been added to this histogram.  If the histogram
+     * overflowed, returns Long.MAX_VALUE.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>max</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>lastBucket</name> <init>= <expr><call><name><name>buckets</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>-</operator> <literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>buckets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>lastBucket</name></expr></argument>)</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr>;</return></block_content></block></if></if_stmt>
+
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><name>lastBucket</name> <operator>-</operator> <literal type="number">1</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr>;</condition> <incr><expr><name>i</name><operator>--</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>buckets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name><name>bucketOffsets</name><index>[<expr><name>i</name></expr>]</index></name></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @param percentile
+     * @return estimated value at given percentile
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>percentile</name><parameter_list>(<parameter><decl><type><name>double</name></type> <name>percentile</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><name>percentile</name> <operator>&gt;=</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>percentile</name> <operator>&lt;=</operator> <literal type="number">1.0</literal></expr>;</assert>
+        <decl_stmt><decl><type><name>int</name></type> <name>lastBucket</name> <init>= <expr><call><name><name>buckets</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>-</operator> <literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>buckets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>lastBucket</name></expr></argument>)</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"Unable to compute when histogram overflowed"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>pcount</name> <init>= <expr><operator>(</operator><name>long</name><operator>)</operator> <call><name><name>Math</name><operator>.</operator><name>ceil</name></name><argument_list>(<argument><expr><call><name>count</name><argument_list>()</argument_list></call> <operator>*</operator> <name>percentile</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>pcount</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="number">0</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>elements</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>lastBucket</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><name>elements</name> <operator>+=</operator> <call><name><name>buckets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>elements</name> <operator>&gt;=</operator> <name>pcount</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name><name>bucketOffsets</name><index>[<expr><name>i</name></expr>]</index></name></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return the ceil of mean histogram value (average of bucket offsets, weighted by count)
+     * @throws IllegalStateException if any values were greater than the largest bucket threshold
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>mean</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>(</operator><name>long</name><operator>)</operator> <call><name><name>Math</name><operator>.</operator><name>ceil</name></name><argument_list>(<argument><expr><call><name>rawMean</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return the mean histogram value (average of bucket offsets, weighted by count)
+     * @throws IllegalStateException if any values were greater than the largest bucket threshold
+     */</comment>
+    <function><type><specifier>public</specifier> <name>double</name></type> <name>rawMean</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>lastBucket</name> <init>= <expr><call><name><name>buckets</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>-</operator> <literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>buckets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>lastBucket</name></expr></argument>)</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"Unable to compute ceiling for max when histogram overflowed"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>elements</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>sum</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>lastBucket</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>bCount</name> <init>= <expr><call><name><name>buckets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>elements</name> <operator>+=</operator> <name>bCount</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>sum</name> <operator>+=</operator> <name>bCount</name> <operator>*</operator> <name><name>bucketOffsets</name><index>[<expr><name>i</name></expr>]</index></name></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <return>return <expr><operator>(</operator><name>double</name><operator>)</operator> <name>sum</name> <operator>/</operator> <name>elements</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return the total number of non-zero values
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>count</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+       <decl_stmt><decl><type><name>long</name></type> <name>sum</name> <init>= <expr><literal type="number">0L</literal></expr></init></decl>;</decl_stmt>
+       <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>buckets</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+           <expr_stmt><expr><name>sum</name> <operator>+=</operator> <call><name><name>buckets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+       <return>return <expr><name>sum</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return the largest bucket offset
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getLargestBucketOffset</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name><name>bucketOffsets</name><index>[<expr><name><name>bucketOffsets</name><operator>.</operator><name>length</name></name> <operator>-</operator> <literal type="number">1</literal></expr>]</index></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return true if a value larger than our largest bucket offset has been recorded, and false otherwise
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isOverflowed</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>overflowCount</name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return the number of recorded values larger than the largest bucket offset
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>overflowCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>buckets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>buckets</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Resets the count in the overflow bucket to zero. Subsequent calls to {@link #isOverflowed()} will return false.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>clearOverflow</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>buckets</name><operator>.</operator><name>set</name></name><argument_list>(<argument><expr><call><name><name>buckets</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>-</operator> <literal type="number">1</literal></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * log.debug() every record in the histogram
+     *
+     * @param log
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>log</name><parameter_list>(<parameter><decl><type><name>Logger</name></type> <name>log</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// only print overflow if there is any</comment>
+        <decl_stmt><decl><type><name>int</name></type> <name>nameCount</name></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>buckets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>buckets</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>nameCount</name> <operator>=</operator> <call><name><name>buckets</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>-</operator> <literal type="number">1</literal></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><name>nameCount</name> <operator>=</operator> <call><name><name>buckets</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        <decl_stmt><decl><type><name><name>String</name><index>[]</index></name></type> <name>names</name> <init>= <expr><operator>new</operator> <name><name>String</name><index>[<expr><name>nameCount</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>int</name></type> <name>maxNameLength</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>nameCount</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>names</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <call><name>nameOfRange</name><argument_list>(<argument><expr><name>bucketOffsets</name></expr></argument>, <argument><expr><name>i</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>maxNameLength</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>maxNameLength</name></expr></argument>, <argument><expr><name><name>names</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><call><name>length</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <comment type="line">// emit log records</comment>
+        <decl_stmt><decl><type><name>String</name></type> <name>formatstr</name> <init>= <expr><literal type="string">"%"</literal> <operator>+</operator> <name>maxNameLength</name> <operator>+</operator> <literal type="string">"s: %d"</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>nameCount</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>count</name> <init>= <expr><call><name><name>buckets</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <comment type="line">// sort-of-hack to not print empty ranges at the start that are only used to demarcate the</comment>
+            <comment type="line">// first populated range. for code clarity we don't omit this record from the maxNameLength</comment>
+            <comment type="line">// calculation, and accept the unnecessary whitespace prefixes that will occasionally occur</comment>
+            <if_stmt><if>if <condition>(<expr><name>i</name> <operator>==</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>count</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <continue>continue;</continue></block_content></block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>log</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><name>formatstr</name></expr></argument>, <argument><expr><name><name>names</name><index>[<expr><name>i</name></expr>]</index></name></expr></argument>, <argument><expr><name>count</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>String</name></type> <name>nameOfRange</name><parameter_list>(<parameter><decl><type><name><name>long</name><index>[]</index></name></type> <name>bucketOffsets</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>sb</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>appendRange</name><argument_list>(<argument><expr><name>sb</name></expr></argument>, <argument><expr><name>bucketOffsets</name></expr></argument>, <argument><expr><name>index</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name><name>sb</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>appendRange</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>sb</name></decl></parameter>, <parameter><decl><type><name><name>long</name><index>[]</index></name></type> <name>bucketOffsets</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"["</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>index</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <if_stmt><if>if <condition>(<expr><name><name>bucketOffsets</name><index>[<expr><literal type="number">0</literal></expr>]</index></name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <comment type="line">// by original definition, this histogram is for values greater than zero only;</comment>
+                <comment type="line">// if values of 0 or less are required, an entry of lb-1 must be inserted at the start</comment>
+                <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"1"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"-Inf"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name><name>bucketOffsets</name><index>[<expr><name>index</name> <operator>-</operator> <literal type="number">1</literal></expr>]</index></name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">".."</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>index</name> <operator>==</operator> <name><name>bucketOffsets</name><operator>.</operator><name>length</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"Inf"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name><name>bucketOffsets</name><index>[<expr><name>index</name></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"]"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>o</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>this</name> <operator>==</operator> <name>o</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><operator>(</operator><name>o</name> <operator>instanceof</operator> <name>EstimatedHistogram</name><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>EstimatedHistogram</name></type> <name>that</name> <init>= <expr><operator>(</operator><name>EstimatedHistogram</name><operator>)</operator> <name>o</name></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>Arrays</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name>getBucketOffsets</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>that</name><operator>.</operator><name>getBucketOffsets</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator>
+               <call><name><name>Arrays</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name>getBuckets</name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>that</name><operator>.</operator><name>getBuckets</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>hashCode</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>Objects</name><operator>.</operator><name>hashCode</name></name><argument_list>(<argument><expr><call><name>getBucketOffsets</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>getBuckets</name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>EstimatedHistogramSerializer</name> <super_list><implements>implements <super><name><name>ISerializer</name><argument_list type="generic">&lt;<argument><name>EstimatedHistogram</name></argument>&gt;</argument_list></name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>EstimatedHistogramSerializer</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>EstimatedHistogram</name></type> <name>eh</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>eh</name><operator>.</operator><name>isOverflowed</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"Serializing a histogram with {} values greater than the maximum of {}..."</literal></expr></argument>,
+                            <argument><expr><call><name><name>eh</name><operator>.</operator><name>overflowCount</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>eh</name><operator>.</operator><name>getLargestBucketOffset</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name><name>long</name><index>[]</index></name></type> <name>offsets</name> <init>= <expr><call><name><name>eh</name><operator>.</operator><name>getBucketOffsets</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>long</name><index>[]</index></name></type> <name>buckets</name> <init>= <expr><call><name><name>eh</name><operator>.</operator><name>getBuckets</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><name><name>buckets</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>buckets</name><operator>.</operator><name>length</name></name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeLong</name></name><argument_list>(<argument><expr><name><name>offsets</name><index>[<expr><ternary><condition><expr><name>i</name> <operator>==</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><literal type="number">0</literal></expr> </then><else>: <expr><name>i</name> <operator>-</operator> <literal type="number">1</literal></expr></else></ternary></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeLong</name></name><argument_list>(<argument><expr><name><name>buckets</name><index>[<expr><name>i</name></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>EstimatedHistogram</name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>long</name><index>[]</index></name></type> <name>offsets</name> <init>= <expr><operator>new</operator> <name><name>long</name><index>[<expr><name>size</name> <operator>-</operator> <literal type="number">1</literal></expr>]</index></name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>long</name><index>[]</index></name></type> <name>buckets</name> <init>= <expr><operator>new</operator> <name><name>long</name><index>[<expr><name>size</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>size</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+            <block>{<block_content>
+                <expr_stmt><expr><name><name>offsets</name><index>[<expr><ternary><condition><expr><name>i</name> <operator>==</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><literal type="number">0</literal></expr> </then><else>: <expr><name>i</name> <operator>-</operator> <literal type="number">1</literal></expr></else></ternary></expr>]</index></name> <operator>=</operator> <call><name><name>in</name><operator>.</operator><name>readLong</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name><name>buckets</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <call><name><name>in</name><operator>.</operator><name>readLong</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <return>return <expr><operator>new</operator> <call><name>EstimatedHistogram</name><argument_list>(<argument><expr><name>offsets</name></expr></argument>, <argument><expr><name>buckets</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>serializedSize</name><parameter_list>(<parameter><decl><type><name>EstimatedHistogram</name></type> <name>eh</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name><name>long</name><index>[]</index></name></type> <name>offsets</name> <init>= <expr><call><name><name>eh</name><operator>.</operator><name>getBucketOffsets</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>long</name><index>[]</index></name></type> <name>buckets</name> <init>= <expr><call><name><name>eh</name><operator>.</operator><name>getBuckets</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeof</name></name><argument_list>(<argument><expr><name><name>buckets</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>buckets</name><operator>.</operator><name>length</name></name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+            <block>{<block_content>
+                <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeof</name></name><argument_list>(<argument><expr><name><name>offsets</name><index>[<expr><ternary><condition><expr><name>i</name> <operator>==</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><literal type="number">0</literal></expr> </then><else>: <expr><name>i</name> <operator>-</operator> <literal type="number">1</literal></expr></else></ternary></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeof</name></name><argument_list>(<argument><expr><name><name>buckets</name><index>[<expr><name>i</name></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <return>return <expr><name>size</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

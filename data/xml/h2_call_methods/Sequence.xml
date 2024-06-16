@@ -1,0 +1,587 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/h2database/h2/src/main/org/h2/schema/Sequence.java"><comment type="block">/*
+ * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Initial Developer: H2 Group
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>schema</name></name>;</package>
+
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>api</name><operator>.</operator><name>ErrorCode</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>command</name><operator>.</operator><name>ddl</name><operator>.</operator><name>SequenceOptions</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>DbObject</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>SessionLocal</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>message</name><operator>.</operator><name>DbException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>message</name><operator>.</operator><name>Trace</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>Table</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>TypeInfo</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>Value</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>ValueBigint</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A sequence is created using the statement
+ * CREATE SEQUENCE
+ */</comment>
+<class><specifier>public</specifier> <specifier>final</specifier> class <name>Sequence</name> <super_list><extends>extends <super><name>SchemaObject</name></super></extends></super_list> <block>{
+
+    <comment type="block" format="javadoc">/**
+     * CYCLE clause and sequence state.
+     */</comment>
+    <enum><specifier>public</specifier> enum <name>Cycle</name> <block>{
+
+        <comment type="block" format="javadoc">/**
+         * Sequence is cycled.
+         */</comment>
+        <decl><name>CYCLE</name></decl>,
+
+        <comment type="block" format="javadoc">/**
+         * Sequence is not cycled and isn't exhausted yet.
+         */</comment>
+        <decl><name>NO_CYCLE</name></decl>,
+
+        <comment type="block" format="javadoc">/**
+         * Sequence is not cycled and was already exhausted.
+         */</comment>
+        <decl><name>EXHAUSTED</name></decl>;
+
+        <comment type="block" format="javadoc">/**
+         * Return whether sequence is cycled.
+         *
+         * @return {@code true} if sequence is cycled, {@code false} if sequence
+         *         is not cycled
+         */</comment>
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isCycle</name><parameter_list>()</parameter_list> <block>{<block_content>
+            <return>return <expr><name>this</name> <operator>==</operator> <name>CYCLE</name></expr>;</return>
+        </block_content>}</block></function>
+
+    }</block></enum>
+
+    <comment type="block" format="javadoc">/**
+     * The default cache size for sequences.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>DEFAULT_CACHE_SIZE</name> <init>= <expr><literal type="number">32</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>baseValue</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>margin</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>TypeInfo</name></type> <name>dataType</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>increment</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>cacheSize</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>startValue</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>minValue</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>maxValue</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Cycle</name></type> <name>cycle</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>belongsToTable</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>writeWithMargin</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new sequence.
+     *
+     * @param session
+     *            the session
+     * @param schema
+     *            the schema
+     * @param id
+     *            the object id
+     * @param name
+     *            the sequence name
+     * @param options
+     *            the sequence options
+     * @param belongsToTable
+     *            whether this sequence belongs to a table (for generated
+     *            columns)
+     */</comment>
+    <constructor><specifier>public</specifier> <name>Sequence</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>Schema</name></type> <name>schema</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>, <parameter><decl><type><name>SequenceOptions</name></type> <name>options</name></decl></parameter>,
+            <parameter><decl><type><name>boolean</name></type> <name>belongsToTable</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>schema</name></expr></argument>, <argument><expr><name>id</name></expr></argument>, <argument><expr><name>name</name></expr></argument>, <argument><expr><name><name>Trace</name><operator>.</operator><name>SEQUENCE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>dataType</name> <operator>=</operator> <call><name><name>options</name><operator>.</operator><name>getDataType</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>dataType</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>options</name><operator>.</operator><name>setDataType</name></name><argument_list>(<argument><expr><name>dataType</name> <operator>=</operator> <ternary><condition><expr><call><name><name>session</name><operator>.</operator><name>getMode</name></name><argument_list>()</argument_list></call><operator>.</operator><name>decimalSequences</name></expr> ?</condition><then> <expr><name><name>TypeInfo</name><operator>.</operator><name>TYPE_NUMERIC_BIGINT</name></name></expr>
+                    </then><else>: <expr><name><name>TypeInfo</name><operator>.</operator><name>TYPE_BIGINT</name></name></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name><name>bounds</name><index>[]</index></name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getBounds</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Long</name></type> <name>t</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getIncrement</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>increment</name> <init>= <expr><ternary><condition><expr><name>t</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>t</name></expr> </then><else>: <expr><literal type="number">1</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Long</name></type> <name>start</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getStartValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Long</name></type> <name>min</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getMinValue</name></name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Long</name></type> <name>max</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getMaxValue</name></name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>minValue</name> <init>= <expr><ternary><condition><expr><name>min</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>min</name></expr> </then><else>: <expr><call><name>getDefaultMinValue</name><argument_list>(<argument><expr><name>start</name></expr></argument>, <argument><expr><name>increment</name></expr></argument>, <argument><expr><name>bounds</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>maxValue</name> <init>= <expr><ternary><condition><expr><name>max</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>max</name></expr> </then><else>: <expr><call><name>getDefaultMaxValue</name><argument_list>(<argument><expr><name>start</name></expr></argument>, <argument><expr><name>increment</name></expr></argument>, <argument><expr><name>bounds</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>startValue</name> <init>= <expr><ternary><condition><expr><name>start</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>start</name></expr> </then><else>: <expr><ternary><condition><expr><name>increment</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><name>minValue</name></expr> </then><else>: <expr><name>maxValue</name></expr></else></ternary></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Long</name></type> <name>restart</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getRestartValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>startValue</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>baseValue</name> <init>= <expr><ternary><condition><expr><name>restart</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>restart</name></expr> </then><else>: <expr><name>startValue</name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name>t</name> <operator>=</operator> <call><name><name>options</name><operator>.</operator><name>getCacheSize</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>cacheSize</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>mayAdjustCacheSize</name></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>t</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>cacheSize</name> <operator>=</operator> <name>t</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>mayAdjustCacheSize</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><name>cacheSize</name> <operator>=</operator> <name>DEFAULT_CACHE_SIZE</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>mayAdjustCacheSize</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <expr_stmt><expr><name>cacheSize</name> <operator>=</operator> <call><name>checkOptions</name><argument_list>(<argument><expr><name>baseValue</name></expr></argument>, <argument><expr><name>startValue</name></expr></argument>, <argument><expr><name>minValue</name></expr></argument>, <argument><expr><name>maxValue</name></expr></argument>, <argument><expr><name>increment</name></expr></argument>, <argument><expr><name>cacheSize</name></expr></argument>, <argument><expr><name>mayAdjustCacheSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>Cycle</name></type> <name>cycle</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getCycle</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>cycle</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>cycle</name> <operator>=</operator> <name><name>Cycle</name><operator>.</operator><name>NO_CYCLE</name></name></expr>;</expr_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>cycle</name> <operator>==</operator> <name><name>Cycle</name><operator>.</operator><name>EXHAUSTED</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>baseValue</name> <operator>=</operator> <name>startValue</name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>margin</name></name> <operator>=</operator> <name><name>this</name><operator>.</operator><name>baseValue</name></name> <operator>=</operator> <name>baseValue</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>increment</name></name> <operator>=</operator> <name>increment</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cacheSize</name></name> <operator>=</operator> <name>cacheSize</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>startValue</name></name> <operator>=</operator> <name>startValue</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>minValue</name></name> <operator>=</operator> <name>minValue</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>maxValue</name></name> <operator>=</operator> <name>maxValue</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cycle</name></name> <operator>=</operator> <name>cycle</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>belongsToTable</name></name> <operator>=</operator> <name>belongsToTable</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Allows the base value, start value, min value, max value, increment and
+     * cache size to be updated atomically, including atomic validation. Useful
+     * because setting these attributes one after the other could otherwise
+     * result in an invalid sequence state (e.g. min value &amp;gt; max value, start
+     * value &amp;lt; min value, etc).
+     * @param baseValue
+     *            the base value ({@code null} if restart is not requested)
+     * @param startValue
+     *            the new start value ({@code null} if no change)
+     * @param minValue
+     *            the new min value ({@code null} if no change)
+     * @param maxValue
+     *            the new max value ({@code null} if no change)
+     * @param increment
+     *            the new increment ({@code null} if no change)
+     * @param cycle
+     *            the new cycle value, or {@code null} if no change
+     * @param cacheSize
+     *            the new cache size ({@code null} if no change)
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>modify</name><parameter_list>(<parameter><decl><type><name>Long</name></type> <name>baseValue</name></decl></parameter>, <parameter><decl><type><name>Long</name></type> <name>startValue</name></decl></parameter>, <parameter><decl><type><name>Long</name></type> <name>minValue</name></decl></parameter>, <parameter><decl><type><name>Long</name></type> <name>maxValue</name></decl></parameter>, <parameter><decl><type><name>Long</name></type> <name>increment</name></decl></parameter>,
+            <parameter><decl><type><name>Cycle</name></type> <name>cycle</name></decl></parameter>, <parameter><decl><type><name>Long</name></type> <name>cacheSize</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>baseValueAsLong</name> <init>= <expr><ternary><condition><expr><name>baseValue</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>baseValue</name></expr> </then><else>: <expr><name><name>this</name><operator>.</operator><name>baseValue</name></name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>startValueAsLong</name> <init>= <expr><ternary><condition><expr><name>startValue</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>startValue</name></expr> </then><else>: <expr><name><name>this</name><operator>.</operator><name>startValue</name></name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>minValueAsLong</name> <init>= <expr><ternary><condition><expr><name>minValue</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>minValue</name></expr> </then><else>: <expr><name><name>this</name><operator>.</operator><name>minValue</name></name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>maxValueAsLong</name> <init>= <expr><ternary><condition><expr><name>maxValue</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>maxValue</name></expr> </then><else>: <expr><name><name>this</name><operator>.</operator><name>maxValue</name></name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>incrementAsLong</name> <init>= <expr><ternary><condition><expr><name>increment</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>increment</name></expr> </then><else>: <expr><name><name>this</name><operator>.</operator><name>increment</name></name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>cacheSizeAsLong</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>mayAdjustCacheSize</name></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>cacheSize</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>cacheSizeAsLong</name> <operator>=</operator> <name>cacheSize</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>mayAdjustCacheSize</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><name>cacheSizeAsLong</name> <operator>=</operator> <name><name>this</name><operator>.</operator><name>cacheSize</name></name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>mayAdjustCacheSize</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <expr_stmt><expr><name>cacheSizeAsLong</name> <operator>=</operator> <call><name>checkOptions</name><argument_list>(<argument><expr><name>baseValueAsLong</name></expr></argument>, <argument><expr><name>startValueAsLong</name></expr></argument>, <argument><expr><name>minValueAsLong</name></expr></argument>, <argument><expr><name>maxValueAsLong</name></expr></argument>,
+                <argument><expr><name>incrementAsLong</name></expr></argument>, <argument><expr><name>cacheSizeAsLong</name></expr></argument>, <argument><expr><name>mayAdjustCacheSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>cycle</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>cycle</name> <operator>=</operator> <name><name>this</name><operator>.</operator><name>cycle</name></name></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>cycle</name> <operator>==</operator> <name><name>Cycle</name><operator>.</operator><name>EXHAUSTED</name></name> <operator>&amp;&amp;</operator> <name>baseValue</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>cycle</name> <operator>=</operator> <name><name>Cycle</name><operator>.</operator><name>NO_CYCLE</name></name></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>cycle</name> <operator>==</operator> <name><name>Cycle</name><operator>.</operator><name>EXHAUSTED</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>baseValueAsLong</name> <operator>=</operator> <name>startValueAsLong</name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>margin</name></name> <operator>=</operator> <name><name>this</name><operator>.</operator><name>baseValue</name></name> <operator>=</operator> <name>baseValueAsLong</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>startValue</name></name> <operator>=</operator> <name>startValueAsLong</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>minValue</name></name> <operator>=</operator> <name>minValueAsLong</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>maxValue</name></name> <operator>=</operator> <name>maxValueAsLong</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>increment</name></name> <operator>=</operator> <name>incrementAsLong</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cacheSize</name></name> <operator>=</operator> <name>cacheSizeAsLong</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cycle</name></name> <operator>=</operator> <name>cycle</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Validates the specified prospective base value, start value, min value,
+     * max value, increment, and cache size relative to each other, since each
+     * of their respective validities are contingent on the values of the other
+     * parameters.
+     *
+     * @param baseValue
+     *            the prospective base value
+     * @param startValue
+     *            the prospective start value
+     * @param minValue
+     *            the prospective min value
+     * @param maxValue
+     *            the prospective max value
+     * @param increment
+     *            the prospective increment
+     * @param cacheSize
+     *            the prospective cache size
+     * @param mayAdjustCacheSize
+     *            whether cache size may be adjusted, cache size 0 is adjusted
+     *            unconditionally to 1
+     * @return the prospective or adjusted cache size
+     */</comment>
+    <function><type><specifier>private</specifier> <name>long</name></type> <name>checkOptions</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>baseValue</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>startValue</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>minValue</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>maxValue</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>increment</name></decl></parameter>,
+            <parameter><decl><type><name>long</name></type> <name>cacheSize</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>mayAdjustCacheSize</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>minValue</name> <operator>&lt;=</operator> <name>baseValue</name> <operator>&amp;&amp;</operator> <name>baseValue</name> <operator>&lt;=</operator> <name>maxValue</name> <comment type="line">//</comment>
+                <operator>&amp;&amp;</operator> <name>minValue</name> <operator>&lt;=</operator> <name>startValue</name> <operator>&amp;&amp;</operator> <name>startValue</name> <operator>&lt;=</operator> <name>maxValue</name> <comment type="line">//</comment>
+                <operator>&amp;&amp;</operator> <name>minValue</name> <operator>&lt;</operator> <name>maxValue</name> <operator>&amp;&amp;</operator> <name>increment</name> <operator>!=</operator> <literal type="number">0L</literal></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>range</name> <init>= <expr><name>maxValue</name> <operator>-</operator> <name>minValue</name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>Long</name><operator>.</operator><name>compareUnsigned</name></name><argument_list>(<argument><expr><call><name><name>Math</name><operator>.</operator><name>abs</name></name><argument_list>(<argument><expr><name>increment</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>range</name></expr></argument>)</argument_list></call> <operator>&lt;=</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>cacheSize</name> <operator>&gt;=</operator> <literal type="number">0L</literal></expr>)</condition> <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>cacheSize</name> <operator>&lt;=</operator> <literal type="number">1L</literal></expr>)</condition> <block>{<block_content>
+                    <return>return <expr><literal type="number">1L</literal></expr>;</return>
+                </block_content>}</block></if></if_stmt>
+                <decl_stmt><decl><type><name>long</name></type> <name>maxCacheSize</name> <init>= <expr><call><name>getMaxCacheSize</name><argument_list>(<argument><expr><name>range</name></expr></argument>, <argument><expr><name>increment</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>cacheSize</name> <operator>&lt;=</operator> <name>maxCacheSize</name></expr>)</condition> <block>{<block_content>
+                    <return>return <expr><name>cacheSize</name></expr>;</return>
+                </block_content>}</block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><name>mayAdjustCacheSize</name></expr>)</condition> <block>{<block_content>
+                    <return>return <expr><name>maxCacheSize</name></expr>;</return>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>SEQUENCE_ATTRIBUTES_INVALID_7</name></name></expr></argument>, <argument><expr><call><name>getName</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>Long</name><operator>.</operator><name>toString</name></name><argument_list>(<argument><expr><name>baseValue</name></expr></argument>)</argument_list></call></expr></argument>,
+                <argument><expr><call><name><name>Long</name><operator>.</operator><name>toString</name></name><argument_list>(<argument><expr><name>startValue</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>Long</name><operator>.</operator><name>toString</name></name><argument_list>(<argument><expr><name>minValue</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>Long</name><operator>.</operator><name>toString</name></name><argument_list>(<argument><expr><name>maxValue</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>Long</name><operator>.</operator><name>toString</name></name><argument_list>(<argument><expr><name>increment</name></expr></argument>)</argument_list></call></expr></argument>,
+                <argument><expr><call><name><name>Long</name><operator>.</operator><name>toString</name></name><argument_list>(<argument><expr><name>cacheSize</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>long</name></type> <name>getMaxCacheSize</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>range</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>increment</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>increment</name> <operator>&gt;</operator> <literal type="number">0L</literal></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>range</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>range</name> <operator>=</operator> <name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><name>range</name> <operator>+=</operator> <name>increment</name></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>range</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>range</name> <operator>=</operator> <name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><name>range</name> <operator>=</operator> <operator>-</operator><name>range</name></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>range</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>range</name> <operator>=</operator> <name><name>Long</name><operator>.</operator><name>MIN_VALUE</name></name></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><name>range</name> <operator>+=</operator> <name>increment</name></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>range</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>range</name> <operator>=</operator> <name><name>Long</name><operator>.</operator><name>MIN_VALUE</name></name></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></else></if_stmt>
+        <return>return <expr><name>range</name> <operator>/</operator> <name>increment</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Calculates default min value.
+     *
+     * @param startValue the start value of the sequence.
+     * @param increment the increment of the sequence value.
+     * @param bounds min and max bounds of data type of the sequence
+     * @return min value.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>long</name></type> <name>getDefaultMinValue</name><parameter_list>(<parameter><decl><type><name>Long</name></type> <name>startValue</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>increment</name></decl></parameter>, <parameter><decl><type><name><name>long</name><index>[]</index></name></type> <name>bounds</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>v</name> <init>= <expr><ternary><condition><expr><name>increment</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><literal type="number">1</literal></expr> </then><else>: <expr><name><name>bounds</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>startValue</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>increment</name> <operator>&gt;=</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>startValue</name> <operator>&lt;</operator> <name>v</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>v</name> <operator>=</operator> <name>startValue</name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>v</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Calculates default max value.
+     *
+     * @param startValue the start value of the sequence.
+     * @param increment the increment of the sequence value.
+     * @param bounds min and max bounds of data type of the sequence
+     * @return min value.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>long</name></type> <name>getDefaultMaxValue</name><parameter_list>(<parameter><decl><type><name>Long</name></type> <name>startValue</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>increment</name></decl></parameter>, <parameter><decl><type><name><name>long</name><index>[]</index></name></type> <name>bounds</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>v</name> <init>= <expr><ternary><condition><expr><name>increment</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><name><name>bounds</name><index>[<expr><literal type="number">1</literal></expr>]</index></name></expr> </then><else>: <expr><operator>-</operator><literal type="number">1</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>startValue</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>increment</name> <operator>&lt;</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>startValue</name> <operator>&gt;</operator> <name>v</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>v</name> <operator>=</operator> <name>startValue</name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>v</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>getBelongsToTable</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>belongsToTable</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>TypeInfo</name></type> <name>getDataType</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>dataType</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getEffectivePrecision</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>TypeInfo</name></type> <name>dataType</name> <init>= <expr><name><name>this</name><operator>.</operator><name>dataType</name></name></expr></init></decl>;</decl_stmt>
+        <switch>switch <condition>(<expr><call><name><name>dataType</name><operator>.</operator><name>getValueType</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+        <case>case <expr><name><name>Value</name><operator>.</operator><name>NUMERIC</name></name></expr>:</case> <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>p</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>dataType</name><operator>.</operator><name>getPrecision</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>s</name> <init>= <expr><call><name><name>dataType</name><operator>.</operator><name>getScale</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>p</name> <operator>-</operator> <name>s</name> <operator>&gt;</operator> <name><name>ValueBigint</name><operator>.</operator><name>DECIMAL_PRECISION</name></name></expr>)</condition> <block>{<block_content>
+                <return>return <expr><name><name>ValueBigint</name><operator>.</operator><name>DECIMAL_PRECISION</name></name> <operator>+</operator> <name>s</name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <return>return <expr><name>p</name></expr>;</return>
+        </block_content>}</block>
+        <case>case <expr><name><name>Value</name><operator>.</operator><name>DECFLOAT</name></name></expr>:</case>
+            <return>return <expr><call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>dataType</name><operator>.</operator><name>getPrecision</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>ValueBigint</name><operator>.</operator><name>DECIMAL_PRECISION</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        <default>default:</default>
+            <return>return <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>dataType</name><operator>.</operator><name>getPrecision</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getIncrement</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>increment</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getStartValue</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>startValue</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getMinValue</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>minValue</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getMaxValue</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>maxValue</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Cycle</name></type> <name>getCycle</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>cycle</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>getDropSQL</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name>getBelongsToTable</name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>builder</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>(<argument><expr><literal type="string">"DROP SEQUENCE IF EXISTS "</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name>getSQL</name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>getCreateSQLForCopy</name><parameter_list>(<parameter><decl><type><name>Table</name></type> <name>table</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>quotedName</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getInternalError</name></name><argument_list>(<argument><expr><call><name>toString</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>getCreateSQL</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>builder</name> <init>= <expr><call><name>getSQL</name><argument_list>(<argument><expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>(<argument><expr><literal type="string">"CREATE SEQUENCE "</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>dataType</name><operator>.</operator><name>getValueType</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <name><name>Value</name><operator>.</operator><name>BIGINT</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>dataType</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" AS "</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">' '</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <synchronized>synchronized <init>(<expr><name>this</name></expr>)</init> <block>{<block_content>
+            <expr_stmt><expr><call><name>getSequenceOptionsSQL</name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><ternary><condition><expr><name>writeWithMargin</name></expr> ?</condition><then> <expr><name>margin</name></expr> </then><else>: <expr><name>baseValue</name></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></synchronized>
+        <if_stmt><if>if <condition>(<expr><name>belongsToTable</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" BELONGS_TO_TABLE"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name><name>builder</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Append the options part of the SQL statement to create the sequence.
+     *
+     * @param builder the builder
+     * @return the builder
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>StringBuilder</name></type> <name>getSequenceOptionsSQL</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getSequenceOptionsSQL</name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>baseValue</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>StringBuilder</name></type> <name>getSequenceOptionsSQL</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>value</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"START WITH "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>startValue</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>value</name> <operator>!=</operator> <name>startValue</name> <operator>&amp;&amp;</operator> <name>cycle</name> <operator>!=</operator> <name><name>Cycle</name><operator>.</operator><name>EXHAUSTED</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" RESTART WITH "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>value</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>increment</name> <operator>!=</operator> <literal type="number">1</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" INCREMENT BY "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>increment</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name><name>long</name><index>[]</index></name></type> <name>bounds</name> <init>= <expr><call><name><name>SequenceOptions</name><operator>.</operator><name>getBounds</name></name><argument_list>(<argument><expr><name>dataType</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>minValue</name> <operator>!=</operator> <call><name>getDefaultMinValue</name><argument_list>(<argument><expr><name>value</name></expr></argument>, <argument><expr><name>increment</name></expr></argument>, <argument><expr><name>bounds</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" MINVALUE "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>minValue</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>maxValue</name> <operator>!=</operator> <call><name>getDefaultMaxValue</name><argument_list>(<argument><expr><name>value</name></expr></argument>, <argument><expr><name>increment</name></expr></argument>, <argument><expr><name>bounds</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" MAXVALUE "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>maxValue</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>cycle</name> <operator>==</operator> <name><name>Cycle</name><operator>.</operator><name>CYCLE</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" CYCLE"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>cycle</name> <operator>==</operator> <name><name>Cycle</name><operator>.</operator><name>EXHAUSTED</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" EXHAUSTED"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>cacheSize</name> <operator>!=</operator> <name>DEFAULT_CACHE_SIZE</name></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>cacheSize</name> <operator>==</operator> <literal type="number">1</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" NO CACHE"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>cacheSize</name> <operator>&gt;</operator> <name>DEFAULT_CACHE_SIZE</name> <comment type="line">//</comment>
+                    <operator>||</operator> <name>cacheSize</name> <operator>!=</operator> <call><name>getMaxCacheSize</name><argument_list>(<argument><expr><name>maxValue</name> <operator>-</operator> <name>minValue</name></expr></argument>, <argument><expr><name>increment</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" CACHE "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>cacheSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>builder</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the next value for this sequence. Should not be called directly, use
+     * {@link SessionLocal#getNextValueFor(Sequence, org.h2.command.Prepared)} instead.
+     *
+     * @param session the session
+     * @return the next value
+     */</comment>
+    <function><type><specifier>public</specifier> <name>Value</name></type> <name>getNext</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>result</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>needsFlush</name></decl>;</decl_stmt>
+        <synchronized>synchronized <init>(<expr><name>this</name></expr>)</init> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>cycle</name> <operator>==</operator> <name><name>Cycle</name><operator>.</operator><name>EXHAUSTED</name></name></expr>)</condition> <block>{<block_content>
+                <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>SEQUENCE_EXHAUSTED</name></name></expr></argument>, <argument><expr><call><name>getName</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>result</name> <operator>=</operator> <name>baseValue</name></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>newBase</name> <init>= <expr><name>result</name> <operator>+</operator> <name>increment</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>needsFlush</name> <operator>=</operator> <ternary><condition><expr><name>increment</name> <operator>&gt;</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><call><name>increment</name><argument_list>(<argument><expr><name>result</name></expr></argument>, <argument><expr><name>newBase</name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><call><name>decrement</name><argument_list>(<argument><expr><name>result</name></expr></argument>, <argument><expr><name>newBase</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</expr_stmt>
+        </block_content>}</block></synchronized>
+        <if_stmt><if>if <condition>(<expr><name>needsFlush</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name>flush</name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name><name>ValueBigint</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>result</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>castTo</name><argument_list>(<argument><expr><name>dataType</name></expr></argument>, <argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>increment</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>oldBase</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>newBase</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>needsFlush</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <comment type="block">/*
+         * If old base is not negative and new base is negative there is an
+         * overflow.
+         */</comment>
+        <if_stmt><if>if <condition>(<expr><name>newBase</name> <operator>&gt;</operator> <name>maxValue</name> <operator>||</operator> <operator>(</operator><operator>~</operator><name>oldBase</name> <operator>&amp;</operator> <name>newBase</name><operator>)</operator> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>newBase</name> <operator>=</operator> <name>minValue</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>needsFlush</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>cycle</name> <operator>==</operator> <name><name>Cycle</name><operator>.</operator><name>CYCLE</name></name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>margin</name> <operator>=</operator> <name>newBase</name> <operator>+</operator> <name>increment</name> <operator>*</operator> <operator>(</operator><name>cacheSize</name> <operator>-</operator> <literal type="number">1</literal><operator>)</operator></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><name>margin</name> <operator>=</operator> <name>newBase</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name>cycle</name> <operator>=</operator> <name><name>Cycle</name><operator>.</operator><name>EXHAUSTED</name></name></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>newBase</name> <operator>&gt;</operator> <name>margin</name></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>newMargin</name> <init>= <expr><name>newBase</name> <operator>+</operator> <name>increment</name> <operator>*</operator> <operator>(</operator><name>cacheSize</name> <operator>-</operator> <literal type="number">1</literal><operator>)</operator></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>newMargin</name> <operator>&gt;</operator> <name>maxValue</name> <operator>||</operator> <operator>(</operator><operator>~</operator><name>newBase</name> <operator>&amp;</operator> <name>newMargin</name><operator>)</operator> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                <comment type="block">/*
+                 * Don't cache values near the end of the sequence for
+                 * simplicity.
+                 */</comment>
+                <expr_stmt><expr><name>newMargin</name> <operator>=</operator> <name>newBase</name></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>margin</name> <operator>=</operator> <name>newMargin</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>needsFlush</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name>baseValue</name> <operator>=</operator> <name>newBase</name></expr>;</expr_stmt>
+        <return>return <expr><name>needsFlush</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>decrement</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>oldBase</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>newBase</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>needsFlush</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <comment type="block">/*
+         * If old base is negative and new base is not negative there is an
+         * overflow.
+         */</comment>
+        <if_stmt><if>if <condition>(<expr><name>newBase</name> <operator>&lt;</operator> <name>minValue</name> <operator>||</operator> <operator>(</operator><name>oldBase</name> <operator>&amp;</operator> <operator>~</operator><name>newBase</name><operator>)</operator> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>newBase</name> <operator>=</operator> <name>maxValue</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>needsFlush</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>cycle</name> <operator>==</operator> <name><name>Cycle</name><operator>.</operator><name>CYCLE</name></name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>margin</name> <operator>=</operator> <name>newBase</name> <operator>+</operator> <name>increment</name> <operator>*</operator> <operator>(</operator><name>cacheSize</name> <operator>-</operator> <literal type="number">1</literal><operator>)</operator></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><name>margin</name> <operator>=</operator> <name>newBase</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name>cycle</name> <operator>=</operator> <name><name>Cycle</name><operator>.</operator><name>EXHAUSTED</name></name></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>newBase</name> <operator>&lt;</operator> <name>margin</name></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>newMargin</name> <init>= <expr><name>newBase</name> <operator>+</operator> <name>increment</name> <operator>*</operator> <operator>(</operator><name>cacheSize</name> <operator>-</operator> <literal type="number">1</literal><operator>)</operator></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>newMargin</name> <operator>&lt;</operator> <name>minValue</name> <operator>||</operator> <operator>(</operator><name>newBase</name> <operator>&amp;</operator> <operator>~</operator><name>newMargin</name><operator>)</operator> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                <comment type="block">/*
+                 * Don't cache values near the end of the sequence for
+                 * simplicity.
+                 */</comment>
+                <expr_stmt><expr><name>newMargin</name> <operator>=</operator> <name>newBase</name></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>margin</name> <operator>=</operator> <name>newMargin</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>needsFlush</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name>baseValue</name> <operator>=</operator> <name>newBase</name></expr>;</expr_stmt>
+        <return>return <expr><name>needsFlush</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Flush the current value to disk.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>flushWithoutMargin</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>margin</name> <operator>!=</operator> <name>baseValue</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>margin</name> <operator>=</operator> <name>baseValue</name></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>flush</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Flush the current value, including the margin, to disk.
+     *
+     * @param session the session
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>flush</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name>isTemporary</name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>session</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <operator>!</operator><call><name><name>database</name><operator>.</operator><name>isSysTableLockedBy</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+            <comment type="line">// This session may not lock the sys table (except if it has already</comment>
+            <comment type="line">// locked it) because it must be committed immediately, otherwise</comment>
+            <comment type="line">// other threads can not access the sys table.</comment>
+            <decl_stmt><decl><type><name>SessionLocal</name></type> <name>sysSession</name> <init>= <expr><call><name><name>database</name><operator>.</operator><name>getSystemSession</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <synchronized>synchronized <init>(<expr><name>sysSession</name></expr>)</init> <block>{<block_content>
+                <expr_stmt><expr><call><name>flushInternal</name><argument_list>(<argument><expr><name>sysSession</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>sysSession</name><operator>.</operator><name>commit</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></synchronized>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <synchronized>synchronized <init>(<expr><name>session</name></expr>)</init> <block>{<block_content>
+                <expr_stmt><expr><call><name>flushInternal</name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></synchronized>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>flushInternal</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>boolean</name></type> <name>metaWasLocked</name> <init>= <expr><call><name><name>database</name><operator>.</operator><name>lockMeta</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// just for this case, use the value with the margin</comment>
+        <try>try <block>{<block_content>
+            <expr_stmt><expr><name>writeWithMargin</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>database</name><operator>.</operator><name>updateMeta</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block> <finally>finally <block>{<block_content>
+            <expr_stmt><expr><name>writeWithMargin</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><name>metaWasLocked</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>database</name><operator>.</operator><name>unlockMeta</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></finally></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Flush the current value to disk and close this object.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>flushWithoutMargin</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>getType</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name><name>DbObject</name><operator>.</operator><name>SEQUENCE</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>removeChildrenAndResources</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>database</name><operator>.</operator><name>removeMeta</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><call><name>getId</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>invalidate</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>long</name></type> <name>getBaseValue</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <comment type="line">// Use synchronized because baseValue is not volatile</comment>
+        <return>return <expr><name>baseValue</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>long</name></type> <name>getCurrentValue</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>baseValue</name> <operator>-</operator> <name>increment</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setBelongsToTable</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>b</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>belongsToTable</name></name> <operator>=</operator> <name>b</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getCacheSize</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>cacheSize</name></expr>;</return>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

@@ -1,0 +1,380 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/net/RequestCallbacks.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentHashMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ScheduledExecutorService</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeoutException</name></name>;</import>
+
+<import>import <name><name>javax</name><operator>.</operator><name>annotation</name><operator>.</operator><name>Nullable</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>DebuggableScheduledThreadPoolExecutor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ConsistencyLevel</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Mutation</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>RequestFailureReason</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>IVersionedAsymmetricSerializer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>Replica</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>InternodeOutboundMetrics</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>AbstractWriteResponseHandler</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>StorageProxy</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>paxos</name><operator>.</operator><name>Commit</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+
+<import>import static <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>String</name><operator>.</operator><name>format</name></name>;</import>
+<import>import static <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name>;</import>
+<import>import static <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Stage</name><operator>.</operator><name>INTERNAL_RESPONSE</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>MonotonicClock</name><operator>.</operator><name>preciseTime</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * An expiring map of request callbacks.
+ *
+ * Used to match response (id, peer) pairs to corresponding {@link RequestCallback}s, or, if said responses
+ * don't arrive in a timely manner (within verb's timeout), to expire the callbacks.
+ *
+ * Since we reuse the same request id for multiple messages now, the map is keyed by (id, peer) tuples
+ * rather than just id as it used to before 4.0.
+ */</comment>
+<class><specifier>public</specifier> class <name>RequestCallbacks</name> <super_list><implements>implements <super><name>OutboundMessageCallbacks</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>RequestCallbacks</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>MessagingService</name></type> <name>messagingService</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ScheduledExecutorService</name></type> <name>executor</name> <init>= <expr><operator>new</operator> <call><name>DebuggableScheduledThreadPoolExecutor</name><argument_list>(<argument><expr><literal type="string">"Callback-Map-Reaper"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ConcurrentMap</name><argument_list type="generic">&lt;<argument><name>CallbackKey</name></argument>, <argument><name>CallbackInfo</name></argument>&gt;</argument_list></name></type> <name>callbacks</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <constructor><name>RequestCallbacks</name><parameter_list>(<parameter><decl><type><name>MessagingService</name></type> <name>messagingService</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>messagingService</name></name> <operator>=</operator> <name>messagingService</name></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>expirationInterval</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getMinRpcTimeout</name></name><argument_list>(<argument><expr><name>NANOSECONDS</name></expr></argument>)</argument_list></call> <operator>/</operator> <literal type="number">2</literal></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>scheduleWithFixedDelay</name></name><argument_list>(<argument><expr><name>this</name><operator>::</operator><name>expire</name></expr></argument>, <argument><expr><name>expirationInterval</name></expr></argument>, <argument><expr><name>expirationInterval</name></expr></argument>, <argument><expr><name>NANOSECONDS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * @return the registered {@link CallbackInfo} for this id and peer, or {@code null} if unset or expired.
+     */</comment>
+    <function><annotation>@<name>Nullable</name></annotation>
+    <type><name>CallbackInfo</name></type> <name>get</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>callbacks</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name>key</name><argument_list>(<argument><expr><name>id</name></expr></argument>, <argument><expr><name>peer</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Remove and return the {@link CallbackInfo} associated with given id and peer, if known.
+     */</comment>
+    <function><annotation>@<name>Nullable</name></annotation>
+    <type><name>CallbackInfo</name></type> <name>remove</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>callbacks</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><call><name>key</name><argument_list>(<argument><expr><name>id</name></expr></argument>, <argument><expr><name>peer</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Register the provided {@link RequestCallback}, inferring expiry and id from the provided {@link Message}.
+     */</comment>
+    <function><type><name>void</name></type> <name>addWithExpiration</name><parameter_list>(<parameter><decl><type><name>RequestCallback</name></type> <name>cb</name></decl></parameter>, <parameter><decl><type><name>Message</name></type> <name>message</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>to</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// mutations need to call the overload with a ConsistencyLevel</comment>
+        <assert>assert <expr><call><name><name>message</name><operator>.</operator><name>verb</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <name><name>Verb</name><operator>.</operator><name>MUTATION_REQ</name></name> <operator>&amp;&amp;</operator> <call><name><name>message</name><operator>.</operator><name>verb</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <name><name>Verb</name><operator>.</operator><name>COUNTER_MUTATION_REQ</name></name> <operator>&amp;&amp;</operator> <call><name><name>message</name><operator>.</operator><name>verb</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <name><name>Verb</name><operator>.</operator><name>PAXOS_COMMIT_REQ</name></name></expr>;</assert>
+        <decl_stmt><decl><type><name>CallbackInfo</name></type> <name>previous</name> <init>= <expr><call><name><name>callbacks</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name>key</name><argument_list>(<argument><expr><call><name><name>message</name><operator>.</operator><name>id</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>to</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><operator>new</operator> <call><name>CallbackInfo</name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>cb</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <assert>assert <expr><name>previous</name> <operator>==</operator> <literal type="null">null</literal> <operator>:</operator> <call><name>format</name><argument_list>(<argument><expr><literal type="string">"Callback already exists for id %d/%s! (%s)"</literal></expr></argument>, <argument><expr><call><name><name>message</name><operator>.</operator><name>id</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>previous</name></expr></argument>)</argument_list></call></expr>;</assert>
+    </block_content>}</block></function>
+
+    <comment type="line">// FIXME: shouldn't need a special overload for writes; hinting should be part of AbstractWriteResponseHandler</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>addWithExpiration</name><parameter_list>(<parameter><decl><type><name><name>AbstractWriteResponseHandler</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>cb</name></decl></parameter>,
+                                  <parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>message</name></decl></parameter>,
+                                  <parameter><decl><type><name>Replica</name></type> <name>to</name></decl></parameter>,
+                                  <parameter><decl><type><name>ConsistencyLevel</name></type> <name>consistencyLevel</name></decl></parameter>,
+                                  <parameter><decl><type><name>boolean</name></type> <name>allowHints</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><call><name><name>message</name><operator>.</operator><name>verb</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Verb</name><operator>.</operator><name>MUTATION_REQ</name></name> <operator>||</operator> <call><name><name>message</name><operator>.</operator><name>verb</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Verb</name><operator>.</operator><name>COUNTER_MUTATION_REQ</name></name> <operator>||</operator> <call><name><name>message</name><operator>.</operator><name>verb</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Verb</name><operator>.</operator><name>PAXOS_COMMIT_REQ</name></name></expr>;</assert>
+        <decl_stmt><decl><type><name>CallbackInfo</name></type> <name>previous</name> <init>= <expr><call><name><name>callbacks</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name>key</name><argument_list>(<argument><expr><call><name><name>message</name><operator>.</operator><name>id</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>to</name><operator>.</operator><name>endpoint</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><operator>new</operator> <call><name>WriteCallbackInfo</name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>cb</name></expr></argument>, <argument><expr><name>consistencyLevel</name></expr></argument>, <argument><expr><name>allowHints</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <assert>assert <expr><name>previous</name> <operator>==</operator> <literal type="null">null</literal> <operator>:</operator> <call><name>format</name><argument_list>(<argument><expr><literal type="string">"Callback already exists for id %d/%s! (%s)"</literal></expr></argument>, <argument><expr><call><name><name>message</name><operator>.</operator><name>id</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>to</name><operator>.</operator><name>endpoint</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>previous</name></expr></argument>)</argument_list></call></expr>;</assert>
+    </block_content>}</block></function>
+
+    <function><type><parameter_list type="generic">&lt;<parameter><name>In</name></parameter>,<parameter><name>Out</name></parameter>&gt;</parameter_list> <name><name>IVersionedAsymmetricSerializer</name><argument_list type="generic">&lt;<argument><name>In</name></argument>, <argument><name>Out</name></argument>&gt;</argument_list></name></type> <name>responseSerializer</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>CallbackInfo</name></type> <name>info</name> <init>= <expr><call><name>get</name><argument_list>(<argument><expr><name>id</name></expr></argument>, <argument><expr><name>peer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><ternary><condition><expr><name>info</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>info</name><operator>.</operator><name>responseVerb</name><operator>.</operator><name>serializer</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>removeAndRespond</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>, <parameter><decl><type><name>Message</name></type> <name>message</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>CallbackInfo</name></type> <name>ci</name> <init>= <expr><call><name>remove</name><argument_list>(<argument><expr><name>id</name></expr></argument>, <argument><expr><name>peer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><literal type="null">null</literal> <operator>!=</operator> <name>ci</name></expr>)</condition><block type="pseudo"><block_content> <expr_stmt><expr><call><name><name>ci</name><operator>.</operator><name>callback</name><operator>.</operator><name>onResponse</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>removeAndExpire</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>CallbackInfo</name></type> <name>ci</name> <init>= <expr><call><name>remove</name><argument_list>(<argument><expr><name>id</name></expr></argument>, <argument><expr><name>peer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><literal type="null">null</literal> <operator>!=</operator> <name>ci</name></expr>)</condition><block type="pseudo"><block_content> <expr_stmt><expr><call><name>onExpired</name><argument_list>(<argument><expr><name>ci</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>expire</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>start</name> <init>= <expr><call><name><name>preciseTime</name><operator>.</operator><name>now</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>n</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>CallbackKey</name></argument>, <argument><name>CallbackInfo</name></argument>&gt;</argument_list></name></name></type> <name>entry</name> <range>: <expr><call><name><name>callbacks</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isReadyToDieAt</name><argument_list>(<argument><expr><name>start</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>callbacks</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><call><name><name>entry</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>n</name><operator>++</operator></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name>onExpired</name><argument_list>(<argument><expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Expired {} entries"</literal></expr></argument>, <argument><expr><name>n</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>forceExpire</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>CallbackKey</name></argument>, <argument><name>CallbackInfo</name></argument>&gt;</argument_list></name></name></type> <name>entry</name> <range>: <expr><call><name><name>callbacks</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>callbacks</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><call><name><name>entry</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>onExpired</name><argument_list>(<argument><expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt></block_content></block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>onExpired</name><parameter_list>(<parameter><decl><type><name>CallbackInfo</name></type> <name>info</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>messagingService</name><operator>.</operator><name>latencySubscribers</name><operator>.</operator><name>maybeAdd</name></name><argument_list>(<argument><expr><name><name>info</name><operator>.</operator><name>callback</name></name></expr></argument>, <argument><expr><name><name>info</name><operator>.</operator><name>peer</name></name></expr></argument>, <argument><expr><call><name><name>info</name><operator>.</operator><name>timeout</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>NANOSECONDS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>InternodeOutboundMetrics</name><operator>.</operator><name>totalExpiredCallbacks</name><operator>.</operator><name>mark</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>messagingService</name><operator>.</operator><name>markExpiredCallback</name></name><argument_list>(<argument><expr><name><name>info</name><operator>.</operator><name>peer</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>info</name><operator>.</operator><name>invokeOnFailure</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>INTERNAL_RESPONSE</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><lambda><parameter_list>()</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>info</name><operator>.</operator><name>callback</name><operator>.</operator><name>onFailure</name></name><argument_list>(<argument><expr><name><name>info</name><operator>.</operator><name>peer</name></name></expr></argument>, <argument><expr><name><name>RequestFailureReason</name><operator>.</operator><name>TIMEOUT</name></name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <comment type="line">// FIXME: this has never belonged here, should be part of onFailure() in AbstractWriteResponseHandler</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>info</name><operator>.</operator><name>shouldHint</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>WriteCallbackInfo</name></type> <name>writeCallbackInfo</name> <init>= <expr><operator>(</operator><operator>(</operator><name>WriteCallbackInfo</name><operator>)</operator> <name>info</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Mutation</name></type> <name>mutation</name> <init>= <expr><call><name><name>writeCallbackInfo</name><operator>.</operator><name>mutation</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>StorageProxy</name><operator>.</operator><name>submitHint</name></name><argument_list>(<argument><expr><name>mutation</name></expr></argument>, <argument><expr><call><name><name>writeCallbackInfo</name><operator>.</operator><name>getReplica</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>shutdownNow</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>expireCallbacks</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>shutdownNow</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>expireCallbacks</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>forceExpire</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>shutdownGracefully</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>expire</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>callbacks</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>schedule</name></name><argument_list>(<argument><expr><name>this</name><operator>::</operator><name>shutdownGracefully</name></expr></argument>, <argument><expr><literal type="number">100L</literal></expr></argument>, <argument><expr><name>MILLISECONDS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>shutdownNow</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>awaitTerminationUntil</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>deadlineNanos</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>TimeoutException</name></expr></argument>, <argument><expr><name>InterruptedException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>executor</name><operator>.</operator><name>isTerminated</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>wait</name> <init>= <expr><name>deadlineNanos</name> <operator>-</operator> <call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>wait</name> <operator>&lt;=</operator> <literal type="number">0</literal> <operator>||</operator> <operator>!</operator><call><name><name>executor</name><operator>.</operator><name>awaitTermination</name></name><argument_list>(<argument><expr><name>wait</name></expr></argument>, <argument><expr><name>NANOSECONDS</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>TimeoutException</name><argument_list>()</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>unsafeClear</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>callbacks</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>CallbackKey</name></type> <name>key</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>CallbackKey</name><argument_list>(<argument><expr><name>id</name></expr></argument>, <argument><expr><name>peer</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>CallbackKey</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>id</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>peer</name></decl>;</decl_stmt>
+
+        <constructor><name>CallbackKey</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>id</name></name> <operator>=</operator> <name>id</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>peer</name></name> <operator>=</operator> <name>peer</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>o</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><operator>(</operator><name>o</name> <operator>instanceof</operator> <name>CallbackKey</name><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+            <decl_stmt><decl><type><name>CallbackKey</name></type> <name>that</name> <init>= <expr><operator>(</operator><name>CallbackKey</name><operator>)</operator> <name>o</name></expr></init></decl>;</decl_stmt>
+            <return>return <expr><name><name>this</name><operator>.</operator><name>id</name></name> <operator>==</operator> <name><name>that</name><operator>.</operator><name>id</name></name> <operator>&amp;&amp;</operator> <call><name><name>this</name><operator>.</operator><name>peer</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>that</name><operator>.</operator><name>peer</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>int</name></type> <name>hashCode</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>Long</name><operator>.</operator><name>hashCode</name></name><argument_list>(<argument><expr><name>id</name></expr></argument>)</argument_list></call> <operator>+</operator> <literal type="number">31</literal> <operator>*</operator> <call><name><name>peer</name><operator>.</operator><name>hashCode</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="string">"{id:"</literal> <operator>+</operator> <name>id</name> <operator>+</operator> <literal type="string">", peer:"</literal> <operator>+</operator> <name>peer</name> <operator>+</operator> <literal type="char">'}'</literal></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>static</specifier> class <name>CallbackInfo</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>createdAtNanos</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>expiresAtNanos</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>peer</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>RequestCallback</name></type> <name>callback</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><annotation>@<name>Deprecated</name></annotation> <comment type="line">// for 3.0 compatibility purposes only</comment>
+        <type><specifier>public</specifier> <specifier>final</specifier> <name>Verb</name></type> <name>responseVerb</name></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>CallbackInfo</name><parameter_list>(<parameter><decl><type><name>Message</name></type> <name>message</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>, <parameter><decl><type><name>RequestCallback</name></type> <name>callback</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>createdAtNanos</name></name> <operator>=</operator> <call><name><name>message</name><operator>.</operator><name>createdAtNanos</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>expiresAtNanos</name></name> <operator>=</operator> <call><name><name>message</name><operator>.</operator><name>expiresAtNanos</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>peer</name></name> <operator>=</operator> <name>peer</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>callback</name></name> <operator>=</operator> <name>callback</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>responseVerb</name></name> <operator>=</operator> <call><name><name>message</name><operator>.</operator><name>verb</name></name><argument_list>()</argument_list></call><operator>.</operator><name>responseVerb</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>timeout</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>expiresAtNanos</name> <operator>-</operator> <name>createdAtNanos</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>boolean</name></type> <name>isReadyToDieAt</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>atNano</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>atNano</name> <operator>&gt;</operator> <name>expiresAtNanos</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>boolean</name></type> <name>shouldHint</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>boolean</name></type> <name>invokeOnFailure</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>callback</name><operator>.</operator><name>invokeOnFailure</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="string">"{peer:"</literal> <operator>+</operator> <name>peer</name> <operator>+</operator> <literal type="string">", callback:"</literal> <operator>+</operator> <name>callback</name> <operator>+</operator> <literal type="string">", invokeOnFailure:"</literal> <operator>+</operator> <call><name>invokeOnFailure</name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="char">'}'</literal></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="line">// FIXME: shouldn't need a specialized container for write callbacks; hinting should be part of</comment>
+    <comment type="line">//        AbstractWriteResponseHandler implementation.</comment>
+    <class><specifier>static</specifier> class <name>WriteCallbackInfo</name> <super_list><extends>extends <super><name>CallbackInfo</name></super></extends></super_list>
+    <block>{
+        <comment type="line">// either a Mutation, or a Paxos Commit (MessageOut)</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Object</name></type> <name>mutation</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Replica</name></type> <name>replica</name></decl>;</decl_stmt>
+
+        <constructor><annotation>@<name>VisibleForTesting</name></annotation>
+        <name>WriteCallbackInfo</name><parameter_list>(<parameter><decl><type><name>Message</name></type> <name>message</name></decl></parameter>, <parameter><decl><type><name>Replica</name></type> <name>replica</name></decl></parameter>, <parameter><decl><type><name><name>RequestCallback</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>callback</name></decl></parameter>, <parameter><decl><type><name>ConsistencyLevel</name></type> <name>consistencyLevel</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>allowHints</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><call><name><name>replica</name><operator>.</operator><name>endpoint</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>callback</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>mutation</name></name> <operator>=</operator> <ternary><condition><expr><call><name>shouldHint</name><argument_list>(<argument><expr><name>allowHints</name></expr></argument>, <argument><expr><name>message</name></expr></argument>, <argument><expr><name>consistencyLevel</name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><name><name>message</name><operator>.</operator><name>payload</name></name></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr>;</expr_stmt>
+            <comment type="line">//Local writes shouldn't go through messaging service (https://issues.apache.org/jira/browse/CASSANDRA-10477)</comment>
+            <comment type="line">//noinspection AssertWithSideEffects</comment>
+            <assert>assert <expr><operator>!</operator><call><name><name>peer</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</assert>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>replica</name></name> <operator>=</operator> <name>replica</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>shouldHint</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>mutation</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>StorageProxy</name><operator>.</operator><name>shouldHint</name></name><argument_list>(<argument><expr><name>replica</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Replica</name></type> <name>getReplica</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>replica</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Mutation</name></type> <name>mutation</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>getMutation</name><argument_list>(<argument><expr><name>mutation</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>Mutation</name></type> <name>getMutation</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>object</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><name>object</name> <operator>instanceof</operator> <name>Commit</name> <operator>||</operator> <name>object</name> <operator>instanceof</operator> <name>Mutation</name> <operator>:</operator> <name>object</name></expr>;</assert>
+            <return>return <expr><ternary><condition><expr><name>object</name> <operator>instanceof</operator> <name>Commit</name></expr> ?</condition><then> <expr><operator>(</operator><operator>(</operator><name>Commit</name><operator>)</operator> <name>object</name><operator>)</operator><operator>.</operator><call><name>makeMutation</name><argument_list>()</argument_list></call></expr>
+                                            </then><else>: <expr><operator>(</operator><name>Mutation</name><operator>)</operator> <name>object</name></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>shouldHint</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>allowHints</name></decl></parameter>, <parameter><decl><type><name>Message</name></type> <name>sentMessage</name></decl></parameter>, <parameter><decl><type><name>ConsistencyLevel</name></type> <name>consistencyLevel</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>allowHints</name> <operator>&amp;&amp;</operator> <call><name><name>sentMessage</name><operator>.</operator><name>verb</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <name><name>Verb</name><operator>.</operator><name>COUNTER_MUTATION_REQ</name></name> <operator>&amp;&amp;</operator> <name>consistencyLevel</name> <operator>!=</operator> <name><name>ConsistencyLevel</name><operator>.</operator><name>ANY</name></name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>onOverloaded</name><parameter_list>(<parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>message</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>removeAndExpire</name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><name>peer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>onExpired</name><parameter_list>(<parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>message</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>removeAndExpire</name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><name>peer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>onFailedSerialize</name><parameter_list>(<parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>message</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>messagingVersion</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>bytesWrittenToNetwork</name></decl></parameter>, <parameter><decl><type><name>Throwable</name></type> <name>failure</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>removeAndExpire</name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><name>peer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>onDiscardOnClose</name><parameter_list>(<parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>message</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>removeAndExpire</name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><name>peer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>removeAndExpire</name><parameter_list>(<parameter><decl><type><name>Message</name></type> <name>message</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>peer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>removeAndExpire</name><argument_list>(<argument><expr><call><name><name>message</name><operator>.</operator><name>id</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>peer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="block">/* in case of a write sent to a different DC, also expire all forwarding targets */</comment>
+        <decl_stmt><decl><type><name>ForwardingInfo</name></type> <name>forwardTo</name> <init>= <expr><call><name><name>message</name><operator>.</operator><name>forwardTo</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><literal type="null">null</literal> <operator>!=</operator> <name>forwardTo</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>forwardTo</name><operator>.</operator><name>forEach</name></name><argument_list>(<argument><expr><name>this</name><operator>::</operator><name>removeAndExpire</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

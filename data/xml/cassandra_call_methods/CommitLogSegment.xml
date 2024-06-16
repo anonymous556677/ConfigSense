@@ -1,0 +1,760 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/commitlog/CommitLogSegment.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>File</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>FileWriter</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>channels</name><operator>.</operator><name>FileChannel</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>file</name><operator>.</operator><name>StandardOpenOption</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentHashMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicInteger</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>locks</name><operator>.</operator><name>LockSupport</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>zip</name><operator>.</operator><name>CRC32</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>cliffc</name><operator>.</operator><name>high_scale_lib</name><operator>.</operator><name>NonBlockingHashMap</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>codahale</name><operator>.</operator><name>metrics</name><operator>.</operator><name>Timer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Mutation</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name><operator>.</operator><name>CommitLog</name><operator>.</operator><name>Configuration</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>PartitionUpdate</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>FSWriteError</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>FileUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>Schema</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableId</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>NativeLibrary</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>IntegerInterval</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>OpOrder</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>WaitQueue</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name><operator>.</operator><name>updateChecksumInt</name></name>;</import>
+
+<comment type="block">/*
+ * A single commit log file on disk. Manages creation of the file and writing mutations to disk,
+ * as well as tracking the last mutation position of any "dirty" CFs covered by the segment file. Segment
+ * files are initially allocated to a fixed size and can grow to accomidate a larger value if necessary.
+ */</comment>
+<class><specifier>public</specifier> <specifier>abstract</specifier> class <name>CommitLogSegment</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <specifier>static</specifier> <name>long</name></type> <name>idBase</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>CDCState</name></type> <name>cdcState</name> <init>= <expr><name><name>CDCState</name><operator>.</operator><name>PERMITTED</name></name></expr></init></decl>;</decl_stmt>
+    <enum><specifier>public</specifier> enum <name>CDCState</name>
+    <block>{
+        <decl><name>PERMITTED</name></decl>,
+        <decl><name>FORBIDDEN</name></decl>,
+        <decl><name>CONTAINS</name></decl>
+    }</block></enum>
+    <decl_stmt><decl><type><name>Object</name></type> <name>cdcStateLock</name> <init>= <expr><operator>new</operator> <call><name>Object</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <specifier>static</specifier> <name>AtomicInteger</name></type> <name>nextId</name> <init>= <expr><operator>new</operator> <call><name>AtomicInteger</name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <name>long</name></type> <name>replayLimitId</name></decl>;</decl_stmt>
+    <static>static
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>maxId</name> <init>= <expr><name><name>Long</name><operator>.</operator><name>MIN_VALUE</name></name></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>File</name></type> <name>file</name> <range>: <expr><operator>new</operator> <call><name>File</name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getCommitLogLocation</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>listFiles</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>CommitLogDescriptor</name><operator>.</operator><name>isValid</name></name><argument_list>(<argument><expr><call><name><name>file</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>maxId</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><call><name><name>CommitLogDescriptor</name><operator>.</operator><name>fromFileName</name></name><argument_list>(<argument><expr><call><name><name>file</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><name>id</name></expr></argument>, <argument><expr><name>maxId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+        <expr_stmt><expr><name>replayLimitId</name> <operator>=</operator> <name>idBase</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><call><name><name>System</name><operator>.</operator><name>currentTimeMillis</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>maxId</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></static>
+
+    <comment type="line">// The commit log entry overhead in bytes (int: length + int: head checksum + int: tail checksum)</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>ENTRY_OVERHEAD_SIZE</name> <init>= <expr><literal type="number">4</literal> <operator>+</operator> <literal type="number">4</literal> <operator>+</operator> <literal type="number">4</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// The commit log (chained) sync marker/header size in bytes (int: length + int: checksum [segmentId, position])</comment>
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>SYNC_MARKER_SIZE</name> <init>= <expr><literal type="number">4</literal> <operator>+</operator> <literal type="number">4</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// The OpOrder used to order appends wrt sync</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>OpOrder</name></type> <name>appendOrder</name> <init>= <expr><operator>new</operator> <call><name>OpOrder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>AtomicInteger</name></type> <name>allocatePosition</name> <init>= <expr><operator>new</operator> <call><name>AtomicInteger</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// Everything before this offset has been synced and written.  The SYNC_MARKER_SIZE bytes after</comment>
+    <comment type="line">// each sync are reserved, and point forwards to the next such offset.  The final</comment>
+    <comment type="line">// sync marker in a segment will be zeroed out, or point to a position too close to the EOF to fit a marker.</comment>
+    <decl_stmt><decl><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>volatile</specifier> <name>int</name></type> <name>lastSyncedOffset</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Everything before this offset has it's markers written into the {@link #buffer}, but has not necessarily
+     * been flushed to disk. This value should be greater than or equal to {@link #lastSyncedOffset}.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>int</name></type> <name>lastMarkerOffset</name></decl>;</decl_stmt>
+
+    <comment type="line">// The end position of the buffer. Initially set to its capacity and updated to point to the last written position</comment>
+    <comment type="line">// as the segment is being closed.</comment>
+    <comment type="line">// No need to be volatile as writes are protected by appendOrder barrier.</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>endOfBuffer</name></decl>;</decl_stmt>
+
+    <comment type="line">// a signal for writers to wait on to confirm the log message they provided has been written to disk</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>WaitQueue</name></type> <name>syncComplete</name> <init>= <expr><operator>new</operator> <call><name>WaitQueue</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// a map of Cf-&gt;dirty interval in this segment; if interval is not covered by the clean set, the log contains unflushed data</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>NonBlockingHashMap</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name>IntegerInterval</name></argument>&gt;</argument_list></name></type> <name>tableDirty</name> <init>= <expr><operator>new</operator> <call><name><name>NonBlockingHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><literal type="number">1024</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// a map of Cf-&gt;clean intervals; separate map from above to permit marking Cfs clean whilst the log is still in use</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name><name>IntegerInterval</name><operator>.</operator><name>Set</name></name></argument>&gt;</argument_list></name></type> <name>tableClean</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>long</name></type> <name>id</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>final</specifier> <name>File</name></type> <name>logFile</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>final</specifier> <name>FileChannel</name></type> <name>channel</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>fd</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>AbstractCommitLogSegmentManager</name></type> <name>manager</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>boolean</name></type> <name>headerWritten</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>CommitLogDescriptor</name></type> <name>descriptor</name></decl>;</decl_stmt>
+
+    <function><type><specifier>static</specifier> <name>CommitLogSegment</name></type> <name>createSegment</name><parameter_list>(<parameter><decl><type><name>CommitLog</name></type> <name>commitLog</name></decl></parameter>, <parameter><decl><type><name>AbstractCommitLogSegmentManager</name></type> <name>manager</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Configuration</name></type> <name>config</name> <init>= <expr><name><name>commitLog</name><operator>.</operator><name>configuration</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>CommitLogSegment</name></type> <name>segment</name> <init>= <expr><ternary><condition><expr><call><name><name>config</name><operator>.</operator><name>useEncryption</name></name><argument_list>()</argument_list></call></expr> ?</condition><then> <expr><operator>new</operator> <call><name>EncryptedSegment</name><argument_list>(<argument><expr><name>commitLog</name></expr></argument>, <argument><expr><name>manager</name></expr></argument>)</argument_list></call></expr>
+                                                          </then><else>: <expr><ternary><condition><expr><call><name><name>config</name><operator>.</operator><name>useCompression</name></name><argument_list>()</argument_list></call></expr> ?</condition><then> <expr><operator>new</operator> <call><name>CompressedSegment</name><argument_list>(<argument><expr><name>commitLog</name></expr></argument>, <argument><expr><name>manager</name></expr></argument>)</argument_list></call></expr>
+                                                                                    </then><else>: <expr><operator>new</operator> <call><name>MemoryMappedSegment</name><argument_list>(<argument><expr><name>commitLog</name></expr></argument>, <argument><expr><name>manager</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>segment</name><operator>.</operator><name>writeLogHeader</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>segment</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Checks if the segments use a buffer pool.
+     *
+     * @param commitLog the commit log
+     * @return &lt;code&gt;true&lt;/code&gt; if the segments use a buffer pool, &lt;code&gt;false&lt;/code&gt; otherwise.
+     */</comment>
+    <function><type><specifier>static</specifier> <name>boolean</name></type> <name>usesBufferPool</name><parameter_list>(<parameter><decl><type><name>CommitLog</name></type> <name>commitLog</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Configuration</name></type> <name>config</name> <init>= <expr><name><name>commitLog</name><operator>.</operator><name>configuration</name></name></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>config</name><operator>.</operator><name>useEncryption</name></name><argument_list>()</argument_list></call> <operator>||</operator> <call><name><name>config</name><operator>.</operator><name>useCompression</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name>long</name></type> <name>getNextId</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>idBase</name> <operator>+</operator> <call><name><name>nextId</name><operator>.</operator><name>getAndIncrement</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Constructs a new segment file.
+     */</comment>
+    <constructor><name>CommitLogSegment</name><parameter_list>(<parameter><decl><type><name>CommitLog</name></type> <name>commitLog</name></decl></parameter>, <parameter><decl><type><name>AbstractCommitLogSegmentManager</name></type> <name>manager</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>manager</name></name> <operator>=</operator> <name>manager</name></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name>id</name> <operator>=</operator> <call><name>getNextId</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>descriptor</name> <operator>=</operator> <operator>new</operator> <call><name>CommitLogDescriptor</name><argument_list>(<argument><expr><name>id</name></expr></argument>,
+                                             <argument><expr><call><name><name>commitLog</name><operator>.</operator><name>configuration</name><operator>.</operator><name>getCompressorClass</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                             <argument><expr><call><name><name>commitLog</name><operator>.</operator><name>configuration</name><operator>.</operator><name>getEncryptionContext</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>logFile</name> <operator>=</operator> <operator>new</operator> <call><name>File</name><argument_list>(<argument><expr><name><name>manager</name><operator>.</operator><name>storageDirectory</name></name></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>fileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><name>channel</name> <operator>=</operator> <call><name><name>FileChannel</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><call><name><name>logFile</name><operator>.</operator><name>toPath</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>StandardOpenOption</name><operator>.</operator><name>WRITE</name></name></expr></argument>, <argument><expr><name><name>StandardOpenOption</name><operator>.</operator><name>READ</name></name></expr></argument>, <argument><expr><name><name>StandardOpenOption</name><operator>.</operator><name>CREATE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>fd</name> <operator>=</operator> <call><name><name>NativeLibrary</name><operator>.</operator><name>getfd</name></name><argument_list>(<argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>FSWriteError</name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><name>logFile</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+
+        <expr_stmt><expr><name>buffer</name> <operator>=</operator> <call><name>createBuffer</name><argument_list>(<argument><expr><name>commitLog</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Deferred writing of the commit log header until subclasses have had a chance to initialize
+     */</comment>
+    <function><type><name>void</name></type> <name>writeLogHeader</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>CommitLogDescriptor</name><operator>.</operator><name>writeHeader</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><name>descriptor</name></expr></argument>, <argument><expr><call><name>additionalHeaderParameters</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>endOfBuffer</name> <operator>=</operator> <call><name><name>buffer</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name>lastSyncedOffset</name> <operator>=</operator> <name>lastMarkerOffset</name> <operator>=</operator> <call><name><name>buffer</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>allocatePosition</name><operator>.</operator><name>set</name></name><argument_list>(<argument><expr><name>lastSyncedOffset</name> <operator>+</operator> <name>SYNC_MARKER_SIZE</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>headerWritten</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Provide any additional header data that should be stored in the {@link CommitLogDescriptor}.
+     */</comment>
+    <function><type><specifier>protected</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name></type> <name>additionalHeaderParameters</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name><name>Collections</name><operator>.</operator></name>&lt;<name>String</name></expr><operator>,</operator> <expr><name>String</name><operator>&gt;</operator><call><name>emptyMap</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function_decl><type><specifier>abstract</specifier> <name>ByteBuffer</name></type> <name>createBuffer</name><parameter_list>(<parameter><decl><type><name>CommitLog</name></type> <name>commitLog</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Allocate space in this buffer for the provided mutation, and return the allocated Allocation object.
+     * Returns null if there is not enough space in this segment, and a new segment is needed.
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation> <comment type="line">//we pass the op order around</comment>
+    <type><name>Allocation</name></type> <name>allocate</name><parameter_list>(<parameter><decl><type><name>Mutation</name></type> <name>mutation</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>opGroup</name> <init>= <expr><call><name><name>appendOrder</name><operator>.</operator><name>start</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>position</name> <init>= <expr><call><name>allocate</name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>position</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>opGroup</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><literal type="null">null</literal></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <for>for <control>(<init><decl><type><name>PartitionUpdate</name></type> <name>update</name> <range>: <expr><call><name><name>mutation</name><operator>.</operator><name>getPartitionUpdates</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>coverInMap</name><argument_list>(<argument><expr><name>tableDirty</name></expr></argument>, <argument><expr><call><name><name>update</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>id</name></expr></argument>, <argument><expr><name>position</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+            <return>return <expr><operator>new</operator> <call><name>Allocation</name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>opGroup</name></expr></argument>, <argument><expr><name>position</name></expr></argument>, <argument><expr><operator>(</operator><name>ByteBuffer</name><operator>)</operator> <call><name><name>buffer</name><operator>.</operator><name>duplicate</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>position</name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>limit</name><argument_list>(<argument><expr><name>position</name> <operator>+</operator> <name>size</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>opGroup</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <throw>throw <expr><name>t</name></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name>boolean</name></type> <name>shouldReplay</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>CommitLogDescriptor</name><operator>.</operator><name>fromFileName</name></name><argument_list>(<argument><expr><name>name</name></expr></argument>)</argument_list></call><operator>.</operator><name>id</name> <operator>&lt;</operator> <name>replayLimitId</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * FOR TESTING PURPOSES.
+     */</comment>
+    <function><type><specifier>static</specifier> <name>void</name></type> <name>resetReplayLimit</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>replayLimitId</name> <operator>=</operator> <call><name>getNextId</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="line">// allocate bytes in the segment, or return -1 if not enough space</comment>
+    <function><type><specifier>private</specifier> <name>int</name></type> <name>allocate</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>prev</name> <init>= <expr><call><name><name>allocatePosition</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>next</name> <init>= <expr><name>prev</name> <operator>+</operator> <name>size</name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>next</name> <operator>&gt;=</operator> <name>endOfBuffer</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><operator>-</operator><literal type="number">1</literal></expr>;</return></block_content></block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>allocatePosition</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>prev</name></expr></argument>, <argument><expr><name>next</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <assert>assert <expr><name>buffer</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</assert>
+                <return>return <expr><name>prev</name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>LockSupport</name><operator>.</operator><name>parkNanos</name></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt> <comment type="line">// ConstantBackoffCAS Algorithm from https://arxiv.org/pdf/1305.5800.pdf</comment>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <comment type="line">// ensures no more of this segment is writeable, by allocating any unused section at the end and marking it discarded</comment>
+    <function><type><name>void</name></type> <name>discardUnusedTail</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// We guard this with the OpOrdering instead of synchronised due to potential dead-lock with ACLSM.advanceAllocatingFrom()</comment>
+        <comment type="line">// Ensures endOfBuffer update is reflected in the buffer end position picked up by sync().</comment>
+        <comment type="line">// This actually isn't strictly necessary, as currently all calls to discardUnusedTail are executed either by the thread</comment>
+        <comment type="line">// running sync or within a mutation already protected by this OpOrdering, but to prevent future potential mistakes,</comment>
+        <comment type="line">// we duplicate the protection here so that the contract between discardUnusedTail() and sync() is more explicit.</comment>
+        <try>try <init>(<decl><type><name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>group</name> <init>= <expr><call><name><name>appendOrder</name><operator>.</operator><name>start</name></name><argument_list>()</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>prev</name> <init>= <expr><call><name><name>allocatePosition</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                <decl_stmt><decl><type><name>int</name></type> <name>next</name> <init>= <expr><name>endOfBuffer</name> <operator>+</operator> <literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>prev</name> <operator>&gt;=</operator> <name>next</name></expr>)</condition>
+                <block>{<block_content>
+                    <comment type="line">// Already stopped allocating, might also be closed.</comment>
+                    <assert>assert <expr><name>buffer</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <name>prev</name> <operator>==</operator> <call><name><name>buffer</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="number">1</literal></expr>;</assert>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>allocatePosition</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>prev</name></expr></argument>, <argument><expr><name>next</name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <comment type="line">// Stopped allocating now. Can only succeed once, no further allocation or discardUnusedTail can succeed.</comment>
+                    <expr_stmt><expr><name>endOfBuffer</name> <operator>=</operator> <name>prev</name></expr>;</expr_stmt>
+                    <assert>assert <expr><name>buffer</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>next</name> <operator>==</operator> <call><name><name>buffer</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="number">1</literal></expr>;</assert>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Wait for any appends or discardUnusedTail() operations started before this method was called
+     */</comment>
+    <function><type><name>void</name></type> <name>waitForModifications</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// issue a barrier and wait for it</comment>
+        <expr_stmt><expr><call><name><name>appendOrder</name><operator>.</operator><name>awaitNewBarrier</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Update the chained markers in the commit log buffer and possibly force a disk flush for this segment file.
+     *
+     * @param flush true if the segment should flush to disk; else, false for just updating the chained markers.
+     */</comment>
+    <function><type><specifier>synchronized</specifier> <name>void</name></type> <name>sync</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>flush</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>headerWritten</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"commit log header has not been written"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <assert>assert <expr><name>lastMarkerOffset</name> <operator>&gt;=</operator> <name>lastSyncedOffset</name> <operator>:</operator> <call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"commit log segment positions are incorrect: last marked = %d, last synced = %d"</literal></expr></argument>,
+                                                                    <argument><expr><name>lastMarkerOffset</name></expr></argument>, <argument><expr><name>lastSyncedOffset</name></expr></argument>)</argument_list></call></expr>;</assert>
+        <comment type="line">// check we have more work to do</comment>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>boolean</name></type> <name>needToMarkData</name> <init>= <expr><call><name><name>allocatePosition</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <name>lastMarkerOffset</name> <operator>+</operator> <name>SYNC_MARKER_SIZE</name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>boolean</name></type> <name>hasDataToFlush</name> <init>= <expr><name>lastSyncedOffset</name> <operator>!=</operator> <name>lastMarkerOffset</name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><operator>(</operator><name>needToMarkData</name> <operator>||</operator> <name>hasDataToFlush</name><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+        <comment type="line">// Note: Even if the very first allocation of this sync section failed, we still want to enter this</comment>
+        <comment type="line">// to ensure the segment is closed. As allocatePosition is set to 1 beyond the capacity of the buffer,</comment>
+        <comment type="line">// this will always be entered when a mutation allocation has been attempted after the marker allocation</comment>
+        <comment type="line">// succeeded in the previous sync.</comment>
+        <assert>assert <expr><name>buffer</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</assert>  <comment type="line">// Only close once.</comment>
+
+        <decl_stmt><decl><type><name>boolean</name></type> <name>close</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>startMarker</name> <init>= <expr><name>lastMarkerOffset</name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>nextMarker</name></decl>, <decl><type ref="prev"/><name>sectionEnd</name></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>needToMarkData</name></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// Allocate a new sync marker; this is both necessary in itself, but also serves to demarcate</comment>
+            <comment type="line">// the point at which we can safely consider records to have been completely written to.</comment>
+            <expr_stmt><expr><name>nextMarker</name> <operator>=</operator> <call><name>allocate</name><argument_list>(<argument><expr><name>SYNC_MARKER_SIZE</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>nextMarker</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// Ensure no more of this CLS is writeable, and mark ourselves for closing.</comment>
+                <expr_stmt><expr><call><name>discardUnusedTail</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>close</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+
+                <comment type="line">// We use the buffer size as the synced position after a close instead of the end of the actual data</comment>
+                <comment type="line">// to make sure we only close the buffer once.</comment>
+                <comment type="line">// The endOfBuffer position may be incorrect at this point (to be written by another stalled thread).</comment>
+                <expr_stmt><expr><name>nextMarker</name> <operator>=</operator> <call><name><name>buffer</name><operator>.</operator><name>capacity</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <comment type="line">// Wait for mutations to complete as well as endOfBuffer to have been written.</comment>
+            <expr_stmt><expr><call><name>waitForModifications</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>sectionEnd</name> <operator>=</operator> <ternary><condition><expr><name>close</name></expr> ?</condition><then> <expr><name>endOfBuffer</name></expr> </then><else>: <expr><name>nextMarker</name></expr></else></ternary></expr>;</expr_stmt>
+
+            <comment type="line">// Possibly perform compression or encryption and update the chained markers</comment>
+            <expr_stmt><expr><call><name>write</name><argument_list>(<argument><expr><name>startMarker</name></expr></argument>, <argument><expr><name>sectionEnd</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>lastMarkerOffset</name> <operator>=</operator> <name>sectionEnd</name></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <comment type="line">// note: we don't need to waitForModifications() as, once we get to this block, we are only doing the flush</comment>
+            <comment type="line">// and any mutations have already been fully written into the segment (as we wait for it in the previous block).</comment>
+            <expr_stmt><expr><name>nextMarker</name> <operator>=</operator> <name>lastMarkerOffset</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>sectionEnd</name> <operator>=</operator> <name>nextMarker</name></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+
+
+        <if_stmt><if>if <condition>(<expr><name>flush</name> <operator>||</operator> <name>close</name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>flush</name><argument_list>(<argument><expr><name>startMarker</name></expr></argument>, <argument><expr><name>sectionEnd</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>cdcState</name> <operator>==</operator> <name><name>CDCState</name><operator>.</operator><name>CONTAINS</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>writeCDCIndexFile</name><argument_list>(<argument><expr><name>descriptor</name></expr></argument>, <argument><expr><name>sectionEnd</name></expr></argument>, <argument><expr><name>close</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <expr_stmt><expr><name>lastSyncedOffset</name> <operator>=</operator> <name>lastMarkerOffset</name> <operator>=</operator> <name>nextMarker</name></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>close</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>internalClose</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>syncComplete</name><operator>.</operator><name>signalAll</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * We persist the offset of the last data synced to disk so clients can parse only durable data if they choose. Data
+     * in shared / memory-mapped buffers reflects un-synced data so we need an external sentinel for clients to read to
+     * determine actual durable data persisted.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>writeCDCIndexFile</name><parameter_list>(<parameter><decl><type><name>CommitLogDescriptor</name></type> <name>desc</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>offset</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>complete</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <try>try<init>(<decl><type><name>FileWriter</name></type> <name>writer</name> <init>= <expr><operator>new</operator> <call><name>FileWriter</name><argument_list>(<argument><expr><operator>new</operator> <call><name>File</name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getCDCLogLocation</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>desc</name><operator>.</operator><name>cdcIndexFileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>writer</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>valueOf</name></name><argument_list>(<argument><expr><name>offset</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>complete</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>writer</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><literal type="string">"\nCOMPLETED"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>writer</name><operator>.</operator><name>flush</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>CommitLog</name><operator>.</operator><name>instance</name><operator>.</operator><name>handleCommitError</name></name><argument_list>(<argument><expr><literal type="string">"Failed to sync CDC Index: "</literal> <operator>+</operator> <call><name><name>desc</name><operator>.</operator><name>cdcIndexFileName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create a sync marker to delineate sections of the commit log, typically created on each sync of the file.
+     * The sync marker consists of a file pointer to where the next sync marker should be (effectively declaring the length
+     * of this section), as well as a CRC value.
+     *
+     * @param buffer buffer in which to write out the sync marker.
+     * @param offset Offset into the {@code buffer} at which to write the sync marker.
+     * @param filePos The current position in the target file where the sync marker will be written (most likely different from the buffer position).
+     * @param nextMarker The file position of where the next sync marker should be.
+     */</comment>
+    <function><type><specifier>protected</specifier> <specifier>static</specifier> <name>void</name></type> <name>writeSyncMarker</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>offset</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>filePos</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nextMarker</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>filePos</name> <operator>&gt;</operator> <name>nextMarker</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"commit log sync marker's current file position %d is greater than next file position %d"</literal></expr></argument>, <argument><expr><name>filePos</name></expr></argument>, <argument><expr><name>nextMarker</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <decl_stmt><decl><type><name>CRC32</name></type> <name>crc</name> <init>= <expr><operator>new</operator> <call><name>CRC32</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>updateChecksumInt</name><argument_list>(<argument><expr><name>crc</name></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><name>id</name> <operator>&amp;</operator> <literal type="number">0xFFFFFFFFL</literal><operator>)</operator></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>updateChecksumInt</name><argument_list>(<argument><expr><name>crc</name></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><name>id</name> <operator>&gt;&gt;&gt;</operator> <literal type="number">32</literal><operator>)</operator></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>updateChecksumInt</name><argument_list>(<argument><expr><name>crc</name></expr></argument>, <argument><expr><name>filePos</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>putInt</name></name><argument_list>(<argument><expr><name>offset</name></expr></argument>, <argument><expr><name>nextMarker</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>putInt</name></name><argument_list>(<argument><expr><name>offset</name> <operator>+</operator> <literal type="number">4</literal></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>crc</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function_decl><type><specifier>abstract</specifier> <name>void</name></type> <name>write</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>lastSyncedOffset</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nextMarker</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <function_decl><type><specifier>abstract</specifier> <name>void</name></type> <name>flush</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>startMarker</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nextMarker</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isStillAllocating</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>allocatePosition</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <name>endOfBuffer</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Discards a segment file when the log no longer requires it. The file may be left on disk if the archive script
+     * requires it. (Potentially blocking operation)
+     */</comment>
+    <function><type><name>void</name></type> <name>discard</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>deleteFile</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>close</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>deleteFile</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>FileUtils</name><operator>.</operator><name>deleteWithConfirm</name></name><argument_list>(<argument><expr><name>logFile</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>manager</name><operator>.</operator><name>addSize</name></name><argument_list>(<argument><expr><operator>-</operator><call><name>onDiskSize</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return the current CommitLogPosition for this log segment
+     */</comment>
+    <function><type><specifier>public</specifier> <name>CommitLogPosition</name></type> <name>getCurrentCommitLogPosition</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>CommitLogPosition</name><argument_list>(<argument><expr><name>id</name></expr></argument>, <argument><expr><call><name><name>allocatePosition</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return the file path to this segment
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getPath</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>logFile</name><operator>.</operator><name>getPath</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return the file name of this segment
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getName</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>logFile</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return a File object representing the CDC directory and this file name for hard-linking
+     */</comment>
+    <function><type><specifier>public</specifier> <name>File</name></type> <name>getCDCFile</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>File</name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getCDCLogLocation</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>logFile</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return a File object representing the CDC Index file holding the offset and completion status of this segment
+     */</comment>
+    <function><type><specifier>public</specifier> <name>File</name></type> <name>getCDCIndexFile</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>File</name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getCDCLogLocation</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>descriptor</name><operator>.</operator><name>cdcIndexFileName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>waitForFinalSync</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>WaitQueue</name><operator>.</operator><name>Signal</name></name></type> <name>signal</name> <init>= <expr><call><name><name>syncComplete</name><operator>.</operator><name>register</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>lastSyncedOffset</name> <operator>&lt;</operator> <name>endOfBuffer</name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>signal</name><operator>.</operator><name>awaitUninterruptibly</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>signal</name><operator>.</operator><name>cancel</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <break>break;</break>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>waitForSync</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>position</name></decl></parameter>, <parameter><decl><type><name>Timer</name></type> <name>waitingOnCommit</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <while>while <condition>(<expr><name>lastSyncedOffset</name> <operator>&lt;</operator> <name>position</name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>WaitQueue</name><operator>.</operator><name>Signal</name></name></type> <name>signal</name> <init>= <expr><ternary><condition><expr><name>waitingOnCommit</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then>
+                                      <expr><call><name><name>syncComplete</name><operator>.</operator><name>register</name></name><argument_list>(<argument><expr><call><name><name>waitingOnCommit</name><operator>.</operator><name>time</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr> </then><else>:
+                                      <expr><call><name><name>syncComplete</name><operator>.</operator><name>register</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>lastSyncedOffset</name> <operator>&lt;</operator> <name>position</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>signal</name><operator>.</operator><name>awaitUninterruptibly</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>signal</name><operator>.</operator><name>cancel</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Stop writing to this file, sync and close it. Does nothing if the file is already closed.
+     */</comment>
+    <function><type><specifier>synchronized</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>discardUnusedTail</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>sync</name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <assert>assert <expr><name>buffer</name> <operator>==</operator> <literal type="null">null</literal></expr>;</assert>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Close the segment file. Do not call from outside this class, use syncAndClose() instead.
+     */</comment>
+    <function><type><specifier>protected</specifier> <name>void</name></type> <name>internalClose</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>channel</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>buffer</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>FSWriteError</name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><call><name>getPath</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier><parameter_list type="generic">&lt;<parameter><name>K</name></parameter>&gt;</parameter_list> <name>void</name></type> <name>coverInMap</name><parameter_list>(<parameter><decl><type><name><name>ConcurrentMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>IntegerInterval</name></argument>&gt;</argument_list></name></type> <name>map</name></decl></parameter>, <parameter><decl><type><name>K</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>value</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>IntegerInterval</name></type> <name>i</name> <init>= <expr><call><name><name>map</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>i</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>i</name> <operator>=</operator> <call><name><name>map</name><operator>.</operator><name>putIfAbsent</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>IntegerInterval</name><argument_list>(<argument><expr><name>value</name></expr></argument>, <argument><expr><name>value</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>i</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <comment type="line">// success</comment>
+                <return>return;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>i</name><operator>.</operator><name>expandToCover</name></name><argument_list>(<argument><expr><name>value</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Marks the ColumnFamily specified by id as clean for this log segment. If the
+     * given context argument is contained in this file, it will only mark the CF as
+     * clean if no newer writes have taken place.
+     *
+     * @param tableId        the table that is now clean
+     * @param startPosition  the start of the range that is clean
+     * @param endPosition    the end of the range that is clean
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>markClean</name><parameter_list>(<parameter><decl><type><name>TableId</name></type> <name>tableId</name></decl></parameter>, <parameter><decl><type><name>CommitLogPosition</name></type> <name>startPosition</name></decl></parameter>, <parameter><decl><type><name>CommitLogPosition</name></type> <name>endPosition</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name><name>startPosition</name><operator>.</operator><name>segmentId</name></name> <operator>&gt;</operator> <name>id</name> <operator>||</operator> <name><name>endPosition</name><operator>.</operator><name>segmentId</name></name> <operator>&lt;</operator> <name>id</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>tableDirty</name><operator>.</operator><name>containsKey</name></name><argument_list>(<argument><expr><name>tableId</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>start</name> <init>= <expr><ternary><condition><expr><name><name>startPosition</name><operator>.</operator><name>segmentId</name></name> <operator>==</operator> <name>id</name></expr> ?</condition><then> <expr><name><name>startPosition</name><operator>.</operator><name>position</name></name></expr> </then><else>: <expr><literal type="number">0</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>end</name> <init>= <expr><ternary><condition><expr><name><name>endPosition</name><operator>.</operator><name>segmentId</name></name> <operator>==</operator> <name>id</name></expr> ?</condition><then> <expr><name><name>endPosition</name><operator>.</operator><name>position</name></name></expr> </then><else>: <expr><name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>tableClean</name><operator>.</operator><name>computeIfAbsent</name></name><argument_list>(<argument><expr><name>tableId</name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>k</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><operator>new</operator> <call><name><name>IntegerInterval</name><operator>.</operator><name>Set</name></name><argument_list>()</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call><operator>.</operator><call><name>add</name><argument_list>(<argument><expr><name>start</name></expr></argument>, <argument><expr><name>end</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>removeCleanFromDirty</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>removeCleanFromDirty</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// if we're still allocating from this segment, don't touch anything since it can't be done thread-safely</comment>
+        <if_stmt><if>if <condition>(<expr><call><name>isStillAllocating</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name><name>IntegerInterval</name><operator>.</operator><name>Set</name></name></argument>&gt;</argument_list></name></name></argument>&gt;</argument_list></name></type> <name>iter</name> <init>= <expr><call><name><name>tableClean</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>iterator</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <while>while <condition>(<expr><call><name><name>iter</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name><name>IntegerInterval</name><operator>.</operator><name>Set</name></name></argument>&gt;</argument_list></name></name></type> <name>clean</name> <init>= <expr><call><name><name>iter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>TableId</name></type> <name>tableId</name> <init>= <expr><call><name><name>clean</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>IntegerInterval</name><operator>.</operator><name>Set</name></name></type> <name>cleanSet</name> <init>= <expr><call><name><name>clean</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>IntegerInterval</name></type> <name>dirtyInterval</name> <init>= <expr><call><name><name>tableDirty</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>tableId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>dirtyInterval</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>cleanSet</name><operator>.</operator><name>covers</name></name><argument_list>(<argument><expr><name>dirtyInterval</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>tableDirty</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>tableId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>iter</name><operator>.</operator><name>remove</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return a collection of dirty CFIDs for this segment file.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>&gt;</argument_list></name></type> <name>getDirtyTableIds</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>tableClean</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call> <operator>||</operator> <call><name><name>tableDirty</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>tableDirty</name><operator>.</operator><name>keySet</name></name><argument_list>()</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>&gt;</argument_list></name></type> <name>r</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>tableDirty</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name>IntegerInterval</name></argument>&gt;</argument_list></name></name></type> <name>dirty</name> <range>: <expr><call><name><name>tableDirty</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>TableId</name></type> <name>tableId</name> <init>= <expr><call><name><name>dirty</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>IntegerInterval</name></type> <name>dirtyInterval</name> <init>= <expr><call><name><name>dirty</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>IntegerInterval</name><operator>.</operator><name>Set</name></name></type> <name>cleanSet</name> <init>= <expr><call><name><name>tableClean</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>tableId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>cleanSet</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <operator>!</operator><call><name><name>cleanSet</name><operator>.</operator><name>covers</name></name><argument_list>(<argument><expr><name>dirtyInterval</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>r</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>dirty</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><name>r</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return true if this segment is unused and safe to recycle or delete
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>boolean</name></type> <name>isUnused</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// if room to allocate, we're still in use as the active allocatingFrom,</comment>
+        <comment type="line">// so we don't want to race with updates to tableClean with removeCleanFromDirty</comment>
+        <if_stmt><if>if <condition>(<expr><call><name>isStillAllocating</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name>removeCleanFromDirty</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name><name>tableDirty</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check to see if a certain CommitLogPosition is contained by this segment file.
+     *
+     * @param   context the commit log segment position to be checked
+     * @return  true if the commit log segment position is contained by this segment file.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>contains</name><parameter_list>(<parameter><decl><type><name>CommitLogPosition</name></type> <name>context</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name><name>context</name><operator>.</operator><name>segmentId</name></name> <operator>==</operator> <name>id</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// For debugging, not fast</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>dirtyString</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>sb</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>TableId</name></type> <name>tableId</name> <range>: <expr><call><name>getDirtyTableIds</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>TableMetadata</name></type> <name>m</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getTableMetadata</name></name><argument_list>(<argument><expr><name>tableId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><ternary><condition><expr><name>m</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="string">"&lt;deleted&gt;"</literal></expr> </then><else>: <expr><name><name>m</name><operator>.</operator><name>name</name></name></expr></else></ternary></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">" ("</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>tableId</name></expr></argument>)</argument_list></call>
+              <operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">", dirty: "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><call><name><name>tableDirty</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>tableId</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call>
+              <operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">", clean: "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><call><name><name>tableClean</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>tableId</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call>
+              <operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">"), "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><call><name><name>sb</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function_decl><type><specifier>abstract</specifier> <specifier>public</specifier> <name>long</name></type> <name>onDiskSize</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>contentSize</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>lastSyncedOffset</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="string">"CommitLogSegment("</literal> <operator>+</operator> <call><name>getPath</name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="char">')'</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>CommitLogSegmentFileComparator</name> <super_list><implements>implements <super><name><name>Comparator</name><argument_list type="generic">&lt;<argument><name>File</name></argument>&gt;</argument_list></name></super></implements></super_list>
+    <block>{
+        <function><type><specifier>public</specifier> <name>int</name></type> <name>compare</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>f</name></decl></parameter>, <parameter><decl><type><name>File</name></type> <name>f2</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>CommitLogDescriptor</name></type> <name>desc</name> <init>= <expr><call><name><name>CommitLogDescriptor</name><operator>.</operator><name>fromFileName</name></name><argument_list>(<argument><expr><call><name><name>f</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>CommitLogDescriptor</name></type> <name>desc2</name> <init>= <expr><call><name><name>CommitLogDescriptor</name><operator>.</operator><name>fromFileName</name></name><argument_list>(<argument><expr><call><name><name>f2</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <return>return <expr><call><name><name>Long</name><operator>.</operator><name>compare</name></name><argument_list>(<argument><expr><name><name>desc</name><operator>.</operator><name>id</name></name></expr></argument>, <argument><expr><name><name>desc2</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>public</specifier> <name>CDCState</name></type> <name>getCDCState</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>cdcState</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Change the current cdcState on this CommitLogSegment. There are some restrictions on state transitions and this
+     * method is idempotent.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setCDCState</name><parameter_list>(<parameter><decl><type><name>CDCState</name></type> <name>newState</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>newState</name> <operator>==</operator> <name>cdcState</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// Also synchronized in CDCSizeTracker.processNewSegment and .processDiscardedSegment</comment>
+        <synchronized>synchronized<init>(<expr><name>cdcStateLock</name></expr>)</init>
+        <block>{<block_content>
+            <comment type="line">// Need duplicate CONTAINS to be idempotent since 2 threads can race on this lock</comment>
+            <if_stmt><if>if <condition>(<expr><name>cdcState</name> <operator>==</operator> <name><name>CDCState</name><operator>.</operator><name>CONTAINS</name></name> <operator>&amp;&amp;</operator> <name>newState</name> <operator>!=</operator> <name><name>CDCState</name><operator>.</operator><name>CONTAINS</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Cannot transition from CONTAINS to any other state."</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>cdcState</name> <operator>==</operator> <name><name>CDCState</name><operator>.</operator><name>FORBIDDEN</name></name> <operator>&amp;&amp;</operator> <name>newState</name> <operator>!=</operator> <name><name>CDCState</name><operator>.</operator><name>PERMITTED</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Only transition from FORBIDDEN to PERMITTED is allowed."</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><name>cdcState</name> <operator>=</operator> <name>newState</name></expr>;</expr_stmt>
+        </block_content>}</block></synchronized>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * A simple class for tracking information about the portion of a segment that has been allocated to a log write.
+     */</comment>
+    <class><specifier>protected</specifier> <specifier>static</specifier> class <name>Allocation</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>CommitLogSegment</name></type> <name>segment</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>appendOp</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>position</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ByteBuffer</name></type> <name>buffer</name></decl>;</decl_stmt>
+
+        <constructor><name>Allocation</name><parameter_list>(<parameter><decl><type><name>CommitLogSegment</name></type> <name>segment</name></decl></parameter>, <parameter><decl><type><name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>appendOp</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>position</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>segment</name></name> <operator>=</operator> <name>segment</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>appendOp</name></name> <operator>=</operator> <name>appendOp</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>position</name></name> <operator>=</operator> <name>position</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>buffer</name></name> <operator>=</operator> <name>buffer</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><name>CommitLogSegment</name></type> <name>getSegment</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>segment</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>ByteBuffer</name></type> <name>getBuffer</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>buffer</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="line">// markWritten() MUST be called once we are done with the segment or the CL will never flush</comment>
+        <comment type="line">// but must not be called more than once</comment>
+        <function><type><name>void</name></type> <name>markWritten</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>appendOp</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><name>void</name></type> <name>awaitDiskSync</name><parameter_list>(<parameter><decl><type><name>Timer</name></type> <name>waitingOnCommit</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>segment</name><operator>.</operator><name>waitForSync</name></name><argument_list>(<argument><expr><name>position</name></expr></argument>, <argument><expr><name>waitingOnCommit</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Returns the position in the CommitLogSegment at the end of this allocation.
+         */</comment>
+        <function><type><specifier>public</specifier> <name>CommitLogPosition</name></type> <name>getCommitLogPosition</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>CommitLogPosition</name><argument_list>(<argument><expr><name><name>segment</name><operator>.</operator><name>id</name></name></expr></argument>, <argument><expr><call><name><name>buffer</name><operator>.</operator><name>limit</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

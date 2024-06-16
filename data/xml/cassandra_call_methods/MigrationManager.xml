@@ -1,0 +1,355 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/schema/MigrationManager.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>management</name><operator>.</operator><name>ManagementFactory</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>LongSupplier</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Futures</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>AlreadyExistsException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>ConfigurationException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>IVersionedSerializer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataInputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>Message</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>MessagingService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>Keyspaces</name><operator>.</operator><name>KeyspacesDiff</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Stage</name><operator>.</operator><name>MIGRATION</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>Verb</name><operator>.</operator><name>SCHEMA_PUSH_REQ</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>MigrationManager</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>MigrationManager</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>MigrationManager</name></type> <name>instance</name> <init>= <expr><operator>new</operator> <call><name>MigrationManager</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <constructor><specifier>private</specifier> <name>MigrationManager</name><parameter_list>()</parameter_list> <block>{<block_content/>}</block></constructor>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>shouldPushSchemaTo</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// only push schema to nodes with known and equal versions</comment>
+        <return>return <expr><operator>!</operator><call><name><name>endpoint</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call>
+               <operator>&amp;&amp;</operator> <call><name><name>MessagingService</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>versions</name><operator>.</operator><name>knows</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call>
+               <operator>&amp;&amp;</operator> <call><name><name>MessagingService</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>versions</name><operator>.</operator><name>getRaw</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call> <operator>==</operator> <name><name>MessagingService</name><operator>.</operator><name>current_version</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>announceNewKeyspace</name><parameter_list>(<parameter><decl><type><name>KeyspaceMetadata</name></type> <name>ksm</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>ConfigurationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>announceNewKeyspace</name><argument_list>(<argument><expr><name>ksm</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>announceNewKeyspace</name><parameter_list>(<parameter><decl><type><name>KeyspaceMetadata</name></type> <name>ksm</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>announceLocally</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>ConfigurationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>announceNewKeyspace</name><argument_list>(<argument><expr><name>ksm</name></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>timestampMicros</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>announceLocally</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>announceNewKeyspace</name><parameter_list>(<parameter><decl><type><name>KeyspaceMetadata</name></type> <name>ksm</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timestamp</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>announceLocally</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>ConfigurationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>ksm</name><operator>.</operator><name>validate</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getKeyspaceMetadata</name></name><argument_list>(<argument><expr><name><name>ksm</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>AlreadyExistsException</name><argument_list>(<argument><expr><name><name>ksm</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Create new Keyspace: {}"</literal></expr></argument>, <argument><expr><name>ksm</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>announce</name><argument_list>(<argument><expr><call><name><name>SchemaKeyspace</name><operator>.</operator><name>makeCreateKeyspaceMutation</name></name><argument_list>(<argument><expr><name>ksm</name></expr></argument>, <argument><expr><name>timestamp</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>announceLocally</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>announceNewTable</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>cfm</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>announceNewTable</name><argument_list>(<argument><expr><name>cfm</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>timestampMicros</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>announceNewTable</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>cfm</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>throwOnDuplicate</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timestamp</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>cfm</name><operator>.</operator><name>validate</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>KeyspaceMetadata</name></type> <name>ksm</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getKeyspaceMetadata</name></name><argument_list>(<argument><expr><name><name>cfm</name><operator>.</operator><name>keyspace</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>ksm</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>ConfigurationException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Cannot add table '%s' to non existing keyspace '%s'."</literal></expr></argument>, <argument><expr><name><name>cfm</name><operator>.</operator><name>name</name></name></expr></argument>, <argument><expr><name><name>cfm</name><operator>.</operator><name>keyspace</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if>
+        <comment type="line">// If we have a table or a view which has the same name, we can't add a new one</comment>
+        <if type="elseif">else if <condition>(<expr><name>throwOnDuplicate</name> <operator>&amp;&amp;</operator> <call><name><name>ksm</name><operator>.</operator><name>getTableOrViewNullable</name></name><argument_list>(<argument><expr><name><name>cfm</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>AlreadyExistsException</name><argument_list>(<argument><expr><name><name>cfm</name><operator>.</operator><name>keyspace</name></name></expr></argument>, <argument><expr><name><name>cfm</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Create new table: {}"</literal></expr></argument>, <argument><expr><name>cfm</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>announce</name><argument_list>(<argument><expr><call><name><name>SchemaKeyspace</name><operator>.</operator><name>makeCreateTableMutation</name></name><argument_list>(<argument><expr><name>ksm</name></expr></argument>, <argument><expr><name>cfm</name></expr></argument>, <argument><expr><name>timestamp</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name>void</name></type> <name>announceKeyspaceUpdate</name><parameter_list>(<parameter><decl><type><name>KeyspaceMetadata</name></type> <name>ksm</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>ksm</name><operator>.</operator><name>validate</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>KeyspaceMetadata</name></type> <name>oldKsm</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getKeyspaceMetadata</name></name><argument_list>(<argument><expr><name><name>ksm</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>oldKsm</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>ConfigurationException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Cannot update non existing keyspace '%s'."</literal></expr></argument>, <argument><expr><name><name>ksm</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Update Keyspace '{}' From {} To {}"</literal></expr></argument>, <argument><expr><name><name>ksm</name><operator>.</operator><name>name</name></name></expr></argument>, <argument><expr><name>oldKsm</name></expr></argument>, <argument><expr><name>ksm</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>announce</name><argument_list>(<argument><expr><call><name><name>SchemaKeyspace</name><operator>.</operator><name>makeCreateKeyspaceMutation</name></name><argument_list>(<argument><expr><name><name>ksm</name><operator>.</operator><name>name</name></name></expr></argument>, <argument><expr><name><name>ksm</name><operator>.</operator><name>params</name></name></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>timestampMicros</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>announceTableUpdate</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>tm</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>announceTableUpdate</name><argument_list>(<argument><expr><name>tm</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>announceTableUpdate</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>updated</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>announceLocally</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>updated</name><operator>.</operator><name>validate</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>TableMetadata</name></type> <name>current</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getTableMetadata</name></name><argument_list>(<argument><expr><name><name>updated</name><operator>.</operator><name>keyspace</name></name></expr></argument>, <argument><expr><name><name>updated</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>current</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>ConfigurationException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Cannot update non existing table '%s' in keyspace '%s'."</literal></expr></argument>, <argument><expr><name><name>updated</name><operator>.</operator><name>name</name></name></expr></argument>, <argument><expr><name><name>updated</name><operator>.</operator><name>keyspace</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <decl_stmt><decl><type><name>KeyspaceMetadata</name></type> <name>ksm</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getKeyspaceMetadata</name></name><argument_list>(<argument><expr><name><name>current</name><operator>.</operator><name>keyspace</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <expr_stmt><expr><call><name><name>updated</name><operator>.</operator><name>validateCompatibility</name></name><argument_list>(<argument><expr><name>current</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>timestamp</name> <init>= <expr><call><name><name>FBUtilities</name><operator>.</operator><name>timestampMicros</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Update table '{}/{}' From {} To {}"</literal></expr></argument>, <argument><expr><name><name>current</name><operator>.</operator><name>keyspace</name></name></expr></argument>, <argument><expr><name><name>current</name><operator>.</operator><name>name</name></name></expr></argument>, <argument><expr><name>current</name></expr></argument>, <argument><expr><name>updated</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name><name>Mutation</name><operator>.</operator><name>SimpleBuilder</name></name></type> <name>builder</name> <init>= <expr><call><name><name>SchemaKeyspace</name><operator>.</operator><name>makeUpdateTableMutation</name></name><argument_list>(<argument><expr><name>ksm</name></expr></argument>, <argument><expr><name>current</name></expr></argument>, <argument><expr><name>updated</name></expr></argument>, <argument><expr><name>timestamp</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <expr_stmt><expr><call><name>announce</name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>announceLocally</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name>void</name></type> <name>announceKeyspaceDrop</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>KeyspaceMetadata</name></type> <name>oldKsm</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getKeyspaceMetadata</name></name><argument_list>(<argument><expr><name>ksName</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>oldKsm</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>ConfigurationException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Cannot drop non existing keyspace '%s'."</literal></expr></argument>, <argument><expr><name>ksName</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Drop Keyspace '{}'"</literal></expr></argument>, <argument><expr><name><name>oldKsm</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>announce</name><argument_list>(<argument><expr><call><name><name>SchemaKeyspace</name><operator>.</operator><name>makeDropKeyspaceMutation</name></name><argument_list>(<argument><expr><name>oldKsm</name></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>timestampMicros</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>announceTableDrop</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>cfName</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>announceLocally</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>TableMetadata</name></type> <name>tm</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getTableMetadata</name></name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>cfName</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>tm</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>ConfigurationException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Cannot drop non existing table '%s' in keyspace '%s'."</literal></expr></argument>, <argument><expr><name>cfName</name></expr></argument>, <argument><expr><name>ksName</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <decl_stmt><decl><type><name>KeyspaceMetadata</name></type> <name>ksm</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getKeyspaceMetadata</name></name><argument_list>(<argument><expr><name>ksName</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Drop table '{}/{}'"</literal></expr></argument>, <argument><expr><name><name>tm</name><operator>.</operator><name>keyspace</name></name></expr></argument>, <argument><expr><name><name>tm</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>announce</name><argument_list>(<argument><expr><call><name><name>SchemaKeyspace</name><operator>.</operator><name>makeDropTableMutation</name></name><argument_list>(<argument><expr><name>ksm</name></expr></argument>, <argument><expr><name>tm</name></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>timestampMicros</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>announceLocally</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * actively announce a new version to active hosts via rpc
+     * @param schema The schema mutation to be applied
+     */</comment>
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>announce</name><parameter_list>(<parameter><decl><type><name><name>Mutation</name><operator>.</operator><name>SimpleBuilder</name></name></type> <name>schema</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>announceLocally</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>mutations</name> <init>= <expr><call><name><name>Collections</name><operator>.</operator><name>singletonList</name></name><argument_list>(<argument><expr><call><name><name>schema</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>announceLocally</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>merge</name></name><argument_list>(<argument><expr><name>mutations</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>announce</name><argument_list>(<argument><expr><name>mutations</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>announce</name><parameter_list>(<parameter><decl><type><name>Mutation</name></type> <name>change</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>announce</name><argument_list>(<argument><expr><call><name><name>Collections</name><operator>.</operator><name>singleton</name></name><argument_list>(<argument><expr><name>change</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>announce</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>schema</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>f</name> <init>= <expr><call><name>announceWithoutPush</name><argument_list>(<argument><expr><name>schema</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>schemaDestinationEndpoints</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>schemaEndpointsIgnored</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>message</name> <init>= <expr><call><name><name>Message</name><operator>.</operator><name>out</name></name><argument_list>(<argument><expr><name>SCHEMA_PUSH_REQ</name></expr></argument>, <argument><expr><name>schema</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name> <range>: <expr><call><name><name>Gossiper</name><operator>.</operator><name>instance</name><operator>.</operator><name>getLiveMembers</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name>shouldPushSchemaTo</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>MessagingService</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>send</name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>schemaDestinationEndpoints</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>schemaEndpointsIgnored</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></for>
+
+        <expr_stmt><expr><call><name><name>SchemaAnnouncementDiagnostics</name><operator>.</operator><name>schemaMutationsAnnounced</name></name><argument_list>(<argument><expr><name>schemaDestinationEndpoints</name></expr></argument>, <argument><expr><name>schemaEndpointsIgnored</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>FBUtilities</name><operator>.</operator><name>waitOnFuture</name></name><argument_list>(<argument><expr><name>f</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>announceWithoutPush</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>schema</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>MIGRATION</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><lambda><parameter_list>()</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>mergeAndAnnounceVersion</name></name><argument_list>(<argument><expr><name>schema</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>KeyspacesDiff</name></type> <name>announce</name><parameter_list>(<parameter><decl><type><name>SchemaTransformation</name></type> <name>transformation</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>locally</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>now</name> <init>= <expr><call><name><name>FBUtilities</name><operator>.</operator><name>timestampMicros</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name><name>Schema</name><operator>.</operator><name>TransformationResult</name></name></argument>&gt;</argument_list></name></type> <name>future</name> <init>=
+            <expr><call><name><name>MIGRATION</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><lambda><parameter_list>()</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>transform</name></name><argument_list>(<argument><expr><name>transformation</name></expr></argument>, <argument><expr><name>locally</name></expr></argument>, <argument><expr><name>now</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>Schema</name><operator>.</operator><name>TransformationResult</name></name></type> <name>result</name> <init>= <expr><call><name><name>Futures</name><operator>.</operator><name>getUnchecked</name></name><argument_list>(<argument><expr><name>future</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name><name>result</name><operator>.</operator><name>success</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><name><name>result</name><operator>.</operator><name>exception</name></name></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>locally</name> <operator>||</operator> <call><name><name>result</name><operator>.</operator><name>diff</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name><name>result</name><operator>.</operator><name>diff</name></name></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>schemaDestinationEndpoints</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>schemaEndpointsIgnored</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>message</name> <init>= <expr><call><name><name>Message</name><operator>.</operator><name>out</name></name><argument_list>(<argument><expr><name>SCHEMA_PUSH_REQ</name></expr></argument>, <argument><expr><name><name>result</name><operator>.</operator><name>mutations</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name> <range>: <expr><call><name><name>Gossiper</name><operator>.</operator><name>instance</name><operator>.</operator><name>getLiveMembers</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name>shouldPushSchemaTo</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>MessagingService</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>send</name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>schemaDestinationEndpoints</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>schemaEndpointsIgnored</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></for>
+
+        <expr_stmt><expr><call><name><name>SchemaAnnouncementDiagnostics</name><operator>.</operator><name>schemaTransformationAnnounced</name></name><argument_list>(<argument><expr><name>schemaDestinationEndpoints</name></expr></argument>, <argument><expr><name>schemaEndpointsIgnored</name></expr></argument>,
+                                                                    <argument><expr><name>transformation</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <return>return <expr><name><name>result</name><operator>.</operator><name>diff</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Clear all locally stored schema information and reset schema to initial state.
+     * Called by user (via JMX) who wants to get rid of schema disagreement.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>resetLocalSchema</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Starting local schema reset..."</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Truncating schema tables..."</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>SchemaMigrationDiagnostics</name><operator>.</operator><name>resetLocalSchema</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>truncateSchemaKeyspace</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Clearing local schema keyspace definitions..."</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>liveEndpoints</name> <init>= <expr><call><name><name>Gossiper</name><operator>.</operator><name>instance</name><operator>.</operator><name>getLiveMembers</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>liveEndpoints</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// force migration if there are nodes around</comment>
+        <for>for <control>(<init><decl><type><name>InetAddressAndPort</name></type> <name>node</name> <range>: <expr><name>liveEndpoints</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>EndpointState</name></type> <name>state</name> <init>= <expr><call><name><name>Gossiper</name><operator>.</operator><name>instance</name><operator>.</operator><name>getEndpointStateForEndpoint</name></name><argument_list>(<argument><expr><name>node</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></type> <name>pull</name> <init>= <expr><call><name><name>MigrationCoordinator</name><operator>.</operator><name>instance</name><operator>.</operator><name>reportEndpointVersion</name></name><argument_list>(<argument><expr><name>node</name></expr></argument>, <argument><expr><name>state</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>pull</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>FBUtilities</name><operator>.</operator><name>waitOnFuture</name></name><argument_list>(<argument><expr><name>pull</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Local schema reset is complete."</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * We have a set of non-local, distributed system keyspaces, e.g. system_traces, system_auth, etc.
+     * (see {@link SchemaConstants#REPLICATED_SYSTEM_KEYSPACE_NAMES}), that need to be created on cluster initialisation,
+     * and later evolved on major upgrades (sometimes minor too). This method compares the current known definitions
+     * of the tables (if the keyspace exists) to the expected, most modern ones expected by the running version of C*;
+     * if any changes have been detected, a schema Mutation will be created which, when applied, should make
+     * cluster's view of that keyspace aligned with the expected modern definition.
+     *
+     * @param keyspace   the expected modern definition of the keyspace
+     * @param generation timestamp to use for the table changes in the schema mutation
+     *
+     * @return empty Optional if the current definition is up to date, or an Optional with the Mutation that would
+     *         bring the schema in line with the expected definition.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>Optional</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>evolveSystemKeyspace</name><parameter_list>(<parameter><decl><type><name>KeyspaceMetadata</name></type> <name>keyspace</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>generation</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Mutation</name><operator>.</operator><name>SimpleBuilder</name></name></type> <name>builder</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>KeyspaceMetadata</name></type> <name>definedKeyspace</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getKeyspaceMetadata</name></name><argument_list>(<argument><expr><name><name>keyspace</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Tables</name></type> <name>definedTables</name> <init>= <expr><ternary><condition><expr><literal type="null">null</literal> <operator>==</operator> <name>definedKeyspace</name></expr> ?</condition><then> <expr><call><name><name>Tables</name><operator>.</operator><name>none</name></name><argument_list>()</argument_list></call></expr> </then><else>: <expr><name><name>definedKeyspace</name><operator>.</operator><name>tables</name></name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>TableMetadata</name></type> <name>table</name> <range>: <expr><name><name>keyspace</name><operator>.</operator><name>tables</name></name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>table</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name><name>definedTables</name><operator>.</operator><name>getNullable</name></name><argument_list>(<argument><expr><name><name>table</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <continue>continue;</continue></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><literal type="null">null</literal> <operator>==</operator> <name>builder</name></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// for the keyspace definition itself (name, replication, durability) always use generation 0;</comment>
+                <comment type="line">// this ensures that any changes made to replication by the user will never be overwritten.</comment>
+                <expr_stmt><expr><name>builder</name> <operator>=</operator> <call><name><name>SchemaKeyspace</name><operator>.</operator><name>makeCreateKeyspaceMutation</name></name><argument_list>(<argument><expr><name><name>keyspace</name><operator>.</operator><name>name</name></name></expr></argument>, <argument><expr><name><name>keyspace</name><operator>.</operator><name>params</name></name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <comment type="line">// now set the timestamp to generation, so the tables have the expected timestamp</comment>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>timestamp</name></name><argument_list>(<argument><expr><name>generation</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <comment type="line">// for table definitions always use the provided generation; these tables, unlike their containing</comment>
+            <comment type="line">// keyspaces, are *NOT* meant to be altered by the user; if their definitions need to change,</comment>
+            <comment type="line">// the schema must be updated in code, and the appropriate generation must be bumped.</comment>
+            <expr_stmt><expr><call><name><name>SchemaKeyspace</name><operator>.</operator><name>addTableToSchemaMutation</name></name><argument_list>(<argument><expr><name>table</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><name>builder</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <return>return <expr><ternary><condition><expr><name>builder</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name><name>Optional</name><operator>.</operator><name>empty</name></name><argument_list>()</argument_list></call></expr> </then><else>: <expr><call><name><name>Optional</name><operator>.</operator><name>of</name></name><argument_list>(<argument><expr><call><name><name>builder</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>MigrationsSerializer</name> <super_list><implements>implements <super><name><name>IVersionedSerializer</name><argument_list type="generic">&lt;<argument><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <name>MigrationsSerializer</name></type> <name>instance</name> <init>= <expr><operator>new</operator> <call><name>MigrationsSerializer</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>schema</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><call><name><name>schema</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>Mutation</name></type> <name>mutation</name> <range>: <expr><name>schema</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>Mutation</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>mutation</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>count</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>schema</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>count</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>count</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>schema</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>Mutation</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+            <return>return <expr><name>schema</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>serializedSize</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>schema</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><call><name><name>TypeSizes</name><operator>.</operator><name>sizeof</name></name><argument_list>(<argument><expr><call><name><name>schema</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>Mutation</name></type> <name>mutation</name> <range>: <expr><name>schema</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>mutation</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            <return>return <expr><name>size</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

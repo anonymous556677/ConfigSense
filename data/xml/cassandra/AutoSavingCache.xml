@@ -1,0 +1,460 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/cache/AutoSavingCache.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cache</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Callable</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Executors</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Future</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ScheduledFuture</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>cliffc</name><operator>.</operator><name>high_scale_lib</name><operator>.</operator><name>NonBlockingHashSet</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ListenableFuture</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ListeningExecutorService</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>MoreExecutors</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ScheduledExecutors</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableId</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>Schema</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>SchemaConstants</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ColumnFamilyStore</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>compaction</name><operator>.</operator><name>CompactionInfo</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>compaction</name><operator>.</operator><name>CompactionManager</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>compaction</name><operator>.</operator><name>OperationType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>compaction</name><operator>.</operator><name>CompactionInfo</name><operator>.</operator><name>Unit</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>FSWriteError</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>CorruptFileException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataInputPlus</name><operator>.</operator><name>DataInputStreamPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>CacheService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>JVMStabilityInspector</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>Pair</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>UUIDGen</name></name>;</import>
+
+<class><specifier>public</specifier> class <name><name>AutoSavingCache</name><parameter_list>&lt;<parameter><name>K</name> <extends>extends <name>CacheKey</name></extends></parameter>, <parameter><name>V</name></parameter>&gt;</parameter_list></name> <super_list><extends>extends <super><name><name>InstrumentingCache</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></super></extends></super_list>
+<block>{
+    <interface><specifier>public</specifier> interface <name>IStreamFactory</name>
+    <block>{
+        <function_decl><type><name>InputStream</name></type> <name>getInputStream</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>dataPath</name></decl></parameter>, <parameter><decl><type><name>File</name></type> <name>crcPath</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>;</function_decl>
+        <function_decl><type><name>OutputStream</name></type> <name>getOutputStream</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>dataPath</name></decl></parameter>, <parameter><decl><type><name>File</name></type> <name>crcPath</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>FileNotFoundException</name></expr></argument></throws>;</function_decl>
+    }</block></interface>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>AutoSavingCache</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/** True if a cache flush is currently executing: only one may execute at a time. */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name><name>CacheService</name><operator>.</operator><name>CacheType</name></name></argument>&gt;</argument_list></name></type> <name>flushInProgress</name> <init>= <expr><operator>new</operator> <call><name><name>NonBlockingHashSet</name><argument_list type="generic">&lt;<argument><name><name>CacheService</name><operator>.</operator><name>CacheType</name></name></argument>&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>volatile</specifier> <name><name>ScheduledFuture</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>saveTask</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name><name>CacheService</name><operator>.</operator><name>CacheType</name></name></type> <name>cacheType</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>CacheSerializer</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></type> <name>cacheLoader</name></decl>;</decl_stmt>
+
+    <comment type="block">/*
+     * CASSANDRA-10155 required a format change to fix 2i indexes and caching.
+     * 2.2 is already at version "c" and 3.0 is at "d".
+     *
+     * Since cache versions match exactly and there is no partial fallback just add
+     * a minor version letter.
+     *
+     * Sticking with "d" is fine for 3.0 since it has never been released or used by another version
+     *
+     * "e" introduced with CASSANDRA-11206, omits IndexInfo from key-cache, stores offset into index-file
+     *
+     * "f" introduced with CASSANDRA-9425, changes "keyspace.table.index" in cache keys to TableMetadata.id+TableMetadata.indexName
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>CURRENT_VERSION</name> <init>= <expr><literal type="string">"f"</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>volatile</specifier> <name>IStreamFactory</name></type> <name>streamFactory</name> <init>= <expr><operator>new</operator> <class><super><name>IStreamFactory</name></super><argument_list>()</argument_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>SequentialWriterOption</name></type> <name>writerOption</name> <init>= <expr><call><name><name>SequentialWriterOption</name><operator>.</operator><name>newBuilder</name></name><argument_list>()</argument_list></call>
+                                                                    <operator>.</operator><call><name>trickleFsync</name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getTrickleFsync</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call>
+                                                                    <operator>.</operator><call><name>trickleFsyncByteInterval</name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getTrickleFsyncIntervalInKb</name></name><argument_list>()</argument_list></call> <operator>*</operator> <literal type="number">1024</literal></expr></argument>)</argument_list></call>
+                                                                    <operator>.</operator><call><name>finishOnClose</name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>build</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <function><type><specifier>public</specifier> <name>InputStream</name></type> <name>getInputStream</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>dataPath</name></decl></parameter>, <parameter><decl><type><name>File</name></type> <name>crcPath</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>ChecksummedRandomAccessReader</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><name>dataPath</name></expr></argument>, <argument><expr><name>crcPath</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>OutputStream</name></type> <name>getOutputStream</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>dataPath</name></decl></parameter>, <parameter><decl><type><name>File</name></type> <name>crcPath</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>ChecksummedSequentialWriter</name><argument_list>(<argument><expr><name>dataPath</name></expr></argument>, <argument><expr><name>crcPath</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>writerOption</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// Unused, but exposed for a reason. See CASSANDRA-8096.</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>setStreamFactory</name><parameter_list>(<parameter><decl><type><name>IStreamFactory</name></type> <name>streamFactory</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>AutoSavingCache</name><operator>.</operator><name>streamFactory</name></name> <operator>=</operator> <name>streamFactory</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <constructor><specifier>public</specifier> <name>AutoSavingCache</name><parameter_list>(<parameter><decl><type><name><name>ICache</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></type> <name>cache</name></decl></parameter>, <parameter><decl><type><name><name>CacheService</name><operator>.</operator><name>CacheType</name></name></type> <name>cacheType</name></decl></parameter>, <parameter><decl><type><name><name>CacheSerializer</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></type> <name>cacheloader</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><call><name><name>cacheType</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>cache</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cacheType</name></name> <operator>=</operator> <name>cacheType</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cacheLoader</name></name> <operator>=</operator> <name>cacheloader</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>File</name></type> <name>getCacheDataPath</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getSerializedCachePath</name></name><argument_list>( <argument><expr><name>cacheType</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><literal type="string">"db"</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>File</name></type> <name>getCacheCrcPath</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getSerializedCachePath</name></name><argument_list>( <argument><expr><name>cacheType</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><literal type="string">"crc"</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Writer</name></type> <name>getWriter</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>keysToSave</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>Writer</name><argument_list>(<argument><expr><name>keysToSave</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>scheduleSaving</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>savePeriodInSeconds</name></decl></parameter>, <parameter><decl><type><specifier>final</specifier> <name>int</name></type> <name>keysToSave</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>saveTask</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>saveTask</name><operator>.</operator><name>cancel</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt> <comment type="line">// Do not interrupt an in-progress save</comment>
+            <expr_stmt><expr><name>saveTask</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>savePeriodInSeconds</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Runnable</name></type> <name>runnable</name> <init>= <expr><operator>new</operator> <class><super><name>Runnable</name></super><argument_list>()</argument_list>
+            <block>{
+                <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name>submitWrite</name><argument_list>(<argument><expr><name>keysToSave</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></function>
+            }</block></class></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>saveTask</name> <operator>=</operator> <call><name><name>ScheduledExecutors</name><operator>.</operator><name>optionalTasks</name><operator>.</operator><name>scheduleWithFixedDelay</name></name><argument_list>(<argument><expr><name>runnable</name></expr></argument>,
+                                                                               <argument><expr><name>savePeriodInSeconds</name></expr></argument>,
+                                                                               <argument><expr><name>savePeriodInSeconds</name></expr></argument>,
+                                                                               <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>SECONDS</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name>Integer</name></argument>&gt;</argument_list></name></type> <name>loadSavedAsync</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>ListeningExecutorService</name></type> <name>es</name> <init>= <expr><call><name><name>MoreExecutors</name><operator>.</operator><name>listeningDecorator</name></name><argument_list>(<argument><expr><call><name><name>Executors</name><operator>.</operator><name>newSingleThreadExecutor</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>start</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>ListenableFuture</name><argument_list type="generic">&lt;<argument><name>Integer</name></argument>&gt;</argument_list></name></type> <name>cacheLoad</name> <init>= <expr><call><name><name>es</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><operator>new</operator> <class><super><name><name>Callable</name><argument_list type="generic">&lt;<argument><name>Integer</name></argument>&gt;</argument_list></name></super><argument_list>()</argument_list>
+        <block>{
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>Integer</name></type> <name>call</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><call><name>loadSaved</name><argument_list>()</argument_list></call></expr>;</return>
+            </block_content>}</block></function>
+        }</block></class></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>cacheLoad</name><operator>.</operator><name>addListener</name></name><argument_list>(<argument><expr><operator>new</operator> <class><super><name>Runnable</name></super><argument_list>()</argument_list>
+        <block>{
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name>size</name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Completed loading ({} ms; {} keys) {} cache"</literal></expr></argument>,
+                            <argument><expr><call><name><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name><operator>.</operator><name>toMillis</name></name><argument_list>(<argument><expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>start</name></expr></argument>)</argument_list></call></expr></argument>,
+                            <argument><expr><call><name><name>CacheService</name><operator>.</operator><name>instance</name><operator>.</operator><name>keyCache</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>,
+                            <argument><expr><name>cacheType</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>es</name><operator>.</operator><name>shutdown</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></function>
+        }</block></class></expr></argument>, <argument><expr><call><name><name>MoreExecutors</name><operator>.</operator><name>directExecutor</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <return>return <expr><name>cacheLoad</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>loadSaved</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>count</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>start</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// modern format, allows both key and value (so key cache load can be purely sequential)</comment>
+        <decl_stmt><decl><type><name>File</name></type> <name>dataPath</name> <init>= <expr><call><name>getCacheDataPath</name><argument_list>(<argument><expr><name>CURRENT_VERSION</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>File</name></type> <name>crcPath</name> <init>= <expr><call><name>getCacheCrcPath</name><argument_list>(<argument><expr><name>CURRENT_VERSION</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>dataPath</name><operator>.</operator><name>exists</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>crcPath</name><operator>.</operator><name>exists</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>DataInputStreamPlus</name></type> <name>in</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"reading saved cache {}"</literal></expr></argument>, <argument><expr><name>dataPath</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>in</name> <operator>=</operator> <operator>new</operator> <call><name>DataInputStreamPlus</name><argument_list>(<argument><expr><operator>new</operator> <call><name>LengthAvailableInputStream</name><argument_list>(<argument><expr><operator>new</operator> <call><name>BufferedInputStream</name><argument_list>(<argument><expr><call><name><name>streamFactory</name><operator>.</operator><name>getInputStream</name></name><argument_list>(<argument><expr><name>dataPath</name></expr></argument>, <argument><expr><name>crcPath</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>dataPath</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <comment type="line">//Check the schema has not changed since CFs are looked up by name which is ambiguous</comment>
+                <decl_stmt><decl><type><name>UUID</name></type> <name>schemaVersion</name> <init>= <expr><operator>new</operator> <call><name>UUID</name><argument_list>(<argument><expr><call><name><name>in</name><operator>.</operator><name>readLong</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>in</name><operator>.</operator><name>readLong</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>schemaVersion</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getVersion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><literal type="string">"Cache schema version "</literal>
+                                              <operator>+</operator> <name>schemaVersion</name>
+                                              <operator>+</operator> <literal type="string">" does not match current schema version "</literal>
+                                              <operator>+</operator> <call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getVersion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+                <decl_stmt><decl><type><name><name>ArrayDeque</name><argument_list type="generic">&lt;<argument><name><name>Future</name><argument_list type="generic">&lt;<argument><name><name>Pair</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>futures</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayDeque</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>long</name></type> <name>loadByNanos</name> <init>= <expr><name>start</name> <operator>+</operator> <call><name><name>TimeUnit</name><operator>.</operator><name>SECONDS</name><operator>.</operator><name>toNanos</name></name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getCacheLoadTimeout</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <while>while <condition>(<expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <name>loadByNanos</name> <operator>&amp;&amp;</operator> <call><name><name>in</name><operator>.</operator><name>available</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition>
+                <block>{<block_content>
+                    <comment type="line">//tableId and indexName are serialized by the serializers in CacheService</comment>
+                    <comment type="line">//That is delegated there because there are serializer specific conditions</comment>
+                    <comment type="line">//where a cache key is skipped and not written</comment>
+                    <decl_stmt><decl><type><name>TableId</name></type> <name>tableId</name> <init>= <expr><call><name><name>TableId</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>String</name></type> <name>indexName</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUTF</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>indexName</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><name>indexName</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                    <decl_stmt><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getColumnFamilyStoreInstance</name></name><argument_list>(<argument><expr><name>tableId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>indexName</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>cfs</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><name>cfs</name> <operator>=</operator> <call><name><name>cfs</name><operator>.</operator><name>indexManager</name><operator>.</operator><name>getIndexByName</name></name><argument_list>(<argument><expr><name>indexName</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>getBackingTable</name><argument_list>()</argument_list></call><operator>.</operator><call><name>orElse</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                    <decl_stmt><decl><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name><name>Pair</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>entryFuture</name> <init>= <expr><call><name><name>cacheLoader</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>cfs</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <comment type="line">// Key cache entry can return null, if the SSTable doesn't exist.</comment>
+                    <if_stmt><if>if <condition>(<expr><name>entryFuture</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                        <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                    <expr_stmt><expr><call><name><name>futures</name><operator>.</operator><name>offer</name></name><argument_list>(<argument><expr><name>entryFuture</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>count</name><operator>++</operator></expr>;</expr_stmt>
+
+                    <comment type="block">/*
+                     * Kind of unwise to accrue an unbounded number of pending futures
+                     * So now there is this loop to keep a bounded number pending.
+                     */</comment>
+                    <do>do
+                    <block>{<block_content>
+                        <while>while <condition>(<expr><call><name><name>futures</name><operator>.</operator><name>peek</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>futures</name><operator>.</operator><name>peek</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isDone</name><argument_list>()</argument_list></call></expr>)</condition>
+                        <block>{<block_content>
+                            <decl_stmt><decl><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name><name>Pair</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>future</name> <init>= <expr><call><name><name>futures</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                            <decl_stmt><decl><type><name><name>Pair</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></type> <name>entry</name> <init>= <expr><call><name><name>future</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                            <if_stmt><if>if <condition>(<expr><name>entry</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name><name>entry</name><operator>.</operator><name>right</name></name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                                <expr_stmt><expr><call><name>put</name><argument_list>(<argument><expr><name><name>entry</name><operator>.</operator><name>left</name></name></expr></argument>, <argument><expr><name><name>entry</name><operator>.</operator><name>right</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                        </block_content>}</block></while>
+
+                        <if_stmt><if>if <condition>(<expr><call><name><name>futures</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">1000</literal></expr>)</condition><block type="pseudo"><block_content>
+                            <expr_stmt><expr><call><name><name>Thread</name><operator>.</operator><name>yield</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                    </block_content>}</block> while<condition>(<expr><call><name><name>futures</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">1000</literal></expr>)</condition>;</do>
+                </block_content>}</block></while>
+
+                <decl_stmt><decl><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name><name>Pair</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>future</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+                <while>while <condition>(<expr><operator>(</operator><name>future</name> <operator>=</operator> <call><name><name>futures</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call><operator>)</operator> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name><name>Pair</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></type> <name>entry</name> <init>= <expr><call><name><name>future</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>entry</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name><name>entry</name><operator>.</operator><name>right</name></name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name>put</name><argument_list>(<argument><expr><name><name>entry</name><operator>.</operator><name>left</name></name></expr></argument>, <argument><expr><name><name>entry</name><operator>.</operator><name>right</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                </block_content>}</block></while>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>CorruptFileException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>JVMStabilityInspector</name><operator>.</operator><name>inspectThrowable</name></name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Non-fatal checksum error reading saved cache %s"</literal></expr></argument>, <argument><expr><call><name><name>dataPath</name><operator>.</operator><name>getAbsolutePath</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>JVMStabilityInspector</name><operator>.</operator><name>inspectThrowable</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Harmless error reading saved cache %s"</literal></expr></argument>, <argument><expr><call><name><name>dataPath</name><operator>.</operator><name>getAbsolutePath</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch>
+            <finally>finally
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>FileUtils</name><operator>.</operator><name>closeQuietly</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>cacheLoader</name><operator>.</operator><name>cleanupAfterDeserialize</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></finally></try>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"completed reading ({} ms; {} keys) saved cache {}"</literal></expr></argument>,
+                    <argument><expr><call><name><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name><operator>.</operator><name>toMillis</name></name><argument_list>(<argument><expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>start</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>count</name></expr></argument>, <argument><expr><name>dataPath</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <return>return <expr><name>count</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>submitWrite</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>keysToSave</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>CompactionManager</name><operator>.</operator><name>instance</name><operator>.</operator><name>submitCacheWrite</name></name><argument_list>(<argument><expr><call><name>getWriter</name><argument_list>(<argument><expr><name>keysToSave</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>public</specifier> class <name>Writer</name> <super_list><extends>extends <super><name><name>CompactionInfo</name><operator>.</operator><name>Holder</name></name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>K</name></argument>&gt;</argument_list></name></type> <name>keyIterator</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>CompactionInfo</name></type> <name>info</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>keysWritten</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>keysEstimate</name></decl>;</decl_stmt>
+
+        <constructor><specifier>protected</specifier> <name>Writer</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>keysToSave</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><call><name>size</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>keysToSave</name> <operator>&gt;=</operator> <name>size</name> <operator>||</operator> <name>keysToSave</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>keyIterator</name> <operator>=</operator> <call><name>keyIterator</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>keysEstimate</name> <operator>=</operator> <name>size</name></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><name>keyIterator</name> <operator>=</operator> <call><name>hotKeyIterator</name><argument_list>(<argument><expr><name>keysToSave</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>keysEstimate</name> <operator>=</operator> <name>keysToSave</name></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+
+            <decl_stmt><decl><type><name>OperationType</name></type> <name>type</name></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>cacheType</name> <operator>==</operator> <name><name>CacheService</name><operator>.</operator><name>CacheType</name><operator>.</operator><name>KEY_CACHE</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>type</name> <operator>=</operator> <name><name>OperationType</name><operator>.</operator><name>KEY_CACHE_SAVE</name></name></expr>;</expr_stmt></block_content></block></if>
+            <if type="elseif">else if <condition>(<expr><name>cacheType</name> <operator>==</operator> <name><name>CacheService</name><operator>.</operator><name>CacheType</name><operator>.</operator><name>ROW_CACHE</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>type</name> <operator>=</operator> <name><name>OperationType</name><operator>.</operator><name>ROW_CACHE_SAVE</name></name></expr>;</expr_stmt></block_content></block></if>
+            <if type="elseif">else if <condition>(<expr><name>cacheType</name> <operator>==</operator> <name><name>CacheService</name><operator>.</operator><name>CacheType</name><operator>.</operator><name>COUNTER_CACHE</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>type</name> <operator>=</operator> <name><name>OperationType</name><operator>.</operator><name>COUNTER_CACHE_SAVE</name></name></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><name>type</name> <operator>=</operator> <name><name>OperationType</name><operator>.</operator><name>UNKNOWN</name></name></expr>;</expr_stmt></block_content></block></else></if_stmt>
+
+            <expr_stmt><expr><name>info</name> <operator>=</operator> <call><name><name>CompactionInfo</name><operator>.</operator><name>withoutSSTables</name></name><argument_list>(<argument><expr><call><name><name>TableMetadata</name><operator>.</operator><name>minimal</name></name><argument_list>(<argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>SYSTEM_KEYSPACE_NAME</name></name></expr></argument>, <argument><expr><call><name><name>cacheType</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                  <argument><expr><name>type</name></expr></argument>,
+                                                  <argument><expr><literal type="number">0</literal></expr></argument>,
+                                                  <argument><expr><name>keysEstimate</name></expr></argument>,
+                                                  <argument><expr><name><name>Unit</name><operator>.</operator><name>KEYS</name></name></expr></argument>,
+                                                  <argument><expr><call><name><name>UUIDGen</name><operator>.</operator><name>getTimeUUID</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name><name>CacheService</name><operator>.</operator><name>CacheType</name></name></type> <name>cacheType</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>cacheType</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>CompactionInfo</name></type> <name>getCompactionInfo</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// keyset can change in size, thus total can too</comment>
+            <comment type="line">// TODO need to check for this one... was: info.forProgress(keysWritten, Math.max(keysWritten, keys.size()));</comment>
+            <return>return <expr><call><name><name>info</name><operator>.</operator><name>forProgress</name></name><argument_list>(<argument><expr><name>keysWritten</name></expr></argument>, <argument><expr><call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>keysWritten</name></expr></argument>, <argument><expr><name>keysEstimate</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>saveCache</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Deleting old {} files."</literal></expr></argument>, <argument><expr><name>cacheType</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>deleteOldCacheFiles</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>keyIterator</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Skipping {} save, cache is empty."</literal></expr></argument>, <argument><expr><name>cacheType</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>long</name></type> <name>start</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name><name>Pair</name><argument_list type="generic">&lt;<argument><name>File</name></argument>, <argument><name>File</name></argument>&gt;</argument_list></name></type> <name>cacheFilePaths</name> <init>= <expr><call><name>tempCacheFiles</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <try>try <init>(<decl><type><name>WrappedDataOutputStreamPlus</name></type> <name>writer</name> <init>= <expr><operator>new</operator> <call><name>WrappedDataOutputStreamPlus</name><argument_list>(<argument><expr><call><name><name>streamFactory</name><operator>.</operator><name>getOutputStream</name></name><argument_list>(<argument><expr><name><name>cacheFilePaths</name><operator>.</operator><name>left</name></name></expr></argument>, <argument><expr><name><name>cacheFilePaths</name><operator>.</operator><name>right</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+
+                <comment type="line">//Need to be able to check schema version because CF names are ambiguous</comment>
+                <decl_stmt><decl><type><name>UUID</name></type> <name>schemaVersion</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getVersion</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>schemaVersion</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>updateVersion</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>schemaVersion</name> <operator>=</operator> <call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getVersion</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>writer</name><operator>.</operator><name>writeLong</name></name><argument_list>(<argument><expr><call><name><name>schemaVersion</name><operator>.</operator><name>getMostSignificantBits</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>writer</name><operator>.</operator><name>writeLong</name></name><argument_list>(<argument><expr><call><name><name>schemaVersion</name><operator>.</operator><name>getLeastSignificantBits</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <while>while <condition>(<expr><call><name><name>keyIterator</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>K</name></type> <name>key</name> <init>= <expr><call><name><name>keyIterator</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                    <decl_stmt><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getColumnFamilyStoreInstance</name></name><argument_list>(<argument><expr><name><name>key</name><operator>.</operator><name>tableId</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>cfs</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                        <continue>continue;</continue></block_content></block></if></if_stmt> <comment type="line">// the table or 2i has been dropped.</comment>
+                    <if_stmt><if>if <condition>(<expr><name><name>key</name><operator>.</operator><name>indexName</name></name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><name>cfs</name> <operator>=</operator> <call><name><name>cfs</name><operator>.</operator><name>indexManager</name><operator>.</operator><name>getIndexByName</name></name><argument_list>(<argument><expr><name><name>key</name><operator>.</operator><name>indexName</name></name></expr></argument>)</argument_list></call><operator>.</operator><call><name>getBackingTable</name><argument_list>()</argument_list></call><operator>.</operator><call><name>orElse</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                    <expr_stmt><expr><call><name><name>cacheLoader</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><name>writer</name></expr></argument>, <argument><expr><name>cfs</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <expr_stmt><expr><name>keysWritten</name><operator>++</operator></expr>;</expr_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>keysWritten</name> <operator>&gt;=</operator> <name>keysEstimate</name></expr>)</condition><block type="pseudo"><block_content>
+                        <break>break;</break></block_content></block></if></if_stmt>
+                </block_content>}</block></while>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>FileNotFoundException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>FSWriteError</name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><name><name>cacheFilePaths</name><operator>.</operator><name>left</name></name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+
+            <decl_stmt><decl><type><name>File</name></type> <name>cacheFile</name> <init>= <expr><call><name>getCacheDataPath</name><argument_list>(<argument><expr><name>CURRENT_VERSION</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>File</name></type> <name>crcFile</name> <init>= <expr><call><name>getCacheCrcPath</name><argument_list>(<argument><expr><name>CURRENT_VERSION</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <expr_stmt><expr><call><name><name>cacheFile</name><operator>.</operator><name>delete</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt> <comment type="line">// ignore error if it didn't exist</comment>
+            <expr_stmt><expr><call><name><name>crcFile</name><operator>.</operator><name>delete</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>cacheFilePaths</name><operator>.</operator><name>left</name><operator>.</operator><name>renameTo</name></name><argument_list>(<argument><expr><name>cacheFile</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"Unable to rename {} to {}"</literal></expr></argument>, <argument><expr><name><name>cacheFilePaths</name><operator>.</operator><name>left</name></name></expr></argument>, <argument><expr><name>cacheFile</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>cacheFilePaths</name><operator>.</operator><name>right</name><operator>.</operator><name>renameTo</name></name><argument_list>(<argument><expr><name>crcFile</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"Unable to rename {} to {}"</literal></expr></argument>, <argument><expr><name><name>cacheFilePaths</name><operator>.</operator><name>right</name></name></expr></argument>, <argument><expr><name>crcFile</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Saved {} ({} items) in {} ms"</literal></expr></argument>, <argument><expr><name>cacheType</name></expr></argument>, <argument><expr><name>keysWritten</name></expr></argument>, <argument><expr><call><name><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name><operator>.</operator><name>toMillis</name></name><argument_list>(<argument><expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>start</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name><name>Pair</name><argument_list type="generic">&lt;<argument><name>File</name></argument>, <argument><name>File</name></argument>&gt;</argument_list></name></type> <name>tempCacheFiles</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>File</name></type> <name>dataPath</name> <init>= <expr><call><name>getCacheDataPath</name><argument_list>(<argument><expr><name>CURRENT_VERSION</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>File</name></type> <name>crcPath</name> <init>= <expr><call><name>getCacheCrcPath</name><argument_list>(<argument><expr><name>CURRENT_VERSION</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <return>return <expr><call><name><name>Pair</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><call><name><name>FileUtils</name><operator>.</operator><name>createTempFile</name></name><argument_list>(<argument><expr><call><name><name>dataPath</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><call><name><name>dataPath</name><operator>.</operator><name>getParentFile</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                               <argument><expr><call><name><name>FileUtils</name><operator>.</operator><name>createTempFile</name></name><argument_list>(<argument><expr><call><name><name>crcPath</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><call><name><name>crcPath</name><operator>.</operator><name>getParentFile</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>deleteOldCacheFiles</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>File</name></type> <name>savedCachesDir</name> <init>= <expr><operator>new</operator> <call><name>File</name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getSavedCachesLocation</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <assert>assert <expr><call><name><name>savedCachesDir</name><operator>.</operator><name>exists</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>savedCachesDir</name><operator>.</operator><name>isDirectory</name></name><argument_list>()</argument_list></call></expr>;</assert>
+            <decl_stmt><decl><type><name><name>File</name><index>[]</index></name></type> <name>files</name> <init>= <expr><call><name><name>savedCachesDir</name><operator>.</operator><name>listFiles</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>files</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>String</name></type> <name>cacheNameFormat</name> <init>= <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%s-%s.db"</literal></expr></argument>, <argument><expr><call><name><name>cacheType</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>CURRENT_VERSION</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <for>for <control>(<init><decl><type><name>File</name></type> <name>file</name> <range>: <expr><name>files</name></expr></range></decl></init>)</control>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>file</name><operator>.</operator><name>isFile</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <continue>continue;</continue></block_content></block></if></if_stmt> <comment type="line">// someone's been messing with our directory.  naughty!</comment>
+
+                    <if_stmt><if>if <condition>(<expr><call><name><name>file</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>endsWith</name><argument_list>(<argument><expr><name>cacheNameFormat</name></expr></argument>)</argument_list></call>
+                     <operator>||</operator> <call><name><name>file</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>endsWith</name><argument_list>(<argument><expr><call><name><name>cacheType</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+                    <block>{<block_content>
+                        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>file</name><operator>.</operator><name>delete</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"Failed to delete {}"</literal></expr></argument>, <argument><expr><call><name><name>file</name><operator>.</operator><name>getAbsolutePath</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></for>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"Could not list files in {}"</literal></expr></argument>, <argument><expr><name>savedCachesDir</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isGlobal</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <interface><specifier>public</specifier> interface <name><name>CacheSerializer</name><parameter_list>&lt;<parameter><name>K</name> <extends>extends <name>CacheKey</name></extends></parameter>, <parameter><name>V</name></parameter>&gt;</parameter_list></name>
+    <block>{
+        <function_decl><type><name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>K</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>;</function_decl>
+
+        <function_decl><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name><name>Pair</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>;</function_decl>
+
+        <function><type><specifier>default</specifier> <name>void</name></type> <name>cleanupAfterDeserialize</name><parameter_list>()</parameter_list> <block>{<block_content> </block_content>}</block></function>
+    }</block></interface>
+}</block></class>
+</unit>

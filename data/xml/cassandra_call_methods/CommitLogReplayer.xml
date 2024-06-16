@@ -1,0 +1,493 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/commitlog/CommitLogReplayer.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>File</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Future</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicInteger</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Predicate</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>HashMultimap</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterables</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Multimap</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Ordering</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>commons</name><operator>.</operator><name>lang3</name><operator>.</operator><name>StringUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>cliffc</name><operator>.</operator><name>high_scale_lib</name><operator>.</operator><name>NonBlockingHashSet</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Stage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>Config</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ColumnFamilyStore</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Keyspace</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Mutation</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>SystemKeyspace</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>PartitionUpdate</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>format</name><operator>.</operator><name>SSTableReader</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>FileUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>RandomAccessReader</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>Schema</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>SchemaConstants</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableId</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadataRef</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>StorageService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>WrappedRunnable</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>CommitLogReplayer</name> <super_list><implements>implements <super><name>CommitLogReadHandler</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>long</name></type> <name>MAX_OUTSTANDING_REPLAY_BYTES</name> <init>= <expr><call><name><name>Long</name><operator>.</operator><name>getLong</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.commitlog_max_outstanding_replay_bytes"</literal></expr></argument>, <argument><expr><literal type="number">1024</literal> <operator>*</operator> <literal type="number">1024</literal> <operator>*</operator> <literal type="number">64</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>MutationInitiator</name></type> <name>mutationInitiator</name> <init>= <expr><operator>new</operator> <call><name>MutationInitiator</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>IGNORE_REPLAY_ERRORS_PROPERTY</name> <init>= <expr><name><name>Config</name><operator>.</operator><name>PROPERTY_PREFIX</name></name> <operator>+</operator> <literal type="string">"commitlog.ignorereplayerrors"</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>CommitLogReplayer</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MAX_OUTSTANDING_REPLAY_COUNT</name> <init>= <expr><call><name><name>Integer</name><operator>.</operator><name>getInteger</name></name><argument_list>(<argument><expr><name><name>Config</name><operator>.</operator><name>PROPERTY_PREFIX</name></name> <operator>+</operator> <literal type="string">"commitlog_max_outstanding_replay_count"</literal></expr></argument>, <argument><expr><literal type="number">1024</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>Keyspace</name></argument>&gt;</argument_list></name></type> <name>keyspacesReplayed</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Queue</name><argument_list type="generic">&lt;<argument><name><name>Future</name><argument_list type="generic">&lt;<argument><name>Integer</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>futures</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>AtomicInteger</name></type> <name>replayedCount</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name><name>IntervalSet</name><argument_list type="generic">&lt;<argument><name>CommitLogPosition</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>cfPersisted</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>CommitLogPosition</name></type> <name>globalPosition</name></decl>;</decl_stmt>
+
+    <comment type="line">// Used to throttle speed of replay of mutations if we pass the max outstanding count</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>pendingMutationBytes</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ReplayFilter</name></type> <name>replayFilter</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>CommitLogArchiver</name></type> <name>archiver</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>protected</specifier> <name>boolean</name></type> <name>sawCDCMutation</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>protected</specifier> <name>CommitLogReader</name></type> <name>commitLogReader</name></decl>;</decl_stmt>
+
+    <constructor><name>CommitLogReplayer</name><parameter_list>(<parameter><decl><type><name>CommitLog</name></type> <name>commitLog</name></decl></parameter>,
+                      <parameter><decl><type><name>CommitLogPosition</name></type> <name>globalPosition</name></decl></parameter>,
+                      <parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name><name>IntervalSet</name><argument_list type="generic">&lt;<argument><name>CommitLogPosition</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>cfPersisted</name></decl></parameter>,
+                      <parameter><decl><type><name>ReplayFilter</name></type> <name>replayFilter</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>keyspacesReplayed</name></name> <operator>=</operator> <operator>new</operator> <call><name><name>NonBlockingHashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>futures</name></name> <operator>=</operator> <operator>new</operator> <call><name><name>ArrayDeque</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// count the number of replayed mutation. We don't really care about atomicity, but we need it to be a reference.</comment>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>replayedCount</name></name> <operator>=</operator> <operator>new</operator> <call><name>AtomicInteger</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cfPersisted</name></name> <operator>=</operator> <name>cfPersisted</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>globalPosition</name></name> <operator>=</operator> <name>globalPosition</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>replayFilter</name></name> <operator>=</operator> <name>replayFilter</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>archiver</name></name> <operator>=</operator> <name><name>commitLog</name><operator>.</operator><name>archiver</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>commitLogReader</name></name> <operator>=</operator> <operator>new</operator> <call><name>CommitLogReader</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>CommitLogReplayer</name></type> <name>construct</name><parameter_list>(<parameter><decl><type><name>CommitLog</name></type> <name>commitLog</name></decl></parameter>, <parameter><decl><type><name>UUID</name></type> <name>localHostId</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// compute per-CF and global replay intervals</comment>
+        <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name><name>IntervalSet</name><argument_list type="generic">&lt;<argument><name>CommitLogPosition</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>cfPersisted</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ReplayFilter</name></type> <name>replayFilter</name> <init>= <expr><call><name><name>ReplayFilter</name><operator>.</operator><name>create</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <range>: <expr><call><name><name>ColumnFamilyStore</name><operator>.</operator><name>all</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <comment type="line">// but, if we've truncated the cf in question, then we need to need to start replay after the truncation</comment>
+            <decl_stmt><decl><type><name>CommitLogPosition</name></type> <name>truncatedAt</name> <init>= <expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>getTruncatedPosition</name></name><argument_list>(<argument><expr><name><name>cfs</name><operator>.</operator><name>metadata</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>truncatedAt</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// Point in time restore is taken to mean that the tables need to be replayed even if they were</comment>
+                <comment type="line">// deleted at a later point in time. Any truncation record after that point must thus be cleared prior</comment>
+                <comment type="line">// to replay (CASSANDRA-9195).</comment>
+                <decl_stmt><decl><type><name>long</name></type> <name>restoreTime</name> <init>= <expr><name><name>commitLog</name><operator>.</operator><name>archiver</name><operator>.</operator><name>restorePointInTime</name></name></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>long</name></type> <name>truncatedTime</name> <init>= <expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>getTruncatedAt</name></name><argument_list>(<argument><expr><name><name>cfs</name><operator>.</operator><name>metadata</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>truncatedTime</name> <operator>&gt;</operator> <name>restoreTime</name></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>replayFilter</name><operator>.</operator><name>includes</name></name><argument_list>(<argument><expr><name><name>cfs</name><operator>.</operator><name>metadata</name></name></expr></argument>)</argument_list></call></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Restore point in time is before latest truncation of table {}.{}. Clearing truncation record."</literal></expr></argument>,
+                                    <argument><expr><name><name>cfs</name><operator>.</operator><name>metadata</name><operator>.</operator><name>keyspace</name></name></expr></argument>,
+                                    <argument><expr><name><name>cfs</name><operator>.</operator><name>metadata</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>removeTruncationRecord</name></name><argument_list>(<argument><expr><name><name>cfs</name><operator>.</operator><name>metadata</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><name>truncatedAt</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name><name>IntervalSet</name><argument_list type="generic">&lt;<argument><name>CommitLogPosition</name></argument>&gt;</argument_list></name></type> <name>filter</name> <init>= <expr><call><name>persistedIntervals</name><argument_list>(<argument><expr><call><name><name>cfs</name><operator>.</operator><name>getLiveSSTables</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>truncatedAt</name></expr></argument>, <argument><expr><name>localHostId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>cfPersisted</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name><name>cfs</name><operator>.</operator><name>metadata</name><operator>.</operator><name>id</name></name></expr></argument>, <argument><expr><name>filter</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <decl_stmt><decl><type><name>CommitLogPosition</name></type> <name>globalPosition</name> <init>= <expr><call><name>firstNotCovered</name><argument_list>(<argument><expr><call><name><name>cfPersisted</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Global replay position is {} from columnfamilies {}"</literal></expr></argument>, <argument><expr><name>globalPosition</name></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>toString</name></name><argument_list>(<argument><expr><name>cfPersisted</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><operator>new</operator> <call><name>CommitLogReplayer</name><argument_list>(<argument><expr><name>commitLog</name></expr></argument>, <argument><expr><name>globalPosition</name></expr></argument>, <argument><expr><name>cfPersisted</name></expr></argument>, <argument><expr><name>replayFilter</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>replayPath</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>file</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>tolerateTruncation</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><name>sawCDCMutation</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>commitLogReader</name><operator>.</operator><name>readCommitLogSegment</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>file</name></expr></argument>, <argument><expr><name>globalPosition</name></expr></argument>, <argument><expr><name><name>CommitLogReader</name><operator>.</operator><name>ALL_MUTATIONS</name></name></expr></argument>, <argument><expr><name>tolerateTruncation</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>sawCDCMutation</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>handleCDCReplayCompletion</name><argument_list>(<argument><expr><name>file</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>replayFiles</name><parameter_list>(<parameter><decl><type><name><name>File</name><index>[]</index></name></type> <name>clogs</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>File</name></argument>&gt;</argument_list></name></type> <name>filteredLogs</name> <init>= <expr><call><name><name>CommitLogReader</name><operator>.</operator><name>filterCommitLogFiles</name></name><argument_list>(<argument><expr><name>clogs</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>File</name></type> <name>file</name><range>: <expr><name>filteredLogs</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><name>i</name><operator>++</operator></expr>;</expr_stmt>
+            <expr_stmt><expr><name>sawCDCMutation</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>commitLogReader</name><operator>.</operator><name>readCommitLogSegment</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>file</name></expr></argument>, <argument><expr><name>globalPosition</name></expr></argument>, <argument><expr><name>i</name> <operator>==</operator> <call><name><name>filteredLogs</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>sawCDCMutation</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>handleCDCReplayCompletion</name><argument_list>(<argument><expr><name>file</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+
+    <comment type="block" format="javadoc">/**
+     * Upon replay completion, CDC needs to hard-link files in the CDC folder and calculate index files so consumers can
+     * begin their work.
+     */</comment>
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>handleCDCReplayCompletion</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>f</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <comment type="line">// Can only reach this point if CDC is enabled, thus we have a CDCSegmentManager</comment>
+        <expr_stmt><expr><operator>(</operator><operator>(</operator><name>CommitLogSegmentManagerCDC</name><operator>)</operator><name><name>CommitLog</name><operator>.</operator><name>instance</name><operator>.</operator><name>segmentManager</name></name><operator>)</operator><operator>.</operator><call><name>addCDCSize</name><argument_list>(<argument><expr><call><name><name>f</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>File</name></type> <name>dest</name> <init>= <expr><operator>new</operator> <call><name>File</name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getCDCLogLocation</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>f</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// If hard link already exists, assume it's from a previous node run. If people are mucking around in the cdc_raw</comment>
+        <comment type="line">// directory that's on them.</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>dest</name><operator>.</operator><name>exists</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>FileUtils</name><operator>.</operator><name>createHardLink</name></name><argument_list>(<argument><expr><name>f</name></expr></argument>, <argument><expr><name>dest</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <comment type="line">// The reader has already verified we can deserialize the descriptor.</comment>
+        <decl_stmt><decl><type><name>CommitLogDescriptor</name></type> <name>desc</name></decl>;</decl_stmt>
+        <try>try<init>(<decl><type><name>RandomAccessReader</name></type> <name>reader</name> <init>= <expr><call><name><name>RandomAccessReader</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><name>f</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <expr_stmt><expr><name>desc</name> <operator>=</operator> <call><name><name>CommitLogDescriptor</name><operator>.</operator><name>readHeader</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getEncryptionContext</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <assert>assert <expr><name>desc</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</assert>
+            <assert>assert <expr><call><name><name>f</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr>;</assert>
+            <expr_stmt><expr><call><name><name>CommitLogSegment</name><operator>.</operator><name>writeCDCIndexFile</name></name><argument_list>(<argument><expr><name>desc</name></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator><call><name><name>f</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></try>
+    </block_content>}</block></function>
+
+
+    <comment type="block" format="javadoc">/**
+     * Flushes all keyspaces associated with this replayer in parallel, blocking until their flushes are complete.
+     * @return the number of mutations replayed
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>blockForWrites</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name>AtomicInteger</name></argument>&gt;</argument_list></name></name></type> <name>entry</name> <range>: <expr><call><name><name>commitLogReader</name><operator>.</operator><name>getInvalidMutations</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"Skipped {} mutations from unknown (probably removed) CF with id {}"</literal></expr></argument>, <argument><expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>entry</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+        <comment type="line">// wait for all the writes to finish on the mutation stage</comment>
+        <expr_stmt><expr><call><name><name>FBUtilities</name><operator>.</operator><name>waitOnFutures</name></name><argument_list>(<argument><expr><name>futures</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Finished waiting on mutations from recovery"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// flush replayed keyspaces</comment>
+        <expr_stmt><expr><call><name><name>futures</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>flushingSystem</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>futures</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>Keyspace</name></type> <name>keyspace</name> <range>: <expr><name>keyspacesReplayed</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>keyspace</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>SYSTEM_KEYSPACE_NAME</name></name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>flushingSystem</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>futures</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><call><name><name>keyspace</name><operator>.</operator><name>flush</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <comment type="line">// also flush batchlog incase of any MV updates</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>flushingSystem</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>futures</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>Keyspace</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>SYSTEM_KEYSPACE_NAME</name></name></expr></argument>)</argument_list></call><operator>.</operator><call><name>getColumnFamilyStore</name><argument_list>(<argument><expr><name><name>SystemKeyspace</name><operator>.</operator><name>BATCHES</name></name></expr></argument>)</argument_list></call><operator>.</operator><call><name>forceFlush</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>FBUtilities</name><operator>.</operator><name>waitOnFutures</name></name><argument_list>(<argument><expr><name>futures</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <return>return <expr><call><name><name>replayedCount</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block">/*
+     * Wrapper around initiating mutations read from the log to make it possible
+     * to spy on initiated mutations for test
+     */</comment>
+    <class><annotation>@<name>VisibleForTesting</name></annotation>
+    <specifier>public</specifier> <specifier>static</specifier> class <name>MutationInitiator</name>
+    <block>{
+        <function><type><specifier>protected</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>Integer</name></argument>&gt;</argument_list></name></type> <name>initiateMutation</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>Mutation</name></type> <name>mutation</name></decl></parameter>,
+                                                   <parameter><decl><type><specifier>final</specifier> <name>long</name></type> <name>segmentId</name></decl></parameter>,
+                                                   <parameter><decl><type><specifier>final</specifier> <name>int</name></type> <name>serializedSize</name></decl></parameter>,
+                                                   <parameter><decl><type><specifier>final</specifier> <name>int</name></type> <name>entryLocation</name></decl></parameter>,
+                                                   <parameter><decl><type><specifier>final</specifier> <name>CommitLogReplayer</name></type> <name>commitLogReplayer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Runnable</name></type> <name>runnable</name> <init>= <expr><operator>new</operator> <class><super><name>WrappedRunnable</name></super><argument_list>()</argument_list>
+            <block>{
+                <function><type><specifier>public</specifier> <name>void</name></type> <name>runMayThrow</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getKeyspaceMetadata</name></name><argument_list>(<argument><expr><call><name><name>mutation</name><operator>.</operator><name>getKeyspaceName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                        <return>return;</return></block_content></block></if></if_stmt>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>commitLogReplayer</name><operator>.</operator><name>pointInTimeExceeded</name></name><argument_list>(<argument><expr><name>mutation</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <return>return;</return></block_content></block></if></if_stmt>
+
+                    <decl_stmt><decl><type><specifier>final</specifier> <name>Keyspace</name></type> <name>keyspace</name> <init>= <expr><call><name><name>Keyspace</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><call><name><name>mutation</name><operator>.</operator><name>getKeyspaceName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                    <comment type="line">// Rebuild the mutation, omitting column families that</comment>
+                    <comment type="line">//    a) the user has requested that we ignore,</comment>
+                    <comment type="line">//    b) have already been flushed,</comment>
+                    <comment type="line">// or c) are part of a cf that was dropped.</comment>
+                    <comment type="line">// Keep in mind that the cf.name() is suspect. do every thing based on the cfid instead.</comment>
+                    <decl_stmt><decl><type><name><name>Mutation</name><operator>.</operator><name>PartitionUpdateCollector</name></name></type> <name>newPUCollector</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+                    <for>for <control>(<init><decl><type><name>PartitionUpdate</name></type> <name>update</name> <range>: <expr><call><name><name>commitLogReplayer</name><operator>.</operator><name>replayFilter</name><operator>.</operator><name>filter</name></name><argument_list>(<argument><expr><name>mutation</name></expr></argument>)</argument_list></call></expr></range></decl></init>)</control>
+                    <block>{<block_content>
+                        <if_stmt><if>if <condition>(<expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getTableMetadata</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>id</name></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                            <continue>continue;</continue></block_content></block></if></if_stmt> <comment type="line">// dropped</comment>
+
+                        <comment type="line">// replay if current segment is newer than last flushed one or,</comment>
+                        <comment type="line">// if it is the last known segment, if we are after the commit log segment position</comment>
+                        <if_stmt><if>if <condition>(<expr><call><name><name>commitLogReplayer</name><operator>.</operator><name>shouldReplay</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>id</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>CommitLogPosition</name><argument_list>(<argument><expr><name>segmentId</name></expr></argument>, <argument><expr><name>entryLocation</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+                        <block>{<block_content>
+                            <if_stmt><if>if <condition>(<expr><name>newPUCollector</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                                <expr_stmt><expr><name>newPUCollector</name> <operator>=</operator> <operator>new</operator> <call><name><name>Mutation</name><operator>.</operator><name>PartitionUpdateCollector</name></name><argument_list>(<argument><expr><call><name><name>mutation</name><operator>.</operator><name>getKeyspaceName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>mutation</name><operator>.</operator><name>key</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                            <expr_stmt><expr><call><name><name>newPUCollector</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>update</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                            <expr_stmt><expr><call><name><name>commitLogReplayer</name><operator>.</operator><name>replayedCount</name><operator>.</operator><name>incrementAndGet</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                        </block_content>}</block></if></if_stmt>
+                    </block_content>}</block></for>
+                    <if_stmt><if>if <condition>(<expr><name>newPUCollector</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                    <block>{<block_content>
+                        <assert>assert <expr><operator>!</operator><call><name><name>newPUCollector</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</assert>
+
+                        <expr_stmt><expr><call><name><name>Keyspace</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><call><name><name>newPUCollector</name><operator>.</operator><name>getKeyspaceName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>apply</name><argument_list>(<argument><expr><call><name><name>newPUCollector</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><call><name><name>commitLogReplayer</name><operator>.</operator><name>keyspacesReplayed</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>keyspace</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></function>
+            }</block></class></expr></init></decl>;</decl_stmt>
+            <return>return <expr><call><name><name>Stage</name><operator>.</operator><name>MUTATION</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><name>runnable</name></expr></argument>, <argument><expr><name>serializedSize</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * A set of known safe-to-discard commit log replay positions, based on
+     * the range covered by on disk sstables and those prior to the most recent truncation record
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>IntervalSet</name><argument_list type="generic">&lt;<argument><name>CommitLogPosition</name></argument>&gt;</argument_list></name></type> <name>persistedIntervals</name><parameter_list>(<parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>onDisk</name></decl></parameter>,
+                                                                    <parameter><decl><type><name>CommitLogPosition</name></type> <name>truncatedAt</name></decl></parameter>,
+                                                                    <parameter><decl><type><name>UUID</name></type> <name>localhostId</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>IntervalSet</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>CommitLogPosition</name></argument>&gt;</argument_list></name></name></type> <name>builder</name> <init>= <expr><operator>new</operator> <call><name><name>IntervalSet</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;&gt;</argument_list></name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>skippedSSTables</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>reader</name> <range>: <expr><name>onDisk</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>UUID</name></type> <name>originatingHostId</name> <init>= <expr><call><name><name>reader</name><operator>.</operator><name>getSSTableMetadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>originatingHostId</name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>originatingHostId</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>originatingHostId</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>localhostId</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><call><name><name>reader</name><operator>.</operator><name>getSSTableMetadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>commitLogIntervals</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>skippedSSTables</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>reader</name><operator>.</operator><name>getFilename</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        </block_content>}</block></for>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>skippedSSTables</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"Origin of {} sstables is unknown or doesn't match the local node; commitLogIntervals for them were ignored"</literal></expr></argument>, <argument><expr><call><name><name>skippedSSTables</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Ignored commitLogIntervals from the following sstables: {}"</literal></expr></argument>, <argument><expr><name>skippedSSTables</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>truncatedAt</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name><name>CommitLogPosition</name><operator>.</operator><name>NONE</name></name></expr></argument>, <argument><expr><name>truncatedAt</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <return>return <expr><call><name><name>builder</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Find the earliest commit log position that is not covered by the known flushed ranges for some table.
+     *
+     * For efficiency this assumes that the first contiguously flushed interval we know of contains the moment that the
+     * given table was constructed* and hence we can start replay from the end of that interval.
+     *
+     * If such an interval is not known, we must replay from the beginning.
+     *
+     * * This is not true only until if the very first flush of a table stalled or failed, while the second or latter
+     *   succeeded. The chances of this happening are at most very low, and if the assumption does prove to be
+     *   incorrect during replay there is little chance that the affected deployment is in production.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>CommitLogPosition</name></type> <name>firstNotCovered</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>IntervalSet</name><argument_list type="generic">&lt;<argument><name>CommitLogPosition</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>ranges</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>ranges</name><operator>.</operator><name>stream</name></name><argument_list>()</argument_list></call>
+                <operator>.</operator><call><name>map</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>intervals</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>Iterables</name><operator>.</operator><name>getFirst</name></name><argument_list>(<argument><expr><call><name><name>intervals</name><operator>.</operator><name>ends</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>CommitLogPosition</name><operator>.</operator><name>NONE</name></name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call>
+                <operator>.</operator><call><name>min</name><argument_list>(<argument><expr><call><name><name>Ordering</name><operator>.</operator><name>natural</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call>
+                <operator>.</operator><call><name>get</name><argument_list>()</argument_list></call></expr>;</return> <comment type="line">// iteration is per known-CF, there must be at least one.</comment>
+    </block_content>}</block></function>
+
+    <class><specifier>abstract</specifier> <specifier>static</specifier> class <name>ReplayFilter</name>
+    <block>{
+        <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>PartitionUpdate</name></argument>&gt;</argument_list></name></type> <name>filter</name><parameter_list>(<parameter><decl><type><name>Mutation</name></type> <name>mutation</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>boolean</name></type> <name>includes</name><parameter_list>(<parameter><decl><type><name>TableMetadataRef</name></type> <name>metadata</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>ReplayFilter</name></type> <name>create</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// If no replaylist is supplied an empty array of strings is used to replay everything.</comment>
+            <if_stmt><if>if <condition>(<expr><call><name><name>System</name><operator>.</operator><name>getProperty</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.replayList"</literal></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><operator>new</operator> <call><name>AlwaysReplayFilter</name><argument_list>()</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name><name>Multimap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name></type> <name>toReplay</name> <init>= <expr><call><name><name>HashMultimap</name><operator>.</operator><name>create</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>String</name></type> <name>rawPair</name> <range>: <expr><call><name><name>System</name><operator>.</operator><name>getProperty</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.replayList"</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>split</name><argument_list>(<argument><expr><literal type="string">","</literal></expr></argument>)</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name><name>String</name><index>[]</index></name></type> <name>pair</name> <init>= <expr><call><name><name>StringUtils</name><operator>.</operator><name>split</name></name><argument_list>(<argument><expr><call><name><name>rawPair</name><operator>.</operator><name>trim</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="char">'.'</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name><name>pair</name><operator>.</operator><name>length</name></name> <operator>!=</operator> <literal type="number">2</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Each table to be replayed must be fully qualified with keyspace name, e.g., 'system.peers'"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+                <decl_stmt><decl><type><name>Keyspace</name></type> <name>ks</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getKeyspaceInstance</name></name><argument_list>(<argument><expr><name><name>pair</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>ks</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Unknown keyspace "</literal> <operator>+</operator> <name><name>pair</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+                <decl_stmt><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <init>= <expr><call><name><name>ks</name><operator>.</operator><name>getColumnFamilyStore</name></name><argument_list>(<argument><expr><name><name>pair</name><index>[<expr><literal type="number">1</literal></expr>]</index></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>cfs</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Unknown table %s.%s"</literal></expr></argument>, <argument><expr><name><name>pair</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr></argument>, <argument><expr><name><name>pair</name><index>[<expr><literal type="number">1</literal></expr>]</index></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+                <expr_stmt><expr><call><name><name>toReplay</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name><name>pair</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr></argument>, <argument><expr><name><name>pair</name><index>[<expr><literal type="number">1</literal></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <return>return <expr><operator>new</operator> <call><name>CustomReplayFilter</name><argument_list>(<argument><expr><name>toReplay</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>AlwaysReplayFilter</name> <super_list><extends>extends <super><name>ReplayFilter</name></super></extends></super_list>
+    <block>{
+        <function><type><specifier>public</specifier> <name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>PartitionUpdate</name></argument>&gt;</argument_list></name></type> <name>filter</name><parameter_list>(<parameter><decl><type><name>Mutation</name></type> <name>mutation</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>mutation</name><operator>.</operator><name>getPartitionUpdates</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>includes</name><parameter_list>(<parameter><decl><type><name>TableMetadataRef</name></type> <name>metadata</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>CustomReplayFilter</name> <super_list><extends>extends <super><name>ReplayFilter</name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <name><name>Multimap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name></type> <name>toReplay</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>CustomReplayFilter</name><parameter_list>(<parameter><decl><type><name><name>Multimap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name></type> <name>toReplay</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>toReplay</name></name> <operator>=</operator> <name>toReplay</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>PartitionUpdate</name></argument>&gt;</argument_list></name></type> <name>filter</name><parameter_list>(<parameter><decl><type><name>Mutation</name></type> <name>mutation</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><specifier>final</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>cfNames</name> <init>= <expr><call><name><name>toReplay</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>mutation</name><operator>.</operator><name>getKeyspaceName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>cfNames</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><call><name><name>Collections</name><operator>.</operator><name>emptySet</name></name><argument_list>()</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+            <return>return <expr><call><name><name>Iterables</name><operator>.</operator><name>filter</name></name><argument_list>(<argument><expr><call><name><name>mutation</name><operator>.</operator><name>getPartitionUpdates</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><operator>new</operator> <class><super><name><name>Predicate</name><argument_list type="generic">&lt;<argument><name>PartitionUpdate</name></argument>&gt;</argument_list></name></super><argument_list>()</argument_list>
+            <block>{
+                <function><type><specifier>public</specifier> <name>boolean</name></type> <name>apply</name><parameter_list>(<parameter><decl><type><name>PartitionUpdate</name></type> <name>upd</name></decl></parameter>)</parameter_list>
+                <block>{<block_content>
+                    <return>return <expr><call><name><name>cfNames</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><call><name><name>upd</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>name</name></expr></argument>)</argument_list></call></expr>;</return>
+                </block_content>}</block></function>
+            }</block></class></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>includes</name><parameter_list>(<parameter><decl><type><name>TableMetadataRef</name></type> <name>metadata</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>toReplay</name><operator>.</operator><name>containsEntry</name></name><argument_list>(<argument><expr><name><name>metadata</name><operator>.</operator><name>keyspace</name></name></expr></argument>, <argument><expr><name><name>metadata</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * consult the known-persisted ranges for our sstables;
+     * if the position is covered by one of them it does not need to be replayed
+     *
+     * @return true iff replay is necessary
+     */</comment>
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>shouldReplay</name><parameter_list>(<parameter><decl><type><name>TableId</name></type> <name>tableId</name></decl></parameter>, <parameter><decl><type><name>CommitLogPosition</name></type> <name>position</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>!</operator><call><name><name>cfPersisted</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>tableId</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>contains</name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>boolean</name></type> <name>pointInTimeExceeded</name><parameter_list>(<parameter><decl><type><name>Mutation</name></type> <name>fm</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>restoreTarget</name> <init>= <expr><name><name>archiver</name><operator>.</operator><name>restorePointInTime</name></name></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>PartitionUpdate</name></type> <name>upd</name> <range>: <expr><call><name><name>fm</name><operator>.</operator><name>getPartitionUpdates</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>archiver</name><operator>.</operator><name>precision</name><operator>.</operator><name>toMillis</name></name><argument_list>(<argument><expr><call><name><name>upd</name><operator>.</operator><name>maxTimestamp</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call> <operator>&gt;</operator> <name>restoreTarget</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>handleMutation</name><parameter_list>(<parameter><decl><type><name>Mutation</name></type> <name>m</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>entryLocation</name></decl></parameter>, <parameter><decl><type><name>CommitLogDescriptor</name></type> <name>desc</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>isCDCEnabled</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>m</name><operator>.</operator><name>trackedByCDC</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>sawCDCMutation</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><name>pendingMutationBytes</name> <operator>+=</operator> <name>size</name></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>futures</name><operator>.</operator><name>offer</name></name><argument_list>(<argument><expr><call><name><name>mutationInitiator</name><operator>.</operator><name>initiateMutation</name></name><argument_list>(<argument><expr><name>m</name></expr></argument>,
+                                                         <argument><expr><name><name>desc</name><operator>.</operator><name>id</name></name></expr></argument>,
+                                                         <argument><expr><name>size</name></expr></argument>,
+                                                         <argument><expr><name>entryLocation</name></expr></argument>,
+                                                         <argument><expr><name>this</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// If there are finished mutations, or too many outstanding bytes/mutations</comment>
+        <comment type="line">// drain the futures in the queue</comment>
+        <while>while <condition>(<expr><call><name><name>futures</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <name>MAX_OUTSTANDING_REPLAY_COUNT</name>
+               <operator>||</operator> <name>pendingMutationBytes</name> <operator>&gt;</operator> <name>MAX_OUTSTANDING_REPLAY_BYTES</name>
+               <operator>||</operator> <operator>(</operator><operator>!</operator><call><name><name>futures</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>futures</name><operator>.</operator><name>peek</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isDone</name><argument_list>()</argument_list></call><operator>)</operator></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>pendingMutationBytes</name> <operator>-=</operator> <call><name><name>FBUtilities</name><operator>.</operator><name>waitOnFuture</name></name><argument_list>(<argument><expr><call><name><name>futures</name><operator>.</operator><name>poll</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>shouldSkipSegmentOnError</name><parameter_list>(<parameter><decl><type><name>CommitLogReadException</name></type> <name>exception</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name><name>exception</name><operator>.</operator><name>permissible</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"Ignoring commit log replay error likely due to incomplete flush to disk"</literal></expr></argument>, <argument><expr><name>exception</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <if type="elseif">else if <condition>(<expr><call><name><name>Boolean</name><operator>.</operator><name>getBoolean</name></name><argument_list>(<argument><expr><name>IGNORE_REPLAY_ERRORS_PROPERTY</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"Ignoring commit log replay error"</literal></expr></argument>, <argument><expr><name>exception</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <if type="elseif">else if <condition>(<expr><operator>!</operator><call><name><name>CommitLog</name><operator>.</operator><name>handleCommitError</name></name><argument_list>(<argument><expr><literal type="string">"Failed commit log replay"</literal></expr></argument>, <argument><expr><name>exception</name></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"Replay stopped. If you wish to override this error and continue starting the node ignoring "</literal> <operator>+</operator>
+                         <literal type="string">"commit log replay problems, specify -D"</literal> <operator>+</operator> <name>IGNORE_REPLAY_ERRORS_PROPERTY</name> <operator>+</operator> <literal type="string">"=true "</literal> <operator>+</operator>
+                         <literal type="string">"on the command line"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <throw>throw <expr><operator>new</operator> <call><name>CommitLogReplayException</name><argument_list>(<argument><expr><call><name><name>exception</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>exception</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * The logic for whether or not we throw on an error is identical for the replayer between recoverable or non.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>handleUnrecoverableError</name><parameter_list>(<parameter><decl><type><name>CommitLogReadException</name></type> <name>exception</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <comment type="line">// Don't care about return value, use this simply to throw exception as appropriate.</comment>
+        <expr_stmt><expr><call><name>shouldSkipSegmentOnError</name><argument_list>(<argument><expr><name>exception</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <class><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"serial"</literal></expr></argument>)</argument_list></annotation>
+    <specifier>public</specifier> <specifier>static</specifier> class <name>CommitLogReplayException</name> <super_list><extends>extends <super><name>IOException</name></super></extends></super_list>
+    <block>{
+        <constructor><specifier>public</specifier> <name>CommitLogReplayException</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>message</name></decl></parameter>, <parameter><decl><type><name>Throwable</name></type> <name>cause</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><name>cause</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><specifier>public</specifier> <name>CommitLogReplayException</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>message</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+    }</block></class>
+}</block></class>
+</unit>

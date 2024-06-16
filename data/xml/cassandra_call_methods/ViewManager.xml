@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/view/ViewManager.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>view</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentHashMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>locks</name><operator>.</operator><name>Lock</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Maps</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Striped</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableId</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>ViewMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>repair</name><operator>.</operator><name>SystemDistributedKeyspace</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>Views</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>StorageService</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Manages {@link View}'s for a single {@link ColumnFamilyStore}. All of the views for that table are created when this
+ * manager is initialized.
+ *
+ * The main purposes of the manager are to provide a single location for updates to be vetted to see whether they update
+ * any views {@link #updatesAffectView(Collection, boolean)}, provide locks to prevent multiple
+ * updates from creating incoherent updates in the view {@link #acquireLockFor(int)}, and
+ * to affect change on the view.
+ *
+ * TODO: I think we can get rid of that class. For addition/removal of view by names, we could move it Keyspace. And we
+ * not sure it's even worth keeping viewsByName as none of the related operation are performance sensitive so we could
+ * find the view by iterating over the CFStore.viewManager directly.
+ * For the lock, it could move to Keyspace too, but I don't remmenber why it has to be at the keyspace level and if it
+ * can be at the table level, maybe that's where it should be.
+ */</comment>
+<class><specifier>public</specifier> class <name>ViewManager</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>ViewManager</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>Striped</name><argument_list type="generic">&lt;<argument><name>Lock</name></argument>&gt;</argument_list></name></type> <name>LOCKS</name> <init>= <expr><call><name><name>Striped</name><operator>.</operator><name>lazyWeakLock</name></name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getConcurrentViewWriters</name></name><argument_list>()</argument_list></call> <operator>*</operator> <literal type="number">1024</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>enableCoordinatorBatchlog</name> <init>= <expr><call><name><name>Boolean</name><operator>.</operator><name>getBoolean</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.mv_enable_coordinator_batchlog"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ConcurrentMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>View</name></argument>&gt;</argument_list></name></type> <name>viewsByName</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ConcurrentMap</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name>TableViews</name></argument>&gt;</argument_list></name></type> <name>viewsByBaseTable</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Keyspace</name></type> <name>keyspace</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>ViewManager</name><parameter_list>(<parameter><decl><type><name>Keyspace</name></type> <name>keyspace</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>keyspace</name></name> <operator>=</operator> <name>keyspace</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>updatesAffectView</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>?</name> <extends>extends <name>IMutation</name></extends></argument>&gt;</argument_list></name></type> <name>mutations</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>coordinatorBatchlog</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>enableCoordinatorBatchlog</name> <operator>&amp;&amp;</operator> <name>coordinatorBatchlog</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <for>for <control>(<init><decl><type><name>IMutation</name></type> <name>mutation</name> <range>: <expr><name>mutations</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>PartitionUpdate</name></type> <name>update</name> <range>: <expr><call><name><name>mutation</name><operator>.</operator><name>getPartitionUpdates</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <assert>assert <expr><call><name><name>keyspace</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>keyspace</name></expr></argument>)</argument_list></call></expr>;</assert>
+
+                <if_stmt><if>if <condition>(<expr><name>coordinatorBatchlog</name> <operator>&amp;&amp;</operator> <call><name><name>keyspace</name><operator>.</operator><name>getReplicationStrategy</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getReplicationFactor</name><argument_list>()</argument_list></call><operator>.</operator><name>allReplicas</name> <operator>==</operator> <literal type="number">1</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>forTable</name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>id</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>updatedViews</name><argument_list>(<argument><expr><name>update</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>isEmpty</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></for>
+
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>View</name></argument>&gt;</argument_list></name></type> <name>allViews</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>viewsByName</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>reload</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>buildAllViews</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Views</name></type> <name>views</name> <init>= <expr><call><name><name>keyspace</name><operator>.</operator><name>getMetadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>views</name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>ViewMetadata</name></argument>&gt;</argument_list></name></type> <name>newViewsByName</name> <init>= <expr><call><name><name>Maps</name><operator>.</operator><name>newHashMapWithExpectedSize</name></name><argument_list>(<argument><expr><call><name><name>views</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>ViewMetadata</name></type> <name>definition</name> <range>: <expr><name>views</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>newViewsByName</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>definition</name><operator>.</operator><name>name</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>definition</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>ViewMetadata</name></argument>&gt;</argument_list></name></name></type> <name>entry</name> <range>: <expr><call><name><name>newViewsByName</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>viewsByName</name><operator>.</operator><name>containsKey</name></name><argument_list>(<argument><expr><call><name><name>entry</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>addView</name><argument_list>(<argument><expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>buildAllViews</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// Building views involves updating view build status in the system_distributed</comment>
+        <comment type="line">// keyspace and therefore it requires ring information. This check prevents builds</comment>
+        <comment type="line">// being submitted when Keyspaces are initialized during CassandraDaemon::setup as</comment>
+        <comment type="line">// that happens before StorageService &amp; gossip are initialized. After SS has been</comment>
+        <comment type="line">// init'd we schedule builds for *all* views anyway, so this doesn't have any effect</comment>
+        <comment type="line">// on startup. It does mean however, that builds will not be triggered if gossip is</comment>
+        <comment type="line">// disabled via JMX or nodetool as that sets SS to an uninitialized state.</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>isInitialized</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Not submitting build tasks for views in keyspace {} as "</literal> <operator>+</operator>
+                        <literal type="string">"storage service is not initialized"</literal></expr></argument>, <argument><expr><call><name><name>keyspace</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <for>for <control>(<init><decl><type><name>View</name></type> <name>view</name> <range>: <expr><call><name>allViews</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>view</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <comment type="line">// We provide the new definition from the base metadata</comment>
+            <expr_stmt><expr><call><name><name>view</name><operator>.</operator><name>updateDefinition</name></name><argument_list>(<argument><expr><call><name><name>newViewsByName</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>view</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>addView</name><parameter_list>(<parameter><decl><type><name>ViewMetadata</name></type> <name>definition</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// Skip if the base table doesn't exist due to schema propagation issues, see CASSANDRA-13737</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>keyspace</name><operator>.</operator><name>hasColumnFamilyStore</name></name><argument_list>(<argument><expr><name><name>definition</name><operator>.</operator><name>baseTableId</name></name></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"Not adding view {} because the base table {} is unknown"</literal></expr></argument>,
+                        <argument><expr><call><name><name>definition</name><operator>.</operator><name>name</name></name><argument_list>()</argument_list></call></expr></argument>,
+                        <argument><expr><name><name>definition</name><operator>.</operator><name>baseTableId</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>View</name></type> <name>view</name> <init>= <expr><operator>new</operator> <call><name>View</name><argument_list>(<argument><expr><name>definition</name></expr></argument>, <argument><expr><call><name><name>keyspace</name><operator>.</operator><name>getColumnFamilyStore</name></name><argument_list>(<argument><expr><name><name>definition</name><operator>.</operator><name>baseTableId</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>forTable</name><argument_list>(<argument><expr><call><name><name>view</name><operator>.</operator><name>getDefinition</name></name><argument_list>()</argument_list></call><operator>.</operator><name>baseTableId</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>add</name><argument_list>(<argument><expr><name>view</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>viewsByName</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>definition</name><operator>.</operator><name>name</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>view</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Stops the building of the specified view, no-op if it isn't building.
+     *
+     * @param name the name of the view
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>dropView</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>View</name></type> <name>view</name> <init>= <expr><call><name><name>viewsByName</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>name</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>view</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>view</name><operator>.</operator><name>stopBuild</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>forTable</name><argument_list>(<argument><expr><call><name><name>view</name><operator>.</operator><name>getDefinition</name></name><argument_list>()</argument_list></call><operator>.</operator><name>baseTableId</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>removeByName</name><argument_list>(<argument><expr><name>name</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>setViewRemoved</name></name><argument_list>(<argument><expr><call><name><name>keyspace</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>view</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>SystemDistributedKeyspace</name><operator>.</operator><name>setViewRemoved</name></name><argument_list>(<argument><expr><call><name><name>keyspace</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>view</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>View</name></type> <name>getByName</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>viewsByName</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>name</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>buildAllViews</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>View</name></type> <name>view</name> <range>: <expr><call><name>allViews</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>view</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>TableViews</name></type> <name>forTable</name><parameter_list>(<parameter><decl><type><name>TableId</name></type> <name>id</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>TableViews</name></type> <name>views</name> <init>= <expr><call><name><name>viewsByBaseTable</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>id</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>views</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>views</name> <operator>=</operator> <operator>new</operator> <call><name>TableViews</name><argument_list>(<argument><expr><name>id</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>TableViews</name></type> <name>previous</name> <init>= <expr><call><name><name>viewsByBaseTable</name><operator>.</operator><name>putIfAbsent</name></name><argument_list>(<argument><expr><name>id</name></expr></argument>, <argument><expr><name>views</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>previous</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>views</name> <operator>=</operator> <name>previous</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>views</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>Lock</name></type> <name>acquireLockFor</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>keyAndCfidHash</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Lock</name></type> <name>lock</name> <init>= <expr><call><name><name>LOCKS</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>keyAndCfidHash</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>lock</name><operator>.</operator><name>tryLock</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>lock</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

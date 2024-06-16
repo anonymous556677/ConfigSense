@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/transport/InitialConnectionHandler.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>InetAddress</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>InetSocketAddress</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>ArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>HashMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>buffer</name><operator>.</operator><name>ByteBuf</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>ChannelHandlerContext</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>ChannelPromise</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>VoidChannelPromise</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>handler</name><operator>.</operator><name>codec</name><operator>.</operator><name>ByteToMessageDecoder</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>Attribute</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>QueryProcessor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>AsyncChannelPromise</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name><operator>.</operator><name>messages</name><operator>.</operator><name>ErrorMessage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name><operator>.</operator><name>messages</name><operator>.</operator><name>StartupMessage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name><operator>.</operator><name>messages</name><operator>.</operator><name>SupportedMessage</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Added to the Netty pipeline whenever a new Channel is initialized. This handler only processes
+ * the messages which constitute the initial handshake between client and server, namely
+ * OPTIONS and STARTUP. After receiving a STARTUP message, the pipeline is reconfigured according
+ * to the protocol version which was negotiated. That reconfiguration should include removing this
+ * handler from the pipeline.
+ */</comment>
+<class><specifier>public</specifier> class <name>InitialConnectionHandler</name> <super_list><extends>extends <super><name>ByteToMessageDecoder</name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>InitialConnectionHandler</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>final</specifier> <name><name>Envelope</name><operator>.</operator><name>Decoder</name></name></type> <name>decoder</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>final</specifier> <name><name>Connection</name><operator>.</operator><name>Factory</name></name></type> <name>factory</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>final</specifier> <name>PipelineConfigurator</name></type> <name>configurator</name></decl>;</decl_stmt>
+
+    <constructor><name>InitialConnectionHandler</name><parameter_list>(<parameter><decl><type><name><name>Envelope</name><operator>.</operator><name>Decoder</name></name></type> <name>decoder</name></decl></parameter>, <parameter><decl><type><name><name>Connection</name><operator>.</operator><name>Factory</name></name></type> <name>factory</name></decl></parameter>, <parameter><decl><type><name>PipelineConfigurator</name></type> <name>configurator</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>decoder</name></name> <operator>=</operator> <name>decoder</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>factory</name></name> <operator>=</operator> <name>factory</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>configurator</name></name> <operator>=</operator> <name>configurator</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>protected</specifier> <name>void</name></type> <name>decode</name><parameter_list>(<parameter><decl><type><name>ChannelHandlerContext</name></type> <name>ctx</name></decl></parameter>, <parameter><decl><type><name>ByteBuf</name></type> <name>buffer</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>Object</name></argument>&gt;</argument_list></name></type> <name>list</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>Exception</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Envelope</name></type> <name>inbound</name> <init>= <expr><call><name><name>decoder</name><operator>.</operator><name>decode</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>inbound</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <try>try
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Envelope</name></type> <name>outbound</name></decl>;</decl_stmt>
+            <switch>switch <condition>(<expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>type</name></name></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><name>OPTIONS</name></expr>:</case>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"OPTIONS received {}"</literal></expr></argument>, <argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>version</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>cqlVersions</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>cqlVersions</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>QueryProcessor</name><operator>.</operator><name>CQL_VERSION</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>compressions</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name><name>Compressor</name><operator>.</operator><name>SnappyCompressor</name><operator>.</operator><name>instance</name></name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name><name>compressions</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><literal type="string">"snappy"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                    <comment type="line">// LZ4 is always available since worst case scenario it default to a pure JAVA implem.</comment>
+                    <expr_stmt><expr><call><name><name>compressions</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><literal type="string">"lz4"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>supportedOptions</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>supportedOptions</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name><name>StartupMessage</name><operator>.</operator><name>CQL_VERSION</name></name></expr></argument>, <argument><expr><name>cqlVersions</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>supportedOptions</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name><name>StartupMessage</name><operator>.</operator><name>COMPRESSION</name></name></expr></argument>, <argument><expr><name>compressions</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>supportedOptions</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name><name>StartupMessage</name><operator>.</operator><name>PROTOCOL_VERSIONS</name></name></expr></argument>, <argument><expr><call><name><name>ProtocolVersion</name><operator>.</operator><name>supportedVersions</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <decl_stmt><decl><type><name>SupportedMessage</name></type> <name>supported</name> <init>= <expr><operator>new</operator> <call><name>SupportedMessage</name><argument_list>(<argument><expr><name>supportedOptions</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>supported</name><operator>.</operator><name>setStreamId</name></name><argument_list>(<argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>streamId</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>outbound</name> <operator>=</operator> <call><name><name>supported</name><operator>.</operator><name>encode</name></name><argument_list>(<argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>version</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>ctx</name><operator>.</operator><name>writeAndFlush</name></name><argument_list>(<argument><expr><name>outbound</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <break>break;</break>
+
+                <case>case <expr><name>STARTUP</name></expr>:</case>
+                    <decl_stmt><decl><type><name><name>Attribute</name><argument_list type="generic">&lt;<argument><name>Connection</name></argument>&gt;</argument_list></name></type> <name>attrConn</name> <init>= <expr><call><name><name>ctx</name><operator>.</operator><name>channel</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>attr</name><argument_list>(<argument><expr><name><name>Connection</name><operator>.</operator><name>attributeKey</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>Connection</name></type> <name>connection</name> <init>= <expr><call><name><name>attrConn</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>connection</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><name>connection</name> <operator>=</operator> <call><name><name>factory</name><operator>.</operator><name>newConnection</name></name><argument_list>(<argument><expr><call><name><name>ctx</name><operator>.</operator><name>channel</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>version</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><call><name><name>attrConn</name><operator>.</operator><name>set</name></name><argument_list>(<argument><expr><name>connection</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                    <assert>assert <expr><name>connection</name> <operator>instanceof</operator> <name>ServerConnection</name></expr>;</assert>
+
+                    <decl_stmt><decl><type><name>StartupMessage</name></type> <name>startup</name> <init>= <expr><operator>(</operator><name>StartupMessage</name><operator>)</operator> <call><name><name>Message</name><operator>.</operator><name>Decoder</name><operator>.</operator><name>decodeMessage</name></name><argument_list>(<argument><expr><call><name><name>ctx</name><operator>.</operator><name>channel</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>inbound</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>InetAddress</name></type> <name>remoteAddress</name> <init>= <expr><operator>(</operator><operator>(</operator><name>InetSocketAddress</name><operator>)</operator> <call><name><name>ctx</name><operator>.</operator><name>channel</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>remoteAddress</name><argument_list>()</argument_list></call><operator>)</operator><operator>.</operator><call><name>getAddress</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><specifier>final</specifier> <name><name>ClientResourceLimits</name><operator>.</operator><name>Allocator</name></name></type> <name>allocator</name> <init>= <expr><call><name><name>ClientResourceLimits</name><operator>.</operator><name>getAllocatorForEndpoint</name></name><argument_list>(<argument><expr><name>remoteAddress</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                    <decl_stmt><decl><type><name>ChannelPromise</name></type> <name>promise</name></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>version</name><operator>.</operator><name>isGreaterOrEqualTo</name></name><argument_list>(<argument><expr><name><name>ProtocolVersion</name><operator>.</operator><name>V5</name></name></expr></argument>)</argument_list></call></expr>)</condition>
+                    <block>{<block_content>
+                        <comment type="line">// in this case we need to defer configuring the pipeline until after the response</comment>
+                        <comment type="line">// has been sent, as the frame encoding specified in v5 should not be applied to</comment>
+                        <comment type="line">// the STARTUP response.</comment>
+                        <expr_stmt><expr><call><name><name>allocator</name><operator>.</operator><name>allocate</name></name><argument_list>(<argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>bodySizeInBytes</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><name>promise</name> <operator>=</operator> <call><name><name>AsyncChannelPromise</name><operator>.</operator><name>withListener</name></name><argument_list>(<argument><expr><name>ctx</name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>future</name></decl></parameter></parameter_list> -&gt; <block>{<block_content>
+                            <if_stmt><if>if <condition>(<expr><call><name><name>future</name><operator>.</operator><name>isSuccess</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                            <block>{<block_content>
+                                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Response to STARTUP sent, configuring pipeline for {}"</literal></expr></argument>, <argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>version</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                                <expr_stmt><expr><call><name><name>configurator</name><operator>.</operator><name>configureModernPipeline</name></name><argument_list>(<argument><expr><name>ctx</name></expr></argument>, <argument><expr><name>allocator</name></expr></argument>, <argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>version</name></name></expr></argument>, <argument><expr><name><name>startup</name><operator>.</operator><name>options</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                                <expr_stmt><expr><call><name><name>allocator</name><operator>.</operator><name>release</name></name><argument_list>(<argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>bodySizeInBytes</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                            </block_content>}</block></if>
+                            <else>else
+                            <block>{<block_content>
+                                <decl_stmt><decl><type><name>Throwable</name></type> <name>cause</name> <init>= <expr><call><name><name>future</name><operator>.</operator><name>cause</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                                <if_stmt><if>if <condition>(<expr><literal type="null">null</literal> <operator>==</operator> <name>cause</name></expr>)</condition><block type="pseudo"><block_content>
+                                    <expr_stmt><expr><name>cause</name> <operator>=</operator> <operator>new</operator> <call><name>ServerError</name><argument_list>(<argument><expr><literal type="string">"Unexpected error establishing connection"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"Writing response to STARTUP failed, unable to configure pipeline"</literal></expr></argument>, <argument><expr><name>cause</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                                <decl_stmt><decl><type><name>ErrorMessage</name></type> <name>error</name> <init>= <expr><call><name><name>ErrorMessage</name><operator>.</operator><name>fromException</name></name><argument_list>(<argument><expr><name>cause</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                                <decl_stmt><decl><type><name>Envelope</name></type> <name>response</name> <init>= <expr><call><name><name>error</name><operator>.</operator><name>encode</name></name><argument_list>(<argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>version</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                                <decl_stmt><decl><type><name>ChannelPromise</name></type> <name>closeChannel</name> <init>= <expr><call><name><name>AsyncChannelPromise</name><operator>.</operator><name>withListener</name></name><argument_list>(<argument><expr><name>ctx</name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>f</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>ctx</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                                <expr_stmt><expr><call><name><name>ctx</name><operator>.</operator><name>writeAndFlush</name></name><argument_list>(<argument><expr><name>response</name></expr></argument>, <argument><expr><name>closeChannel</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                                <if_stmt><if>if <condition>(<expr><call><name><name>ctx</name><operator>.</operator><name>channel</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isOpen</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                                    <expr_stmt><expr><call><name><name>ctx</name><operator>.</operator><name>channel</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>close</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                            </block_content>}</block></else></if_stmt>
+                        </block_content>}</block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if>
+                    <else>else
+                    <block>{<block_content>
+                        <comment type="line">// no need to configure the pipeline asynchronously in this case</comment>
+                        <comment type="line">// the capacity obtained from allocator for the STARTUP message</comment>
+                        <comment type="line">// is released when flushed by the legacy dispatcher/flusher so</comment>
+                        <comment type="line">// there's no need to explicitly release that here either.</comment>
+                        <expr_stmt><expr><call><name><name>configurator</name><operator>.</operator><name>configureLegacyPipeline</name></name><argument_list>(<argument><expr><name>ctx</name></expr></argument>, <argument><expr><name>allocator</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><name>promise</name> <operator>=</operator> <operator>new</operator> <call><name>VoidChannelPromise</name><argument_list>(<argument><expr><call><name><name>ctx</name><operator>.</operator><name>channel</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></else></if_stmt>
+
+                    <decl_stmt><decl><type><specifier>final</specifier> <name><name>Message</name><operator>.</operator><name>Response</name></name></type> <name>response</name> <init>= <expr><call><name><name>Dispatcher</name><operator>.</operator><name>processRequest</name></name><argument_list>(<argument><expr><operator>(</operator><name>ServerConnection</name><operator>)</operator> <name>connection</name></expr></argument>, <argument><expr><name>startup</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><name>outbound</name> <operator>=</operator> <call><name><name>response</name><operator>.</operator><name>encode</name></name><argument_list>(<argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>version</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>ctx</name><operator>.</operator><name>writeAndFlush</name></name><argument_list>(<argument><expr><name>outbound</name></expr></argument>, <argument><expr><name>promise</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Configured pipeline: {}"</literal></expr></argument>, <argument><expr><call><name><name>ctx</name><operator>.</operator><name>pipeline</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <break>break;</break>
+
+                <default>default:</default>
+                    <decl_stmt><decl><type><name>ErrorMessage</name></type> <name>error</name> <init>=
+                        <expr><call><name><name>ErrorMessage</name><operator>.</operator><name>fromException</name></name><argument_list>(
+                            <argument><expr><operator>new</operator> <call><name>ProtocolException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Unexpected message %s, expecting STARTUP or OPTIONS"</literal></expr></argument>,
+                                                                <argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>type</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><name>outbound</name> <operator>=</operator> <call><name><name>error</name><operator>.</operator><name>encode</name></name><argument_list>(<argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>version</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>ctx</name><operator>.</operator><name>writeAndFlush</name></name><argument_list>(<argument><expr><name>outbound</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></switch>
+        </block_content>}</block>
+        <finally>finally
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>inbound</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></finally></try>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

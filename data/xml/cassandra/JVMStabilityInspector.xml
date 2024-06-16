@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/utils/JVMStabilityInspector.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>FileNotFoundException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>SocketException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>ArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Arrays</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicBoolean</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Consumer</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>UnrecoverableIllegalStateException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>net</name><operator>.</operator><name>nicoulaj</name><operator>.</operator><name>compilecommand</name><operator>.</operator><name>annotations</name><operator>.</operator><name>Exclude</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ScheduledExecutors</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>Config</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>FSError</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>CorruptSSTableException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>FileUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>StorageService</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Responsible for deciding whether to kill the JVM if it gets in an "unstable" state (think OOM).
+ */</comment>
+<class><specifier>public</specifier> <specifier>final</specifier> class <name>JVMStabilityInspector</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>JVMStabilityInspector</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <name>Killer</name></type> <name>killer</name> <init>= <expr><operator>new</operator> <call><name>Killer</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <name>Object</name></type> <name>lock</name> <init>= <expr><operator>new</operator> <call><name>Object</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>printingHeapHistogram</name></decl>;</decl_stmt>
+
+    <comment type="line">// It is used for unit test</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <name>OnKillHook</name></type> <name>killerHook</name></decl>;</decl_stmt>
+
+    <constructor><specifier>private</specifier> <name>JVMStabilityInspector</name><parameter_list>()</parameter_list> <block>{<block_content/>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Certain Throwables and Exceptions represent "Die" conditions for the server.
+     * This recursively checks the input Throwable's cause hierarchy until null.
+     * @param t
+     *      The Throwable to check for server-stop conditions
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>inspectThrowable</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>OutOfMemoryError</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>inspectThrowable</name><argument_list>(<argument><expr><name>t</name></expr></argument>, <argument><expr><name>JVMStabilityInspector</name><operator>::</operator><name>inspectDiskError</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>inspectCommitLogThrowable</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>inspectThrowable</name><argument_list>(<argument><expr><name>t</name></expr></argument>, <argument><expr><name>JVMStabilityInspector</name><operator>::</operator><name>inspectCommitLogError</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>inspectDiskError</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>t</name> <operator>instanceof</operator> <name>CorruptSSTableException</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>FileUtils</name><operator>.</operator><name>handleCorruptSSTable</name></name><argument_list>(<argument><expr><operator>(</operator><name>CorruptSSTableException</name><operator>)</operator> <name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <if type="elseif">else if <condition>(<expr><name>t</name> <operator>instanceof</operator> <name>FSError</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>FileUtils</name><operator>.</operator><name>handleFSError</name></name><argument_list>(<argument><expr><operator>(</operator><name>FSError</name><operator>)</operator> <name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>inspectThrowable</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>, <parameter><decl><type><name><name>Consumer</name><argument_list type="generic">&lt;<argument><name>Throwable</name></argument>&gt;</argument_list></name></type> <name>fn</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>OutOfMemoryError</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>isUnstable</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>t</name> <operator>instanceof</operator> <name>OutOfMemoryError</name></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>Boolean</name><operator>.</operator><name>getBoolean</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.printHeapHistogramOnOutOfMemoryError"</literal></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// We want to avoid printing multiple time the heap histogram if multiple OOM errors happen in a short</comment>
+                <comment type="line">// time span.</comment>
+                <synchronized>synchronized<init>(<expr><name>lock</name></expr>)</init>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><name>printingHeapHistogram</name></expr>)</condition><block type="pseudo"><block_content>
+                        <return>return;</return></block_content></block></if></if_stmt>
+                    <expr_stmt><expr><name>printingHeapHistogram</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                </block_content>}</block></synchronized>
+                <expr_stmt><expr><call><name><name>HeapUtils</name><operator>.</operator><name>logHeapHistogram</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"OutOfMemory error letting the JVM handle the error:"</literal></expr></argument>, <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>removeShutdownHook</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name>forceHeapSpaceOomMaybe</name><argument_list>(<argument><expr><operator>(</operator><name>OutOfMemoryError</name><operator>)</operator> <name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <comment type="line">// We let the JVM handle the error. The startup checks should have warned the user if it did not configure</comment>
+            <comment type="line">// the JVM behavior in case of OOM (CASSANDRA-13006).</comment>
+            <throw>throw <expr><operator>(</operator><name>OutOfMemoryError</name><operator>)</operator> <name>t</name></expr>;</throw>
+        </block_content>}</block></if>
+        <if type="elseif">else if <condition>(<expr><name>t</name> <operator>instanceof</operator> <name>UnrecoverableIllegalStateException</name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>isUnstable</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getDiskFailurePolicy</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Config</name><operator>.</operator><name>DiskFailurePolicy</name><operator>.</operator><name>die</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <if_stmt><if>if <condition>(<expr><name>t</name> <operator>instanceof</operator> <name>FSError</name> <operator>||</operator> <name>t</name> <operator>instanceof</operator> <name>CorruptSSTableException</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>isUnstable</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt></block_content></block></if></if_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>fn</name><operator>.</operator><name>accept</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// Check for file handle exhaustion</comment>
+        <if_stmt><if>if <condition>(<expr><name>t</name> <operator>instanceof</operator> <name>FileNotFoundException</name> <operator>||</operator> <name>t</name> <operator>instanceof</operator> <name>SocketException</name></expr>)</condition><block type="pseudo"><block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>t</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>t</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>contains</name><argument_list>(<argument><expr><literal type="string">"Too many open files"</literal></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>isUnstable</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt></block_content></block></if></if_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>isUnstable</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>killer</name><operator>.</operator><name>killCurrentJVM</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>t</name><operator>.</operator><name>getCause</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>inspectThrowable</name><argument_list>(<argument><expr><call><name><name>t</name><operator>.</operator><name>getCause</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>fn</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Intentionally produce a heap space OOM upon seeing a Direct buffer memory OOM.
+     * Direct buffer OOM cannot trigger JVM OOM error related options,
+     * e.g. OnOutOfMemoryError, HeapDumpOnOutOfMemoryError, etc.
+     * See CASSANDRA-15214 for more details
+     */</comment>
+    <function><annotation>@<name>Exclude</name></annotation> <comment type="line">// Exclude from just in time compilation.</comment>
+    <type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>forceHeapSpaceOomMaybe</name><parameter_list>(<parameter><decl><type><name>OutOfMemoryError</name></type> <name>oom</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// See the oom thrown from java.nio.Bits.reserveMemory.</comment>
+        <comment type="line">// In jdk 13 and up, the message is "Cannot reserve XX bytes of direct buffer memory (...)"</comment>
+        <comment type="line">// In jdk 11 and below, the message is "Direct buffer memory"</comment>
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><call><name><name>oom</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>oom</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>toLowerCase</name><argument_list>()</argument_list></call><operator>.</operator><call><name>contains</name><argument_list>(<argument><expr><literal type="string">"direct buffer memory"</literal></expr></argument>)</argument_list></call><operator>)</operator> <operator>||</operator>
+            <call><name><name>Arrays</name><operator>.</operator><name>stream</name></name><argument_list>(<argument><expr><call><name><name>oom</name><operator>.</operator><name>getStackTrace</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>anyMatch</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>x</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>x</name><operator>.</operator><name>getClassName</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><literal type="string">"java.nio.Bits"</literal></expr></argument>)</argument_list></call>
+                                                             <operator>&amp;&amp;</operator> <call><name><name>x</name><operator>.</operator><name>getMethodName</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><literal type="string">"reserveMemory"</literal></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{
+            <expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"Force heap space OutOfMemoryError in the presence of"</literal></expr></argument>, <argument><expr><name>oom</name></expr></argument>)</argument_list></call></expr>;
+            <comment type="line">// Start to produce heap space OOM forcibly.</comment>
+            <name><name>List</name><argument_list type="generic">&lt;<argument><name><name>long</name><index>[]</index></name></argument>&gt;</argument_list></name> <name>ignored</name> <operator>=</operator> <operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></block><empty_stmt>;</empty_stmt></if></if_stmt>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// java.util.AbstractCollection.MAX_ARRAY_SIZE is defined as Integer.MAX_VALUE - 8</comment>
+                <comment type="line">// so Integer.MAX_VALUE / 2 should be a large enough and safe size to request.</comment>
+                <expr_stmt><expr><call><name><name>ignored</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>new</operator> <name><name>long</name><index>[<expr><name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name> <operator>/</operator> <literal type="number">2</literal></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>inspectCommitLogError</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>isDaemonSetupCompleted</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"Exiting due to error while processing commit log during initialization."</literal></expr></argument>, <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>killer</name><operator>.</operator><name>killCurrentJVM</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <if type="elseif">else if <condition>(<expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getCommitFailurePolicy</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Config</name><operator>.</operator><name>CommitFailurePolicy</name><operator>.</operator><name>die</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>killer</name><operator>.</operator><name>killCurrentJVM</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>killCurrentJVM</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>quiet</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>killer</name><operator>.</operator><name>killCurrentJVM</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>, <argument><expr><name>quiet</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>userFunctionTimeout</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <switch>switch <condition>(<expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getUserFunctionTimeoutPolicy</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><name>die</name></expr>:</case>
+                <comment type="line">// policy to give 250ms grace time to</comment>
+                <expr_stmt><expr><call><name><name>ScheduledExecutors</name><operator>.</operator><name>nonPeriodicTasks</name><operator>.</operator><name>schedule</name></name><argument_list>(<argument><expr><lambda><parameter_list>()</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>killer</name><operator>.</operator><name>killCurrentJVM</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>, <argument><expr><literal type="number">250</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <break>break;</break>
+            <case>case <expr><name>die_immediate</name></expr>:</case>
+                <expr_stmt><expr><call><name><name>killer</name><operator>.</operator><name>killCurrentJVM</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <break>break;</break>
+            <case>case <expr><name>ignore</name></expr>:</case>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><call><name><name>t</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <break>break;</break>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>Killer</name></type> <name>replaceKiller</name><parameter_list>(<parameter><decl><type><name>Killer</name></type> <name>newKiller</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Killer</name></type> <name>oldKiller</name> <init>= <expr><name><name>JVMStabilityInspector</name><operator>.</operator><name>killer</name></name></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name><name>JVMStabilityInspector</name><operator>.</operator><name>killer</name></name> <operator>=</operator> <name>newKiller</name></expr>;</expr_stmt>
+        <return>return <expr><name>oldKiller</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><annotation>@<name>VisibleForTesting</name></annotation>
+    <specifier>public</specifier> <specifier>static</specifier> class <name>Killer</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>AtomicBoolean</name></type> <name>killing</name> <init>= <expr><operator>new</operator> <call><name>AtomicBoolean</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+        * Certain situations represent "Die" conditions for the server, and if so, the reason is logged and the current JVM is killed.
+        *
+        * @param t
+        *      The Throwable to log before killing the current JVM
+        */</comment>
+        <function><type><specifier>protected</specifier> <name>void</name></type> <name>killCurrentJVM</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>killCurrentJVM</name><argument_list>(<argument><expr><name>t</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>protected</specifier> <name>void</name></type> <name>killCurrentJVM</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>quiet</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><name>quiet</name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>t</name><operator>.</operator><name>printStackTrace</name></name><argument_list>(<argument><expr><name><name>System</name><operator>.</operator><name>err</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"JVM state determined to be unstable.  Exiting forcefully due to:"</literal></expr></argument>, <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>boolean</name></type> <name>doExit</name> <init>= <expr><ternary><condition><expr><name>killerHook</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name><name>killerHook</name><operator>.</operator><name>execute</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><literal type="boolean">true</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>doExit</name> <operator>&amp;&amp;</operator> <call><name><name>killing</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>removeShutdownHook</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>System</name><operator>.</operator><name>exit</name></name><argument_list>(<argument><expr><literal type="number">100</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * This class is usually used to avoid JVM exit when running junit tests.
+     */</comment>
+    <interface><specifier>public</specifier> interface <name>OnKillHook</name>
+    <block>{
+        <comment type="block" format="javadoc">/**
+         *
+         * @return False will skip exit
+         */</comment>
+        <function_decl><type><name>boolean</name></type> <name>execute</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>;</function_decl>
+    }</block></interface>
+}
+</unit>

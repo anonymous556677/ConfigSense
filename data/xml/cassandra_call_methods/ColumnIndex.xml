@@ -1,0 +1,305 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/ColumnIndex.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>primitives</name><operator>.</operator><name>Ints</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>ISerializer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>IndexInfo</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>format</name><operator>.</operator><name>SSTableFlushObserver</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>format</name><operator>.</operator><name>Version</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputBuffer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>SequentialWriter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ByteBufferUtil</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Column index builder used by {@link org.apache.cassandra.io.sstable.format.big.BigTableWriter}.
+ * For index entries that exceed {@link org.apache.cassandra.config.Config#column_index_cache_size_in_kb},
+ * this uses the serialization logic as in {@link RowIndexEntry}.
+ */</comment>
+<class><specifier>public</specifier> class <name>ColumnIndex</name>
+<block>{
+    <comment type="line">// used, if the row-index-entry reaches config column_index_cache_size_in_kb</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>DataOutputBuffer</name></type> <name>buffer</name></decl>;</decl_stmt>
+    <comment type="line">// used to track the size of the serialized size of row-index-entry (unused for buffer)</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>indexSamplesSerializedSize</name></decl>;</decl_stmt>
+    <comment type="line">// used, until the row-index-entry reaches config column_index_cache_size_in_kb</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>indexSamples</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>DataOutputBuffer</name></type> <name>reusableBuffer</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <name>int</name></type> <name>columnIndexCount</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>int</name><index>[]</index></name></type> <name>indexOffsets</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>SerializationHelper</name></type> <name>helper</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>SerializationHeader</name></type> <name>header</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>version</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>SequentialWriter</name></type> <name>writer</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>initialPosition</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier>  <name><name>ISerializer</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>idxSerializer</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <name>long</name></type> <name>headerLength</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>startPosition</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>written</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>previousRowStart</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>firstClustering</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>lastClustering</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>DeletionTime</name></type> <name>openMarker</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>cacheSizeThreshold</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>SSTableFlushObserver</name></argument>&gt;</argument_list></name></type> <name>observers</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>ColumnIndex</name><parameter_list>(<parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>,
+                        <parameter><decl><type><name>SequentialWriter</name></type> <name>writer</name></decl></parameter>,
+                        <parameter><decl><type><name>Version</name></type> <name>version</name></decl></parameter>,
+                        <parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>SSTableFlushObserver</name></argument>&gt;</argument_list></name></type> <name>observers</name></decl></parameter>,
+                        <parameter><decl><type><name><name>ISerializer</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>indexInfoSerializer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>helper</name></name> <operator>=</operator> <operator>new</operator> <call><name>SerializationHelper</name><argument_list>(<argument><expr><name>header</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>header</name></name> <operator>=</operator> <name>header</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>writer</name></name> <operator>=</operator> <name>writer</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>version</name></name> <operator>=</operator> <call><name><name>version</name><operator>.</operator><name>correspondingMessagingVersion</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>observers</name></name> <operator>=</operator> <name>observers</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>idxSerializer</name></name> <operator>=</operator> <name>indexInfoSerializer</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>reset</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>initialPosition</name></name> <operator>=</operator> <call><name><name>writer</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>headerLength</name></name> <operator>=</operator> <operator>-</operator><literal type="number">1</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>startPosition</name></name> <operator>=</operator> <operator>-</operator><literal type="number">1</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>previousRowStart</name></name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columnIndexCount</name></name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>written</name></name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>indexSamplesSerializedSize</name></name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>this</name><operator>.</operator><name>indexSamples</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>firstClustering</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>lastClustering</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>openMarker</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>int</name></type> <name>newCacheSizeThreshold</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getColumnIndexCacheSize</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name><name>this</name><operator>.</operator><name>buffer</name></name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name><name>this</name><operator>.</operator><name>cacheSizeThreshold</name></name> <operator>==</operator> <name>newCacheSizeThreshold</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>reusableBuffer</name></name> <operator>=</operator> <name><name>this</name><operator>.</operator><name>buffer</name></name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>buffer</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cacheSizeThreshold</name></name> <operator>=</operator> <name>newCacheSizeThreshold</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>buildRowIndex</name><parameter_list>(<parameter><decl><type><name>UnfilteredRowIterator</name></type> <name>iterator</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>writePartitionHeader</name><argument_list>(<argument><expr><name>iterator</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>headerLength</name></name> <operator>=</operator> <call><name><name>writer</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>initialPosition</name></expr>;</expr_stmt>
+
+        <while>while <condition>(<expr><call><name><name>iterator</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>add</name><argument_list>(<argument><expr><call><name><name>iterator</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></while>
+
+        <expr_stmt><expr><call><name>finish</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>writePartitionHeader</name><parameter_list>(<parameter><decl><type><name>UnfilteredRowIterator</name></type> <name>iterator</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>ByteBufferUtil</name><operator>.</operator><name>writeWithShortLength</name></name><argument_list>(<argument><expr><call><name><name>iterator</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getKey</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>writer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>DeletionTime</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><call><name><name>iterator</name><operator>.</operator><name>partitionLevelDeletion</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>writer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>header</name><operator>.</operator><name>hasStatic</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Row</name></type> <name>staticRow</name> <init>= <expr><call><name><name>iterator</name><operator>.</operator><name>staticRow</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <expr_stmt><expr><call><name><name>UnfilteredSerializer</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializeStaticRow</name></name><argument_list>(<argument><expr><name>staticRow</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>writer</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>observers</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>observers</name><operator>.</operator><name>forEach</name></name><argument_list>(<argument><expr><lambda><parameter_list>(<parameter><decl><name>o</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>o</name><operator>.</operator><name>nextUnfilteredCluster</name></name><argument_list>(<argument><expr><name>staticRow</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>long</name></type> <name>currentPosition</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>writer</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>initialPosition</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ByteBuffer</name></type> <name>buffer</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>buffer</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name><name>buffer</name><operator>.</operator><name>buffer</name></name><argument_list>()</argument_list></call></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>indexSamples</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>indexSamplesSerializedSize</name> <operator>+</operator> <name>columnIndexCount</name> <operator>*</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeof</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call> <operator>&lt;=</operator> <name>cacheSizeThreshold</name></expr>)</condition>
+        <block>{<block_content>
+            <return>return <expr><name>indexSamples</name></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <return>return <expr><literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>int</name><index>[]</index></name></type> <name>offsets</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>indexOffsets</name> <operator>!=</operator> <literal type="null">null</literal></expr>
+               ?</condition><then> <expr><call><name><name>Arrays</name><operator>.</operator><name>copyOf</name></name><argument_list>(<argument><expr><name>indexOffsets</name></expr></argument>, <argument><expr><name>columnIndexCount</name></expr></argument>)</argument_list></call></expr>
+               </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>addIndexBlock</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>IndexInfo</name></type> <name>cIndexInfo</name> <init>= <expr><operator>new</operator> <call><name>IndexInfo</name><argument_list>(<argument><expr><name>firstClustering</name></expr></argument>,
+                                             <argument><expr><name>lastClustering</name></expr></argument>,
+                                             <argument><expr><name>startPosition</name></expr></argument>,
+                                             <argument><expr><call><name>currentPosition</name><argument_list>()</argument_list></call> <operator>-</operator> <name>startPosition</name></expr></argument>,
+                                             <argument><expr><name>openMarker</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// indexOffsets is used for both shallow (ShallowIndexedEntry) and non-shallow IndexedEntry.</comment>
+        <comment type="line">// For shallow ones, we need it to serialize the offsts in finish().</comment>
+        <comment type="line">// For non-shallow ones, the offsts are passed into IndexedEntry, so we don't have to</comment>
+        <comment type="line">// calculate the offsets again.</comment>
+
+        <comment type="line">// indexOffsets contains the offsets of the serialized IndexInfo objects.</comment>
+        <comment type="line">// I.e. indexOffsets[0] is always 0 so we don't have to deal with a special handling</comment>
+        <comment type="line">// for index #0 and always subtracting 1 for the index (which could be error-prone).</comment>
+        <if_stmt><if>if <condition>(<expr><name>indexOffsets</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>indexOffsets</name> <operator>=</operator> <operator>new</operator> <name><name>int</name><index>[<expr><literal type="number">10</literal></expr>]</index></name></expr>;</expr_stmt></block_content></block></if>
+        <else>else
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>columnIndexCount</name> <operator>&gt;=</operator> <name><name>indexOffsets</name><operator>.</operator><name>length</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>indexOffsets</name> <operator>=</operator> <call><name><name>Arrays</name><operator>.</operator><name>copyOf</name></name><argument_list>(<argument><expr><name>indexOffsets</name></expr></argument>, <argument><expr><name><name>indexOffsets</name><operator>.</operator><name>length</name></name> <operator>+</operator> <literal type="number">10</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <comment type="line">//the 0th element is always 0</comment>
+            <if_stmt><if>if <condition>(<expr><name>columnIndexCount</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name><name>indexOffsets</name><index>[<expr><name>columnIndexCount</name></expr>]</index></name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><name><name>indexOffsets</name><index>[<expr><name>columnIndexCount</name></expr>]</index></name> <operator>=</operator>
+                <ternary><condition><expr><name>buffer</name> <operator>!=</operator> <literal type="null">null</literal></expr>
+                ?</condition><then> <expr><call><name><name>Ints</name><operator>.</operator><name>checkedCast</name></name><argument_list>(<argument><expr><call><name><name>buffer</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>
+                </then><else>: <expr><name>indexSamplesSerializedSize</name></expr></else></ternary></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></else></if_stmt>
+        <expr_stmt><expr><name>columnIndexCount</name><operator>++</operator></expr>;</expr_stmt>
+
+        <comment type="line">// First, we collect the IndexInfo objects until we reach Config.column_index_cache_size_in_kb in an ArrayList.</comment>
+        <comment type="line">// When column_index_cache_size_in_kb is reached, we switch to byte-buffer mode.</comment>
+        <if_stmt><if>if <condition>(<expr><name>buffer</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>indexSamplesSerializedSize</name> <operator>+=</operator> <call><name><name>idxSerializer</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><name>cIndexInfo</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>indexSamplesSerializedSize</name> <operator>+</operator> <name>columnIndexCount</name> <operator>*</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeof</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call> <operator>&gt;</operator> <name>cacheSizeThreshold</name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>buffer</name> <operator>=</operator> <call><name>reuseOrAllocateBuffer</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <for>for <control>(<init><decl><type><name>IndexInfo</name></type> <name>indexSample</name> <range>: <expr><name>indexSamples</name></expr></range></decl></init>)</control>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>idxSerializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>indexSample</name></expr></argument>, <argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></for>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>indexSamples</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>cIndexInfo</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <comment type="line">// don't put an else here since buffer may be allocated in preceding if block</comment>
+        <if_stmt><if>if <condition>(<expr><name>buffer</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>idxSerializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>cIndexInfo</name></expr></argument>, <argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <expr_stmt><expr><name>firstClustering</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>DataOutputBuffer</name></type> <name>reuseOrAllocateBuffer</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// Check whether a reusable DataOutputBuffer already exists for this</comment>
+        <comment type="line">// ColumnIndex instance and return it.</comment>
+        <if_stmt><if>if <condition>(<expr><name>reusableBuffer</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>DataOutputBuffer</name></type> <name>buffer</name> <init>= <expr><name>reusableBuffer</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>buffer</name></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <comment type="line">// don't use the standard RECYCLER as that only recycles up to 1MB and requires proper cleanup</comment>
+        <return>return <expr><operator>new</operator> <call><name>DataOutputBuffer</name><argument_list>(<argument><expr><name>cacheSizeThreshold</name> <operator>*</operator> <literal type="number">2</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>add</name><parameter_list>(<parameter><decl><type><name>Unfiltered</name></type> <name>unfiltered</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>pos</name> <init>= <expr><call><name>currentPosition</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>firstClustering</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// Beginning of an index block. Remember the start and position</comment>
+            <expr_stmt><expr><name>firstClustering</name> <operator>=</operator> <call><name><name>unfiltered</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>startPosition</name> <operator>=</operator> <name>pos</name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>UnfilteredSerializer</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>unfiltered</name></expr></argument>, <argument><expr><name>helper</name></expr></argument>, <argument><expr><name>writer</name></expr></argument>, <argument><expr><name>pos</name> <operator>-</operator> <name>previousRowStart</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// notify observers about each new row</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>observers</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>observers</name><operator>.</operator><name>forEach</name></name><argument_list>(<argument><expr><lambda><parameter_list>(<parameter><decl><name>o</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>o</name><operator>.</operator><name>nextUnfilteredCluster</name></name><argument_list>(<argument><expr><name>unfiltered</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><name>lastClustering</name> <operator>=</operator> <call><name><name>unfiltered</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>previousRowStart</name> <operator>=</operator> <name>pos</name></expr>;</expr_stmt>
+        <expr_stmt><expr><operator>++</operator><name>written</name></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>unfiltered</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Unfiltered</name><operator>.</operator><name>Kind</name><operator>.</operator><name>RANGE_TOMBSTONE_MARKER</name></name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>RangeTombstoneMarker</name></type> <name>marker</name> <init>= <expr><operator>(</operator><name>RangeTombstoneMarker</name><operator>)</operator> <name>unfiltered</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>openMarker</name> <operator>=</operator> <ternary><condition><expr><call><name><name>marker</name><operator>.</operator><name>isOpen</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><call><name><name>marker</name><operator>.</operator><name>openDeletionTime</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <comment type="line">// if we hit the column index size that we have to index after, go ahead and index it.</comment>
+        <if_stmt><if>if <condition>(<expr><call><name>currentPosition</name><argument_list>()</argument_list></call> <operator>-</operator> <name>startPosition</name> <operator>&gt;=</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getColumnIndexSize</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>addIndexBlock</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>finish</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>UnfilteredSerializer</name><operator>.</operator><name>serializer</name><operator>.</operator><name>writeEndOfPartition</name></name><argument_list>(<argument><expr><name>writer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// It's possible we add no rows, just a top level deletion</comment>
+        <if_stmt><if>if <condition>(<expr><name>written</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// the last column may have fallen on an index boundary already.  if not, index it explicitly.</comment>
+        <if_stmt><if>if <condition>(<expr><name>firstClustering</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>addIndexBlock</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <comment type="line">// If we serialize the IndexInfo objects directly in the code above into 'buffer',</comment>
+        <comment type="line">// we have to write the offsts to these here. The offsets have already been are collected</comment>
+        <comment type="line">// in indexOffsets[]. buffer is != null, if it exceeds Config.column_index_cache_size_in_kb.</comment>
+        <comment type="line">// In the other case, when buffer==null, the offsets are serialized in RowIndexEntry.IndexedEntry.serialize().</comment>
+        <if_stmt><if>if <condition>(<expr><name>buffer</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>RowIndexEntry</name><operator>.</operator><name>Serializer</name><operator>.</operator><name>serializeOffsets</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><name>indexOffsets</name></expr></argument>, <argument><expr><name>columnIndexCount</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <comment type="line">// we should always have at least one computed index block, but we only write it out if there is more than that.</comment>
+        <assert>assert <expr><name>columnIndexCount</name> <operator>&gt;</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>headerLength</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr>;</assert>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>indexInfoSerializedSize</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>buffer</name> <operator>!=</operator> <literal type="null">null</literal></expr>
+               ?</condition><then> <expr><call><name><name>buffer</name><operator>.</operator><name>buffer</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>limit</name><argument_list>()</argument_list></call></expr>
+               </then><else>: <expr><name>indexSamplesSerializedSize</name> <operator>+</operator> <name>columnIndexCount</name> <operator>*</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeof</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

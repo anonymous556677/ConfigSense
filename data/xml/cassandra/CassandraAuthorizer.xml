@@ -1,0 +1,371 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/auth/CassandraAuthorizer.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>auth</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>ImmutableSet</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterables</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Lists</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>commons</name><operator>.</operator><name>lang3</name><operator>.</operator><name>StringUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>statements</name><operator>.</operator><name>BatchStatement</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>statements</name><operator>.</operator><name>ModificationStatement</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>statements</name><operator>.</operator><name>SelectStatement</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ConsistencyLevel</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>marshal</name><operator>.</operator><name>UTF8Type</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>SchemaConstants</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>ClientState</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>QueryState</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name><operator>.</operator><name>messages</name><operator>.</operator><name>ResultMessage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ByteBufferUtil</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * CassandraAuthorizer is an IAuthorizer implementation that keeps
+ * user permissions internally in C* using the system_auth.role_permissions
+ * table.
+ */</comment>
+<class><specifier>public</specifier> class <name>CassandraAuthorizer</name> <super_list><implements>implements <super><name>IAuthorizer</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>CassandraAuthorizer</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>ROLE</name> <init>= <expr><literal type="string">"role"</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>RESOURCE</name> <init>= <expr><literal type="string">"resource"</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>PERMISSIONS</name> <init>= <expr><literal type="string">"permissions"</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>SelectStatement</name></type> <name>authorizeRoleStatement</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>CassandraAuthorizer</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+    </block_content>}</block></constructor>
+
+    <comment type="line">// Returns every permission on the resource granted to the user either directly</comment>
+    <comment type="line">// or indirectly via roles granted to the user.</comment>
+    <function><type><specifier>public</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>Permission</name></argument>&gt;</argument_list></name></type> <name>authorize</name><parameter_list>(<parameter><decl><type><name>AuthenticatedUser</name></type> <name>user</name></decl></parameter>, <parameter><decl><type><name>IResource</name></type> <name>resource</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>user</name><operator>.</operator><name>isSuper</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><call><name><name>resource</name><operator>.</operator><name>applicablePermissions</name></name><argument_list>()</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>Permission</name></argument>&gt;</argument_list></name></type> <name>permissions</name> <init>= <expr><call><name><name>EnumSet</name><operator>.</operator><name>noneOf</name></name><argument_list>(<argument><expr><name><name>Permission</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <comment type="line">// Even though we only care about the RoleResource here, we use getRoleDetails as</comment>
+            <comment type="line">// it saves a Set creation in RolesCache</comment>
+            <for>for <control>(<init><decl><type><name>Role</name></type> <name>role</name><range>: <expr><call><name><name>user</name><operator>.</operator><name>getRoleDetails</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>addPermissionsForRole</name><argument_list>(<argument><expr><name>permissions</name></expr></argument>, <argument><expr><name>resource</name></expr></argument>, <argument><expr><name><name>role</name><operator>.</operator><name>resource</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            <return>return <expr><name>permissions</name></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>RequestExecutionException</name></type> | <type><name>RequestValidationException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Failed to authorize {} for {}"</literal></expr></argument>, <argument><expr><name>user</name></expr></argument>, <argument><expr><name>resource</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <throw>throw <expr><operator>new</operator> <call><name>UnauthorizedException</name><argument_list>(<argument><expr><literal type="string">"Unable to perform authorization of permissions: "</literal> <operator>+</operator> <call><name><name>e</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>grant</name><parameter_list>(<parameter><decl><type><name>AuthenticatedUser</name></type> <name>performer</name></decl></parameter>, <parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>Permission</name></argument>&gt;</argument_list></name></type> <name>permissions</name></decl></parameter>, <parameter><decl><type><name>IResource</name></type> <name>resource</name></decl></parameter>, <parameter><decl><type><name>RoleResource</name></type> <name>grantee</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestValidationException</name></expr></argument>, <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>modifyRolePermissions</name><argument_list>(<argument><expr><name>permissions</name></expr></argument>, <argument><expr><name>resource</name></expr></argument>, <argument><expr><name>grantee</name></expr></argument>, <argument><expr><literal type="string">"+"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>addLookupEntry</name><argument_list>(<argument><expr><name>resource</name></expr></argument>, <argument><expr><name>grantee</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>revoke</name><parameter_list>(<parameter><decl><type><name>AuthenticatedUser</name></type> <name>performer</name></decl></parameter>, <parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>Permission</name></argument>&gt;</argument_list></name></type> <name>permissions</name></decl></parameter>, <parameter><decl><type><name>IResource</name></type> <name>resource</name></decl></parameter>, <parameter><decl><type><name>RoleResource</name></type> <name>revokee</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestValidationException</name></expr></argument>, <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>modifyRolePermissions</name><argument_list>(<argument><expr><name>permissions</name></expr></argument>, <argument><expr><name>resource</name></expr></argument>, <argument><expr><name>revokee</name></expr></argument>, <argument><expr><literal type="string">"-"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>removeLookupEntry</name><argument_list>(<argument><expr><name>resource</name></expr></argument>, <argument><expr><name>revokee</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="line">// Called when deleting a role with DROP ROLE query.</comment>
+    <comment type="line">// Internal hook, so no permission checks are needed here.</comment>
+    <comment type="line">// Executes a logged batch removing the granted premissions</comment>
+    <comment type="line">// for the role as well as the entries from the reverse index</comment>
+    <comment type="line">// table</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>revokeAllFrom</name><parameter_list>(<parameter><decl><type><name>RoleResource</name></type> <name>revokee</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>UntypedResultSet</name></type> <name>rows</name> <init>= <expr><call><name>process</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"SELECT resource FROM %s.%s WHERE role = '%s'"</literal></expr></argument>,
+                                                          <argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>AUTH_KEYSPACE_NAME</name></name></expr></argument>,
+                                                          <argument><expr><name><name>AuthKeyspace</name><operator>.</operator><name>ROLE_PERMISSIONS</name></name></expr></argument>,
+                                                          <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>revokee</name><operator>.</operator><name>getRoleName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>CQLStatement</name></argument>&gt;</argument_list></name></type> <name>statements</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name><name>UntypedResultSet</name><operator>.</operator><name>Row</name></name></type> <name>row</name> <range>: <expr><name>rows</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>statements</name><operator>.</operator><name>add</name></name><argument_list>(
+                    <argument><expr><call><name><name>QueryProcessor</name><operator>.</operator><name>getStatement</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"DELETE FROM %s.%s WHERE resource = '%s' AND role = '%s'"</literal></expr></argument>,
+                                                              <argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>AUTH_KEYSPACE_NAME</name></name></expr></argument>,
+                                                              <argument><expr><name><name>AuthKeyspace</name><operator>.</operator><name>RESOURCE_ROLE_INDEX</name></name></expr></argument>,
+                                                              <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>getString</name></name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                              <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>revokee</name><operator>.</operator><name>getRoleName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                <argument><expr><call><name><name>ClientState</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            </block_content>}</block></for>
+
+            <expr_stmt><expr><call><name><name>statements</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>QueryProcessor</name><operator>.</operator><name>getStatement</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"DELETE FROM %s.%s WHERE role = '%s'"</literal></expr></argument>,
+                                                                     <argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>AUTH_KEYSPACE_NAME</name></name></expr></argument>,
+                                                                     <argument><expr><name><name>AuthKeyspace</name><operator>.</operator><name>ROLE_PERMISSIONS</name></name></expr></argument>,
+                                                                     <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>revokee</name><operator>.</operator><name>getRoleName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                       <argument><expr><call><name><name>ClientState</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name>executeLoggedBatch</name><argument_list>(<argument><expr><name>statements</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>RequestExecutionException</name></type> | <type><name>RequestValidationException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"CassandraAuthorizer failed to revoke all permissions of %s"</literal></expr></argument>, <argument><expr><call><name><name>revokee</name><operator>.</operator><name>getRoleName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <comment type="line">// Called after a resource is removed (DROP KEYSPACE, DROP TABLE, etc.).</comment>
+    <comment type="line">// Execute a logged batch removing all the permissions for the resource</comment>
+    <comment type="line">// as well as the index table entry</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>revokeAllOn</name><parameter_list>(<parameter><decl><type><name>IResource</name></type> <name>droppedResource</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>UntypedResultSet</name></type> <name>rows</name> <init>= <expr><call><name>process</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"SELECT role FROM %s.%s WHERE resource = '%s'"</literal></expr></argument>,
+                                                          <argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>AUTH_KEYSPACE_NAME</name></name></expr></argument>,
+                                                          <argument><expr><name><name>AuthKeyspace</name><operator>.</operator><name>RESOURCE_ROLE_INDEX</name></name></expr></argument>,
+                                                          <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>droppedResource</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>CQLStatement</name></argument>&gt;</argument_list></name></type> <name>statements</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name><name>UntypedResultSet</name><operator>.</operator><name>Row</name></name></type> <name>row</name> <range>: <expr><name>rows</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>statements</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>QueryProcessor</name><operator>.</operator><name>getStatement</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"DELETE FROM %s.%s WHERE role = '%s' AND resource = '%s'"</literal></expr></argument>,
+                                                                         <argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>AUTH_KEYSPACE_NAME</name></name></expr></argument>,
+                                                                         <argument><expr><name><name>AuthKeyspace</name><operator>.</operator><name>ROLE_PERMISSIONS</name></name></expr></argument>,
+                                                                         <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>getString</name></name><argument_list>(<argument><expr><literal type="string">"role"</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                                         <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>droppedResource</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                           <argument><expr><call><name><name>ClientState</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+
+            <expr_stmt><expr><call><name><name>statements</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>QueryProcessor</name><operator>.</operator><name>getStatement</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"DELETE FROM %s.%s WHERE resource = '%s'"</literal></expr></argument>,
+                                                                     <argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>AUTH_KEYSPACE_NAME</name></name></expr></argument>,
+                                                                     <argument><expr><name><name>AuthKeyspace</name><operator>.</operator><name>RESOURCE_ROLE_INDEX</name></name></expr></argument>,
+                                                                     <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>droppedResource</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                      <argument><expr><call><name><name>ClientState</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name>executeLoggedBatch</name><argument_list>(<argument><expr><name>statements</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>RequestExecutionException</name></type> | <type><name>RequestValidationException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"CassandraAuthorizer failed to revoke all permissions on %s"</literal></expr></argument>, <argument><expr><name>droppedResource</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>executeLoggedBatch</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>CQLStatement</name></argument>&gt;</argument_list></name></type> <name>statements</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument>, <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>BatchStatement</name></type> <name>batch</name> <init>= <expr><operator>new</operator> <call><name>BatchStatement</name><argument_list>(<argument><expr><name><name>BatchStatement</name><operator>.</operator><name>Type</name><operator>.</operator><name>LOGGED</name></name></expr></argument>,
+                                                  <argument><expr><call><name><name>VariableSpecifications</name><operator>.</operator><name>empty</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                  <argument><expr><call><name><name>Lists</name><operator>.</operator><name>newArrayList</name></name><argument_list>(<argument><expr><call><name><name>Iterables</name><operator>.</operator><name>filter</name></name><argument_list>(<argument><expr><name>statements</name></expr></argument>, <argument><expr><name><name>ModificationStatement</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                  <argument><expr><call><name><name>Attributes</name><operator>.</operator><name>none</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>processBatch</name><argument_list>(<argument><expr><name>batch</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="line">// Add every permission on the resource granted to the role</comment>
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>addPermissionsForRole</name><parameter_list>(<parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>Permission</name></argument>&gt;</argument_list></name></type> <name>permissions</name></decl></parameter>, <parameter><decl><type><name>IResource</name></type> <name>resource</name></decl></parameter>, <parameter><decl><type><name>RoleResource</name></type> <name>role</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument>, <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>QueryOptions</name></type> <name>options</name> <init>= <expr><call><name><name>QueryOptions</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>(<argument><expr><name><name>ConsistencyLevel</name><operator>.</operator><name>LOCAL_ONE</name></name></expr></argument>,
+                                                             <argument><expr><call><name><name>Lists</name><operator>.</operator><name>newArrayList</name></name><argument_list>(<argument><expr><call><name><name>ByteBufferUtil</name><operator>.</operator><name>bytes</name></name><argument_list>(<argument><expr><call><name><name>role</name><operator>.</operator><name>getRoleName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                                                <argument><expr><call><name><name>ByteBufferUtil</name><operator>.</operator><name>bytes</name></name><argument_list>(<argument><expr><call><name><name>resource</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name></type> <name>rows</name> <init>= <expr><call><name>select</name><argument_list>(<argument><expr><name>authorizeRoleStatement</name></expr></argument>, <argument><expr><name>options</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>UntypedResultSet</name></type> <name>result</name> <init>= <expr><call><name><name>UntypedResultSet</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name><name>rows</name><operator>.</operator><name>result</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>result</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>result</name><operator>.</operator><name>one</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>has</name><argument_list>(<argument><expr><name>PERMISSIONS</name></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>String</name></type> <name>perm</name> <range>: <expr><call><name><name>result</name><operator>.</operator><name>one</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getSet</name><argument_list>(<argument><expr><name>PERMISSIONS</name></expr></argument>, <argument><expr><name><name>UTF8Type</name><operator>.</operator><name>instance</name></name></expr></argument>)</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>permissions</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>Permission</name><operator>.</operator><name>valueOf</name></name><argument_list>(<argument><expr><name>perm</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="line">// Adds or removes permissions from a role_permissions table (adds if op is "+", removes if op is "-")</comment>
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>modifyRolePermissions</name><parameter_list>(<parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>Permission</name></argument>&gt;</argument_list></name></type> <name>permissions</name></decl></parameter>, <parameter><decl><type><name>IResource</name></type> <name>resource</name></decl></parameter>, <parameter><decl><type><name>RoleResource</name></type> <name>role</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>op</name></decl></parameter>)</parameter_list>
+            <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>process</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"UPDATE %s.%s SET permissions = permissions %s {%s} WHERE role = '%s' AND resource = '%s'"</literal></expr></argument>,
+                              <argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>AUTH_KEYSPACE_NAME</name></name></expr></argument>,
+                              <argument><expr><name><name>AuthKeyspace</name><operator>.</operator><name>ROLE_PERMISSIONS</name></name></expr></argument>,
+                              <argument><expr><name>op</name></expr></argument>,
+                              <argument><expr><literal type="string">"'"</literal> <operator>+</operator> <call><name><name>StringUtils</name><operator>.</operator><name>join</name></name><argument_list>(<argument><expr><name>permissions</name></expr></argument>, <argument><expr><literal type="string">"','"</literal></expr></argument>)</argument_list></call> <operator>+</operator> <literal type="string">"'"</literal></expr></argument>,
+                              <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>role</name><operator>.</operator><name>getRoleName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                              <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>resource</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="line">// Removes an entry from the inverted index table (from resource -&gt; role with defined permissions)</comment>
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>removeLookupEntry</name><parameter_list>(<parameter><decl><type><name>IResource</name></type> <name>resource</name></decl></parameter>, <parameter><decl><type><name>RoleResource</name></type> <name>role</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>process</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"DELETE FROM %s.%s WHERE resource = '%s' and role = '%s'"</literal></expr></argument>,
+                              <argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>AUTH_KEYSPACE_NAME</name></name></expr></argument>,
+                              <argument><expr><name><name>AuthKeyspace</name><operator>.</operator><name>RESOURCE_ROLE_INDEX</name></name></expr></argument>,
+                              <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>resource</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                              <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>role</name><operator>.</operator><name>getRoleName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="line">// Adds an entry to the inverted index table (from resource -&gt; role with defined permissions)</comment>
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>addLookupEntry</name><parameter_list>(<parameter><decl><type><name>IResource</name></type> <name>resource</name></decl></parameter>, <parameter><decl><type><name>RoleResource</name></type> <name>role</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>process</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"INSERT INTO %s.%s (resource, role) VALUES ('%s','%s')"</literal></expr></argument>,
+                              <argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>AUTH_KEYSPACE_NAME</name></name></expr></argument>,
+                              <argument><expr><name><name>AuthKeyspace</name><operator>.</operator><name>RESOURCE_ROLE_INDEX</name></name></expr></argument>,
+                              <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>resource</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                              <argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>role</name><operator>.</operator><name>getRoleName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="line">// 'grantee' can be null - in that case everyone's permissions have been requested. Otherwise, only single user's.</comment>
+    <comment type="line">// If the 'performer' requesting 'LIST PERMISSIONS' is not a superuser OR their username doesn't match 'grantee' OR</comment>
+    <comment type="line">// they have no permission to describe all roles OR they have no permission to describe 'grantee', then we throw</comment>
+    <comment type="line">// UnauthorizedException.</comment>
+    <function><type><specifier>public</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>PermissionDetails</name></argument>&gt;</argument_list></name></type> <name>list</name><parameter_list>(<parameter><decl><type><name>AuthenticatedUser</name></type> <name>performer</name></decl></parameter>,
+                                       <parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>Permission</name></argument>&gt;</argument_list></name></type> <name>permissions</name></decl></parameter>,
+                                       <parameter><decl><type><name>IResource</name></type> <name>resource</name></decl></parameter>,
+                                       <parameter><decl><type><name>RoleResource</name></type> <name>grantee</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestValidationException</name></expr></argument>, <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>performer</name><operator>.</operator><name>isSuper</name></name><argument_list>()</argument_list></call>
+            <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>performer</name><operator>.</operator><name>isSystem</name></name><argument_list>()</argument_list></call>
+            <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>performer</name><operator>.</operator><name>getRoles</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>contains</name><argument_list>(<argument><expr><name>grantee</name></expr></argument>)</argument_list></call>
+            <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>performer</name><operator>.</operator><name>getPermissions</name></name><argument_list>(<argument><expr><call><name><name>RoleResource</name><operator>.</operator><name>root</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>contains</name><argument_list>(<argument><expr><name><name>Permission</name><operator>.</operator><name>DESCRIBE</name></name></expr></argument>)</argument_list></call>
+            <operator>&amp;&amp;</operator> <operator>(</operator><name>grantee</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <operator>!</operator><call><name><name>performer</name><operator>.</operator><name>getPermissions</name></name><argument_list>(<argument><expr><name>grantee</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>contains</name><argument_list>(<argument><expr><name><name>Permission</name><operator>.</operator><name>DESCRIBE</name></name></expr></argument>)</argument_list></call><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>UnauthorizedException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"You are not authorized to view %s's permissions"</literal></expr></argument>,
+                                                          <argument><expr><ternary><condition><expr><name>grantee</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="string">"everyone"</literal></expr> </then><else>: <expr><call><name><name>grantee</name><operator>.</operator><name>getRoleName</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><literal type="null">null</literal> <operator>==</operator> <name>grantee</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>listPermissionsForRole</name><argument_list>(<argument><expr><name>permissions</name></expr></argument>, <argument><expr><name>resource</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>RoleResource</name></argument>&gt;</argument_list></name></type> <name>roles</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getRoleManager</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getRoles</name><argument_list>(<argument><expr><name>grantee</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>PermissionDetails</name></argument>&gt;</argument_list></name></type> <name>details</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>RoleResource</name></type> <name>role</name> <range>: <expr><name>roles</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>details</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><call><name>listPermissionsForRole</name><argument_list>(<argument><expr><name>permissions</name></expr></argument>, <argument><expr><name>resource</name></expr></argument>, <argument><expr><name>role</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+        <return>return <expr><name>details</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>PermissionDetails</name></argument>&gt;</argument_list></name></type> <name>listPermissionsForRole</name><parameter_list>(<parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>Permission</name></argument>&gt;</argument_list></name></type> <name>permissions</name></decl></parameter>,
+                                                          <parameter><decl><type><name>IResource</name></type> <name>resource</name></decl></parameter>,
+                                                          <parameter><decl><type><name>RoleResource</name></type> <name>role</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>PermissionDetails</name></argument>&gt;</argument_list></name></type> <name>details</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name><name>UntypedResultSet</name><operator>.</operator><name>Row</name></name></type> <name>row</name> <range>: <expr><call><name>process</name><argument_list>(<argument><expr><call><name>buildListQuery</name><argument_list>(<argument><expr><name>resource</name></expr></argument>, <argument><expr><name>role</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>row</name><operator>.</operator><name>has</name></name><argument_list>(<argument><expr><name>PERMISSIONS</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <for>for <control>(<init><decl><type><name>String</name></type> <name>p</name> <range>: <expr><call><name><name>row</name><operator>.</operator><name>getSet</name></name><argument_list>(<argument><expr><name>PERMISSIONS</name></expr></argument>, <argument><expr><name><name>UTF8Type</name><operator>.</operator><name>instance</name></name></expr></argument>)</argument_list></call></expr></range></decl></init>)</control>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>Permission</name></type> <name>permission</name> <init>= <expr><call><name><name>Permission</name><operator>.</operator><name>valueOf</name></name><argument_list>(<argument><expr><name>p</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>permissions</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>permission</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name><name>details</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>PermissionDetails</name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>getString</name></name><argument_list>(<argument><expr><name>ROLE</name></expr></argument>)</argument_list></call></expr></argument>,
+                                                          <argument><expr><call><name><name>Resources</name><operator>.</operator><name>fromName</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>getString</name></name><argument_list>(<argument><expr><name>RESOURCE</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                          <argument><expr><name>permission</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                </block_content>}</block></for>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><name>details</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>String</name></type> <name>buildListQuery</name><parameter_list>(<parameter><decl><type><name>IResource</name></type> <name>resource</name></decl></parameter>, <parameter><decl><type><name>RoleResource</name></type> <name>grantee</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>vars</name> <init>= <expr><call><name><name>Lists</name><operator>.</operator><name>newArrayList</name></name><argument_list>(<argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>AUTH_KEYSPACE_NAME</name></name></expr></argument>, <argument><expr><name><name>AuthKeyspace</name><operator>.</operator><name>ROLE_PERMISSIONS</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>conditions</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>resource</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>conditions</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><literal type="string">"resource = '%s'"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>vars</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>resource</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>grantee</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>conditions</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>ROLE</name> <operator>+</operator> <literal type="string">" = '%s'"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>vars</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name>escape</name><argument_list>(<argument><expr><call><name><name>grantee</name><operator>.</operator><name>getRoleName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>String</name></type> <name>query</name> <init>= <expr><literal type="string">"SELECT "</literal> <operator>+</operator> <name>ROLE</name> <operator>+</operator> <literal type="string">", resource, permissions FROM %s.%s"</literal></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>conditions</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>query</name> <operator>+=</operator> <literal type="string">" WHERE "</literal> <operator>+</operator> <call><name><name>StringUtils</name><operator>.</operator><name>join</name></name><argument_list>(<argument><expr><name>conditions</name></expr></argument>, <argument><expr><literal type="string">" AND "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>resource</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>grantee</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>query</name> <operator>+=</operator> <literal type="string">" ALLOW FILTERING"</literal></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><call><name><name>vars</name><operator>.</operator><name>toArray</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+
+    <function><type><specifier>public</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>DataResource</name></argument>&gt;</argument_list></name></type> <name>protectedResources</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>ImmutableSet</name><operator>.</operator><name>of</name></name><argument_list>(<argument><expr><call><name><name>DataResource</name><operator>.</operator><name>table</name></name><argument_list>(<argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>AUTH_KEYSPACE_NAME</name></name></expr></argument>, <argument><expr><name><name>AuthKeyspace</name><operator>.</operator><name>ROLE_PERMISSIONS</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>validateConfiguration</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>ConfigurationException</name></expr></argument></throws>
+    <block>{<block_content>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setup</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>authorizeRoleStatement</name> <operator>=</operator> <call><name>prepare</name><argument_list>(<argument><expr><name>ROLE</name></expr></argument>, <argument><expr><name><name>AuthKeyspace</name><operator>.</operator><name>ROLE_PERMISSIONS</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>SelectStatement</name></type> <name>prepare</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>entityname</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>permissionsTable</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>query</name> <init>= <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"SELECT permissions FROM %s.%s WHERE %s = ? AND resource = ?"</literal></expr></argument>,
+                                     <argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>AUTH_KEYSPACE_NAME</name></name></expr></argument>,
+                                     <argument><expr><name>permissionsTable</name></expr></argument>,
+                                     <argument><expr><name>entityname</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>(</operator><name>SelectStatement</name><operator>)</operator> <call><name><name>QueryProcessor</name><operator>.</operator><name>getStatement</name></name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><call><name><name>ClientState</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// We only worry about one character ('). Make sure it's properly escaped.</comment>
+    <function><type><specifier>private</specifier> <name>String</name></type> <name>escape</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>StringUtils</name><operator>.</operator><name>replace</name></name><argument_list>(<argument><expr><name>name</name></expr></argument>, <argument><expr><literal type="string">"'"</literal></expr></argument>, <argument><expr><literal type="string">"''"</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name></type> <name>select</name><parameter_list>(<parameter><decl><type><name>SelectStatement</name></type> <name>statement</name></decl></parameter>, <parameter><decl><type><name>QueryOptions</name></type> <name>options</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>statement</name><operator>.</operator><name>execute</name></name><argument_list>(<argument><expr><call><name><name>QueryState</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>options</name></expr></argument>, <argument><expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>UntypedResultSet</name></type> <name>process</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>QueryProcessor</name><operator>.</operator><name>process</name></name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><name><name>ConsistencyLevel</name><operator>.</operator><name>LOCAL_ONE</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>processBatch</name><parameter_list>(<parameter><decl><type><name>BatchStatement</name></type> <name>statement</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>QueryProcessor</name><operator>.</operator><name>instance</name><operator>.</operator><name>processBatch</name></name><argument_list>(<argument><expr><name>statement</name></expr></argument>,
+                                             <argument><expr><call><name><name>QueryState</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                             <argument><expr><call><name><name>BatchQueryOptions</name><operator>.</operator><name>withoutPerStatementVariables</name></name><argument_list>(<argument><expr><name><name>QueryOptions</name><operator>.</operator><name>DEFAULT</name></name></expr></argument>)</argument_list></call></expr></argument>,
+                                             <argument><expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

@@ -1,0 +1,943 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/partitions/PartitionUpdate.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>ArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterables</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Lists</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name><operator>.</operator><name>ColumnFilter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>index</name><operator>.</operator><name>IndexRegistry</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>ColumnMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>Schema</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableId</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>btree</name><operator>.</operator><name>BTree</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>btree</name><operator>.</operator><name>UpdateFunction</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Stores updates made on a partition.
+ * &lt;p&gt;
+ * A PartitionUpdate object requires that all writes/additions are performed before we
+ * try to read the updates (attempts to write to the PartitionUpdate after a read method
+ * has been called will result in an exception being thrown). In other words, a Partition
+ * is mutable while it's written but becomes immutable as soon as it is read.
+ * &lt;p&gt;
+ * A typical usage is to create a new update ({@code new PartitionUpdate(metadata, key, columns, capacity)})
+ * and then add rows and range tombstones through the {@code add()} methods (the partition
+ * level deletion time can also be set with {@code addPartitionDeletion()}). However, there
+ * is also a few static helper constructor methods for special cases ({@code emptyUpdate()},
+ * {@code fullPartitionDelete} and {@code singleRowUpdate}).
+ */</comment>
+<class><specifier>public</specifier> class <name>PartitionUpdate</name> <super_list><extends>extends <super><name>AbstractBTreePartition</name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>PartitionUpdate</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>PartitionUpdateSerializer</name></type> <name>serializer</name> <init>= <expr><operator>new</operator> <call><name>PartitionUpdateSerializer</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Holder</name></type> <name>holder</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>DeletionInfo</name></type> <name>deletionInfo</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>TableMetadata</name></type> <name>metadata</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>canHaveShadowedData</name></decl>;</decl_stmt>
+
+    <constructor><specifier>private</specifier> <name>PartitionUpdate</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>,
+                            <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>,
+                            <parameter><decl><type><name>Holder</name></type> <name>holder</name></decl></parameter>,
+                            <parameter><decl><type><name>MutableDeletionInfo</name></type> <name>deletionInfo</name></decl></parameter>,
+                            <parameter><decl><type><name>boolean</name></type> <name>canHaveShadowedData</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>metadata</name></name> <operator>=</operator> <name>metadata</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>holder</name></name> <operator>=</operator> <name>holder</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>deletionInfo</name></name> <operator>=</operator> <name>deletionInfo</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>canHaveShadowedData</name></name> <operator>=</operator> <name>canHaveShadowedData</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a empty immutable partition update.
+     *
+     * @param metadata the metadata for the created update.
+     * @param key the partition key for the created update.
+     *
+     * @return the newly created empty (and immutable) update.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>PartitionUpdate</name></type> <name>emptyUpdate</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>MutableDeletionInfo</name></type> <name>deletionInfo</name> <init>= <expr><call><name><name>MutableDeletionInfo</name><operator>.</operator><name>live</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Holder</name></type> <name>holder</name> <init>= <expr><operator>new</operator> <call><name>Holder</name><argument_list>(<argument><expr><name><name>RegularAndStaticColumns</name><operator>.</operator><name>NONE</name></name></expr></argument>, <argument><expr><call><name><name>BTree</name><operator>.</operator><name>empty</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>deletionInfo</name></expr></argument>, <argument><expr><name><name>Rows</name><operator>.</operator><name>EMPTY_STATIC_ROW</name></name></expr></argument>, <argument><expr><name><name>EncodingStats</name><operator>.</operator><name>NO_STATS</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <call><name>PartitionUpdate</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>holder</name></expr></argument>, <argument><expr><name>deletionInfo</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates an immutable partition update that entirely deletes a given partition.
+     *
+     * @param metadata the metadata for the created update.
+     * @param key the partition key for the partition that the created update should delete.
+     * @param timestamp the timestamp for the deletion.
+     * @param nowInSec the current time in seconds to use as local deletion time for the partition deletion.
+     *
+     * @return the newly created partition deletion update.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>PartitionUpdate</name></type> <name>fullPartitionDelete</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timestamp</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>MutableDeletionInfo</name></type> <name>deletionInfo</name> <init>= <expr><operator>new</operator> <call><name>MutableDeletionInfo</name><argument_list>(<argument><expr><name>timestamp</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Holder</name></type> <name>holder</name> <init>= <expr><operator>new</operator> <call><name>Holder</name><argument_list>(<argument><expr><name><name>RegularAndStaticColumns</name><operator>.</operator><name>NONE</name></name></expr></argument>, <argument><expr><call><name><name>BTree</name><operator>.</operator><name>empty</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>deletionInfo</name></expr></argument>, <argument><expr><name><name>Rows</name><operator>.</operator><name>EMPTY_STATIC_ROW</name></name></expr></argument>, <argument><expr><name><name>EncodingStats</name><operator>.</operator><name>NO_STATS</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <call><name>PartitionUpdate</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>holder</name></expr></argument>, <argument><expr><name>deletionInfo</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates an immutable partition update that contains a single row update.
+     *
+     * @param metadata the metadata for the created update.
+     * @param key the partition key for the partition to update.
+     * @param row the row for the update (may be null).
+     * @param row the static row for the update (may be null).
+     *
+     * @return the newly created partition update containing only {@code row}.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>PartitionUpdate</name></type> <name>singleRowUpdate</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>staticRow</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>MutableDeletionInfo</name></type> <name>deletionInfo</name> <init>= <expr><call><name><name>MutableDeletionInfo</name><operator>.</operator><name>live</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Holder</name></type> <name>holder</name> <init>= <expr><operator>new</operator> <call><name>Holder</name><argument_list>(
+            <argument><expr><operator>new</operator> <call><name>RegularAndStaticColumns</name><argument_list>(
+                <argument><expr><ternary><condition><expr><name>staticRow</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name><name>Columns</name><operator>.</operator><name>NONE</name></name></expr> </then><else>: <expr><call><name><name>Columns</name><operator>.</operator><name>from</name></name><argument_list>(<argument><expr><name>staticRow</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></argument>,
+                <argument><expr><ternary><condition><expr><name>row</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name><name>Columns</name><operator>.</operator><name>NONE</name></name></expr> </then><else>: <expr><call><name><name>Columns</name><operator>.</operator><name>from</name></name><argument_list>(<argument><expr><name>row</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></argument>
+            )</argument_list></call></expr></argument>,
+            <argument><expr><ternary><condition><expr><name>row</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name><name>BTree</name><operator>.</operator><name>empty</name></name><argument_list>()</argument_list></call></expr> </then><else>: <expr><call><name><name>BTree</name><operator>.</operator><name>singleton</name></name><argument_list>(<argument><expr><name>row</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></argument>,
+            <argument><expr><name>deletionInfo</name></expr></argument>,
+            <argument><expr><ternary><condition><expr><name>staticRow</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name><name>Rows</name><operator>.</operator><name>EMPTY_STATIC_ROW</name></name></expr> </then><else>: <expr><name>staticRow</name></expr></else></ternary></expr></argument>,
+            <argument><expr><name><name>EncodingStats</name><operator>.</operator><name>NO_STATS</name></name></expr></argument>
+        )</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <call><name>PartitionUpdate</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>holder</name></expr></argument>, <argument><expr><name>deletionInfo</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates an immutable partition update that contains a single row update.
+     *
+     * @param metadata the metadata for the created update.
+     * @param key the partition key for the partition to update.
+     * @param row the row for the update (may be static).
+     *
+     * @return the newly created partition update containing only {@code row}.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>PartitionUpdate</name></type> <name>singleRowUpdate</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>singleRowUpdate</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><ternary><condition><expr><call><name><name>row</name><operator>.</operator><name>isStatic</name></name><argument_list>()</argument_list></call></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><name>row</name></expr></else></ternary></expr></argument>, <argument><expr><ternary><condition><expr><call><name><name>row</name><operator>.</operator><name>isStatic</name></name><argument_list>()</argument_list></call></expr> ?</condition><then> <expr><name>row</name></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates an immutable partition update that contains a single row update.
+     *
+     * @param metadata the metadata for the created update.
+     * @param key the partition key for the partition to update.
+     * @param row the row for the update.
+     *
+     * @return the newly created partition update containing only {@code row}.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>PartitionUpdate</name></type> <name>singleRowUpdate</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>singleRowUpdate</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><call><name><name>metadata</name><operator>.</operator><name>partitioner</name><operator>.</operator><name>decorateKey</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>row</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Turns the given iterator into an update.
+     *
+     * @param iterator the iterator to turn into updates.
+     * @param filter the column filter used when querying {@code iterator}. This is used to make
+     * sure we don't include data for which the value has been skipped while reading (as we would
+     * then be writing something incorrect).
+     *
+     * Warning: this method does not close the provided iterator, it is up to
+     * the caller to close it.
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>PartitionUpdate</name></type> <name>fromIterator</name><parameter_list>(<parameter><decl><type><name>UnfilteredRowIterator</name></type> <name>iterator</name></decl></parameter>, <parameter><decl><type><name>ColumnFilter</name></type> <name>filter</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>iterator</name> <operator>=</operator> <call><name><name>UnfilteredRowIterators</name><operator>.</operator><name>withOnlyQueriedData</name></name><argument_list>(<argument><expr><name>iterator</name></expr></argument>, <argument><expr><name>filter</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>Holder</name></type> <name>holder</name> <init>= <expr><call><name>build</name><argument_list>(<argument><expr><name>iterator</name></expr></argument>, <argument><expr><literal type="number">16</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>MutableDeletionInfo</name></type> <name>deletionInfo</name> <init>= <expr><operator>(</operator><name>MutableDeletionInfo</name><operator>)</operator> <name><name>holder</name><operator>.</operator><name>deletionInfo</name></name></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <call><name>PartitionUpdate</name><argument_list>(<argument><expr><call><name><name>iterator</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>iterator</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>holder</name></expr></argument>, <argument><expr><name>deletionInfo</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Turns the given iterator into an update.
+     *
+     * @param iterator the iterator to turn into updates.
+     * @param filter the column filter used when querying {@code iterator}. This is used to make
+     * sure we don't include data for which the value has been skipped while reading (as we would
+     * then be writing something incorrect).
+     *
+     * Warning: this method does not close the provided iterator, it is up to
+     * the caller to close it.
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>PartitionUpdate</name></type> <name>fromIterator</name><parameter_list>(<parameter><decl><type><name>RowIterator</name></type> <name>iterator</name></decl></parameter>, <parameter><decl><type><name>ColumnFilter</name></type> <name>filter</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>iterator</name> <operator>=</operator> <call><name><name>RowIterators</name><operator>.</operator><name>withOnlyQueriedData</name></name><argument_list>(<argument><expr><name>iterator</name></expr></argument>, <argument><expr><name>filter</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>MutableDeletionInfo</name></type> <name>deletionInfo</name> <init>= <expr><call><name><name>MutableDeletionInfo</name><operator>.</operator><name>live</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Holder</name></type> <name>holder</name> <init>= <expr><call><name>build</name><argument_list>(<argument><expr><name>iterator</name></expr></argument>, <argument><expr><name>deletionInfo</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <call><name>PartitionUpdate</name><argument_list>(<argument><expr><call><name><name>iterator</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>iterator</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>holder</name></expr></argument>, <argument><expr><name>deletionInfo</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>boolean</name></type> <name>canHaveShadowedData</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>canHaveShadowedData</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Deserialize a partition update from a provided byte buffer.
+     *
+     * @param bytes the byte buffer that contains the serialized update.
+     * @param version the version with which the update is serialized.
+     *
+     * @return the deserialized update or {@code null} if {@code bytes == null}.
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>PartitionUpdate</name></type> <name>fromBytes</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>bytes</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>bytes</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <try>try
+        <block>{<block_content>
+            <return>return <expr><call><name><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>DataInputBuffer</name><argument_list>(<argument><expr><name>bytes</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr></argument>,
+                                          <argument><expr><name>version</name></expr></argument>,
+                                          <argument><expr><name><name>DeserializationHelper</name><operator>.</operator><name>Flag</name><operator>.</operator><name>LOCAL</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Serialize a partition update as a byte buffer.
+     *
+     * @param update the partition update to serialize.
+     * @param version the version to serialize the update into.
+     *
+     * @return a newly allocated byte buffer containing the serialized update.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>ByteBuffer</name></type> <name>toBytes</name><parameter_list>(<parameter><decl><type><name>PartitionUpdate</name></type> <name>update</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <try>try <init>(<decl><type><name>DataOutputBuffer</name></type> <name>out</name> <init>= <expr><operator>new</operator> <call><name>DataOutputBuffer</name><argument_list>()</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>update</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><call><name><name>out</name><operator>.</operator><name>buffer</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a partition update that entirely deletes a given partition.
+     *
+     * @param metadata the metadata for the created update.
+     * @param key the partition key for the partition that the created update should delete.
+     * @param timestamp the timestamp for the deletion.
+     * @param nowInSec the current time in seconds to use as local deletion time for the partition deletion.
+     *
+     * @return the newly created partition deletion update.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>PartitionUpdate</name></type> <name>fullPartitionDelete</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timestamp</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>fullPartitionDelete</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><call><name><name>metadata</name><operator>.</operator><name>partitioner</name><operator>.</operator><name>decorateKey</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>timestamp</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Merges the provided updates, yielding a new update that incorporates all those updates.
+     *
+     * @param updates the collection of updates to merge. This shouldn't be empty.
+     *
+     * @return a partition update that include (merge) all the updates from {@code updates}.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>PartitionUpdate</name></type> <name>merge</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>PartitionUpdate</name></argument>&gt;</argument_list></name></type> <name>updates</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><operator>!</operator><call><name><name>updates</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</assert>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>size</name> <init>= <expr><call><name><name>updates</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>size</name> <operator>==</operator> <literal type="number">1</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>Iterables</name><operator>.</operator><name>getOnlyElement</name></name><argument_list>(<argument><expr><name>updates</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>UnfilteredRowIterator</name></argument>&gt;</argument_list></name></type> <name>asIterators</name> <init>= <expr><call><name><name>Lists</name><operator>.</operator><name>transform</name></name><argument_list>(<argument><expr><name>updates</name></expr></argument>, <argument><expr><name>AbstractBTreePartition</name><operator>::</operator><name>unfilteredIterator</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name>fromIterator</name><argument_list>(<argument><expr><call><name><name>UnfilteredRowIterators</name><operator>.</operator><name>merge</name></name><argument_list>(<argument><expr><name>asIterators</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>ColumnFilter</name><operator>.</operator><name>all</name></name><argument_list>(<argument><expr><call><name><name>updates</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// We override this, because the version in the super-class calls holder(), which build the update preventing</comment>
+    <comment type="line">// further updates, but that's not necessary here and being able to check at least the partition deletion without</comment>
+    <comment type="line">// "locking" the update is nice (and used in DataResolver.RepairMergeListener.MergeListener).</comment>
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>DeletionInfo</name></type> <name>deletionInfo</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>deletionInfo</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * The number of "operations" contained in the update.
+     * &lt;p&gt;
+     * This is used by {@code Memtable} to approximate how much work this update does. In practice, this
+     * count how many rows are updated and how many ranges are deleted by the partition update.
+     *
+     * @return the number of "operations" performed by the update.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>operationCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>rowCount</name><argument_list>()</argument_list></call>
+             <operator>+</operator> <operator>(</operator><ternary><condition><expr><call><name>staticRow</name><argument_list>()</argument_list></call><operator>.</operator><call><name>isEmpty</name><argument_list>()</argument_list></call></expr> ?</condition><then> <expr><literal type="number">0</literal></expr> </then><else>: <expr><literal type="number">1</literal></expr></else></ternary><operator>)</operator>
+             <operator>+</operator> <call><name><name>deletionInfo</name><operator>.</operator><name>rangeCount</name></name><argument_list>()</argument_list></call>
+             <operator>+</operator> <operator>(</operator><ternary><condition><expr><call><name><name>deletionInfo</name><operator>.</operator><name>getPartitionDeletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isLive</name><argument_list>()</argument_list></call></expr> ?</condition><then> <expr><literal type="number">0</literal></expr> </then><else>: <expr><literal type="number">1</literal></expr></else></ternary><operator>)</operator></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * The size of the data contained in this update.
+     *
+     * @return the size of the data contained in this update.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>dataSize</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name><name>holder</name><operator>.</operator><name>staticRow</name></name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>ColumnData</name></type> <name>cd</name> <range>: <expr><call><name><name>holder</name><operator>.</operator><name>staticRow</name><operator>.</operator><name>columnData</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>cd</name><operator>.</operator><name>dataSize</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></if></if_stmt>
+
+        <for>for <control>(<init><decl><type><name>Row</name></type> <name>row</name> <range>: <expr><name>this</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>row</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>dataSize</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>ColumnData</name></type> <name>cd</name> <range>: <expr><name>row</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>cd</name><operator>.</operator><name>dataSize</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block></for>
+        <return>return <expr><name>size</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>TableMetadata</name></type> <name>metadata</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>metadata</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>RegularAndStaticColumns</name></type> <name>columns</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// The superclass implementation calls holder(), but that triggers a build of the PartitionUpdate. But since</comment>
+        <comment type="line">// the columns are passed to the ctor, we know the holder always has the proper columns even if it doesn't have</comment>
+        <comment type="line">// the built rows yet, so just bypass the holder() method.</comment>
+        <return>return <expr><name><name>holder</name><operator>.</operator><name>columns</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>Holder</name></type> <name>holder</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>holder</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>EncodingStats</name></type> <name>stats</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>holder</name><argument_list>()</argument_list></call><operator>.</operator><name>stats</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Validates the data contained in this update.
+     *
+     * @throws org.apache.cassandra.serializers.MarshalException if some of the data contained in this update is corrupted.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>validate</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>Row</name></type> <name>row</name> <range>: <expr><name>this</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>comparator</name><operator>.</operator><name>validate</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>ColumnData</name></type> <name>cd</name> <range>: <expr><name>row</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>cd</name><operator>.</operator><name>validate</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * The maximum timestamp used in this update.
+     *
+     * @return the maximum timestamp used in this update.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>maxTimestamp</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>maxTimestamp</name> <init>= <expr><call><name><name>deletionInfo</name><operator>.</operator><name>maxTimestamp</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>Row</name></type> <name>row</name> <range>: <expr><name>this</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><name>maxTimestamp</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>maxTimestamp</name></expr></argument>, <argument><expr><call><name><name>row</name><operator>.</operator><name>primaryKeyLivenessInfo</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>timestamp</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>ColumnData</name></type> <name>cd</name> <range>: <expr><name>row</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>cd</name><operator>.</operator><name>column</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isSimple</name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>maxTimestamp</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>maxTimestamp</name></expr></argument>, <argument><expr><operator>(</operator><operator>(</operator><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name><operator>)</operator><name>cd</name><operator>)</operator><operator>.</operator><call><name>timestamp</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>ComplexColumnData</name></type> <name>complexData</name> <init>= <expr><operator>(</operator><name>ComplexColumnData</name><operator>)</operator><name>cd</name></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><name>maxTimestamp</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>maxTimestamp</name></expr></argument>, <argument><expr><call><name><name>complexData</name><operator>.</operator><name>complexDeletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>markedForDeleteAt</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <for>for <control>(<init><decl><type><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>cell</name> <range>: <expr><name>complexData</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                        <expr_stmt><expr><name>maxTimestamp</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>maxTimestamp</name></expr></argument>, <argument><expr><call><name><name>cell</name><operator>.</operator><name>timestamp</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></for>
+
+        <if_stmt><if>if <condition>(<expr><name><name>this</name><operator>.</operator><name>holder</name><operator>.</operator><name>staticRow</name></name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>ColumnData</name></type> <name>cd</name> <range>: <expr><call><name><name>this</name><operator>.</operator><name>holder</name><operator>.</operator><name>staticRow</name><operator>.</operator><name>columnData</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>cd</name><operator>.</operator><name>column</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isSimple</name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>maxTimestamp</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>maxTimestamp</name></expr></argument>, <argument><expr><operator>(</operator><operator>(</operator><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name><operator>)</operator> <name>cd</name><operator>)</operator><operator>.</operator><call><name>timestamp</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>ComplexColumnData</name></type> <name>complexData</name> <init>= <expr><operator>(</operator><name>ComplexColumnData</name><operator>)</operator> <name>cd</name></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><name>maxTimestamp</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>maxTimestamp</name></expr></argument>, <argument><expr><call><name><name>complexData</name><operator>.</operator><name>complexDeletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>markedForDeleteAt</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <for>for <control>(<init><decl><type><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>cell</name> <range>: <expr><name>complexData</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                        <expr_stmt><expr><name>maxTimestamp</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>maxTimestamp</name></expr></argument>, <argument><expr><call><name><name>cell</name><operator>.</operator><name>timestamp</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>maxTimestamp</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * For an update on a counter table, returns a list containing a {@code CounterMark} for
+     * every counter contained in the update.
+     *
+     * @return a list with counter marks for every counter in this update.
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>CounterMark</name></argument>&gt;</argument_list></name></type> <name>collectCounterMarks</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name>isCounter</name><argument_list>()</argument_list></call></expr>;</assert>
+        <comment type="line">// We will take aliases on the rows of this update, and update them in-place. So we should be sure the</comment>
+        <comment type="line">// update is now immutable for all intent and purposes.</comment>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>CounterMark</name></argument>&gt;</argument_list></name></type> <name>marks</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>addMarksForRow</name><argument_list>(<argument><expr><call><name>staticRow</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>marks</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <for>for <control>(<init><decl><type><name>Row</name></type> <name>row</name> <range>: <expr><name>this</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>addMarksForRow</name><argument_list>(<argument><expr><name>row</name></expr></argument>, <argument><expr><name>marks</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <return>return <expr><name>marks</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>addMarksForRow</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>CounterMark</name></argument>&gt;</argument_list></name></type> <name>marks</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>cell</name> <range>: <expr><call><name><name>row</name><operator>.</operator><name>cells</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>cell</name><operator>.</operator><name>isCounterCell</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>marks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>CounterMark</name><argument_list>(<argument><expr><name>row</name></expr></argument>, <argument><expr><call><name><name>cell</name><operator>.</operator><name>column</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>cell</name><operator>.</operator><name>path</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new simple partition update builder.
+     *
+     * @param metadata the metadata for the table this is a partition of.
+     * @param partitionKeyValues the values for partition key columns identifying this partition. The values for each
+     * partition key column can be passed either directly as {@code ByteBuffer} or using a "native" value (int for
+     * Int32Type, string for UTF8Type, ...). It is also allowed to pass a single {@code DecoratedKey} value directly.
+     * @return a newly created builder.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SimpleBuilder</name></type> <name>simpleBuilder</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>Object</name><modifier>...</modifier></type> <name>partitionKeyValues</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name><name>SimpleBuilders</name><operator>.</operator><name>PartitionUpdateBuilder</name></name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>partitionKeyValues</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>validateIndexedColumns</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>IndexRegistry</name><operator>.</operator><name>obtain</name></name><argument_list>(<argument><expr><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>validate</name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>PartitionUpdate</name></type> <name>unsafeConstruct</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>,
+                                                  <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>,
+                                                  <parameter><decl><type><name>Holder</name></type> <name>holder</name></decl></parameter>,
+                                                  <parameter><decl><type><name>MutableDeletionInfo</name></type> <name>deletionInfo</name></decl></parameter>,
+                                                  <parameter><decl><type><name>boolean</name></type> <name>canHaveShadowedData</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>PartitionUpdate</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>holder</name></expr></argument>, <argument><expr><name>deletionInfo</name></expr></argument>, <argument><expr><name>canHaveShadowedData</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Interface for building partition updates geared towards human.
+     * &lt;p&gt;
+     * This should generally not be used when performance matters too much, but provides a more convenient interface to
+     * build an update than using the class constructor when performance is not of the utmost importance.
+     */</comment>
+    <interface><specifier>public</specifier> interface <name>SimpleBuilder</name>
+    <block>{
+        <comment type="block" format="javadoc">/**
+         * The metadata of the table this is a builder on.
+         */</comment>
+        <function_decl><type><specifier>public</specifier> <name>TableMetadata</name></type> <name>metadata</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * Sets the timestamp to use for the following additions to this builder or any derived (row) builder.
+         *
+         * @param timestamp the timestamp to use for following additions. If that timestamp hasn't been set, the current
+         * time in microseconds will be used.
+         * @return this builder.
+         */</comment>
+        <function_decl><type><specifier>public</specifier> <name>SimpleBuilder</name></type> <name>timestamp</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>timestamp</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * Sets the ttl to use for the following additions to this builder or any derived (row) builder.
+         *
+         * @param ttl the ttl to use for following additions. If that ttl hasn't been set, no ttl will be used.
+         * @return this builder.
+         */</comment>
+        <function_decl><type><specifier>public</specifier> <name>SimpleBuilder</name></type> <name>ttl</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>ttl</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * Sets the current time to use for the following additions to this builder or any derived (row) builder.
+         *
+         * @param nowInSec the current time to use for following additions. If the current time hasn't been set, the current
+         * time in seconds will be used.
+         * @return this builder.
+         */</comment>
+        <function_decl><type><specifier>public</specifier> <name>SimpleBuilder</name></type> <name>nowInSec</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * Adds the row identifier by the provided clustering and return a builder for that row.
+         *
+         * @param clusteringValues the value for the clustering columns of the row to add to this build. There may be no
+         * values if either the table has no clustering column, or if you want to edit the static row. Note that as a
+         * shortcut it is also allowed to pass a {@code Clustering} object directly, in which case that should be the
+         * only argument.
+         * @return a builder for the row identified by {@code clusteringValues}.
+         */</comment>
+        <function_decl><type><specifier>public</specifier> <name><name>Row</name><operator>.</operator><name>SimpleBuilder</name></name></type> <name>row</name><parameter_list>(<parameter><decl><type><name>Object</name><modifier>...</modifier></type> <name>clusteringValues</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * Deletes the partition identified by this builder (using a partition level deletion).
+         *
+         * @return this builder.
+         */</comment>
+        <function_decl><type><specifier>public</specifier> <name>SimpleBuilder</name></type> <name>delete</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * Adds a new range tombstone to this update, returning a builder for that range.
+         *
+         * @return the range tombstone builder for the newly added range.
+         */</comment>
+        <function_decl><type><specifier>public</specifier> <name>RangeTombstoneBuilder</name></type> <name>addRangeTombstone</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * Adds a new range tombstone to this update
+         *
+         * @return this builder
+         */</comment>
+        <function_decl><type><specifier>public</specifier> <name>SimpleBuilder</name></type> <name>addRangeTombstone</name><parameter_list>(<parameter><decl><type><name>RangeTombstone</name></type> <name>rt</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * Build the update represented by this builder.
+         *
+         * @return the built update.
+         */</comment>
+        <function_decl><type><specifier>public</specifier> <name>PartitionUpdate</name></type> <name>build</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * As shortcut for {@code new Mutation(build())}.
+         *
+         * @return the built update, wrapped in a {@code Mutation}.
+         */</comment>
+        <function_decl><type><specifier>public</specifier> <name>Mutation</name></type> <name>buildAsMutation</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * Interface to build range tombstone.
+         *
+         * By default, if no other methods are called, the represented range is inclusive of both start and end and
+         * includes everything (its start is {@code BOTTOM} and it's end is {@code TOP}).
+         */</comment>
+        <interface><specifier>public</specifier> interface <name>RangeTombstoneBuilder</name>
+        <block>{
+            <comment type="block" format="javadoc">/**
+             * Sets the start for the built range using the provided values.
+             *
+             * @param values the value for the start of the range. They act like the {@code clusteringValues} argument
+             * of the {@link SimpleBuilder#row(Object...)} method, except that it doesn't have to be a full
+             * clustering, it can only be a prefix.
+             * @return this builder.
+             */</comment>
+            <function_decl><type><specifier>public</specifier> <name>RangeTombstoneBuilder</name></type> <name>start</name><parameter_list>(<parameter><decl><type><name>Object</name><modifier>...</modifier></type> <name>values</name></decl></parameter>)</parameter_list>;</function_decl>
+
+            <comment type="block" format="javadoc">/**
+             * Sets the end for the built range using the provided values.
+             *
+             * @param values the value for the end of the range. They act like the {@code clusteringValues} argument
+             * of the {@link SimpleBuilder#row(Object...)} method, except that it doesn't have to be a full
+             * clustering, it can only be a prefix.
+             * @return this builder.
+             */</comment>
+            <function_decl><type><specifier>public</specifier> <name>RangeTombstoneBuilder</name></type> <name>end</name><parameter_list>(<parameter><decl><type><name>Object</name><modifier>...</modifier></type> <name>values</name></decl></parameter>)</parameter_list>;</function_decl>
+
+            <comment type="block" format="javadoc">/**
+             * Sets the start of this range as inclusive.
+             * &lt;p&gt;
+             * This is the default and don't need to be called, but can for explicitness.
+             *
+             * @return this builder.
+             */</comment>
+            <function_decl><type><specifier>public</specifier> <name>RangeTombstoneBuilder</name></type> <name>inclStart</name><parameter_list>()</parameter_list>;</function_decl>
+
+            <comment type="block" format="javadoc">/**
+             * Sets the start of this range as exclusive.
+             *
+             * @return this builder.
+             */</comment>
+            <function_decl><type><specifier>public</specifier> <name>RangeTombstoneBuilder</name></type> <name>exclStart</name><parameter_list>()</parameter_list>;</function_decl>
+
+            <comment type="block" format="javadoc">/**
+             * Sets the end of this range as inclusive.
+             * &lt;p&gt;
+             * This is the default and don't need to be called, but can for explicitness.
+             *
+             * @return this builder.
+             */</comment>
+            <function_decl><type><specifier>public</specifier> <name>RangeTombstoneBuilder</name></type> <name>inclEnd</name><parameter_list>()</parameter_list>;</function_decl>
+
+            <comment type="block" format="javadoc">/**
+             * Sets the end of this range as exclusive.
+             *
+             * @return this builder.
+             */</comment>
+            <function_decl><type><specifier>public</specifier> <name>RangeTombstoneBuilder</name></type> <name>exclEnd</name><parameter_list>()</parameter_list>;</function_decl>
+        }</block></interface>
+    }</block></interface>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>PartitionUpdateSerializer</name>
+    <block>{
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>PartitionUpdate</name></type> <name>update</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <try>try <init>(<decl><type><name>UnfilteredRowIterator</name></type> <name>iter</name> <init>= <expr><call><name><name>update</name><operator>.</operator><name>unfilteredIterator</name></name><argument_list>()</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+                <assert>assert <expr><operator>!</operator><call><name><name>iter</name><operator>.</operator><name>isReverseOrder</name></name><argument_list>()</argument_list></call></expr>;</assert>
+
+                <expr_stmt><expr><call><name><name>update</name><operator>.</operator><name>metadata</name><operator>.</operator><name>id</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>UnfilteredRowIteratorSerializer</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>iter</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><call><name><name>update</name><operator>.</operator><name>rowCount</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></try>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>PartitionUpdate</name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name><name>DeserializationHelper</name><operator>.</operator><name>Flag</name></name></type> <name>flag</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>TableMetadata</name></type> <name>metadata</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getExistingTableMetadata</name></name><argument_list>(<argument><expr><call><name><name>TableId</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>UnfilteredRowIteratorSerializer</name><operator>.</operator><name>Header</name></name></type> <name>header</name> <init>= <expr><call><name><name>UnfilteredRowIteratorSerializer</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserializeHeader</name></name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>in</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>flag</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name><name>header</name><operator>.</operator><name>isEmpty</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><call><name>emptyUpdate</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name><name>header</name><operator>.</operator><name>key</name></name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+            <assert>assert <expr><operator>!</operator><name><name>header</name><operator>.</operator><name>isReversed</name></name></expr>;</assert>
+            <assert>assert <expr><name><name>header</name><operator>.</operator><name>rowEstimate</name></name> <operator>&gt;=</operator> <literal type="number">0</literal></expr>;</assert>
+
+            <decl_stmt><decl><type><name><name>MutableDeletionInfo</name><operator>.</operator><name>Builder</name></name></type> <name>deletionBuilder</name> <init>= <expr><call><name><name>MutableDeletionInfo</name><operator>.</operator><name>builder</name></name><argument_list>(<argument><expr><name><name>header</name><operator>.</operator><name>partitionDeletion</name></name></expr></argument>, <argument><expr><name><name>metadata</name><operator>.</operator><name>comparator</name></name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Object</name><index>[]</index></name></type> <name>rows</name></decl>;</decl_stmt>
+            <try>try <init>(<decl><type><name><name>BTree</name><operator>.</operator><name><name>FastBuilder</name><argument_list type="generic">&lt;<argument><name>Row</name></argument>&gt;</argument_list></name></name></type> <name>builder</name> <init>= <expr><call><name><name>BTree</name><operator>.</operator><name>fastBuilder</name></name><argument_list>()</argument_list></call></expr></init></decl>;
+                 <decl><type><name>UnfilteredRowIterator</name></type> <name>partition</name> <init>= <expr><call><name><name>UnfilteredRowIteratorSerializer</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>flag</name></expr></argument>, <argument><expr><name>header</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+                <while>while <condition>(<expr><call><name><name>partition</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>Unfiltered</name></type> <name>unfiltered</name> <init>= <expr><call><name><name>partition</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>unfiltered</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Unfiltered</name><operator>.</operator><name>Kind</name><operator>.</operator><name>ROW</name></name></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>(</operator><name>Row</name><operator>)</operator><name>unfiltered</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+                    <else>else<block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name><name>deletionBuilder</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>(</operator><name>RangeTombstoneMarker</name><operator>)</operator><name>unfiltered</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+                </block_content>}</block></while>
+                <expr_stmt><expr><name>rows</name> <operator>=</operator> <call><name><name>builder</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></try>
+
+            <decl_stmt><decl><type><name>MutableDeletionInfo</name></type> <name>deletionInfo</name> <init>= <expr><call><name><name>deletionBuilder</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <return>return <expr><operator>new</operator> <call><name>PartitionUpdate</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>,
+                                       <argument><expr><name><name>header</name><operator>.</operator><name>key</name></name></expr></argument>,
+                                       <argument><expr><operator>new</operator> <call><name>Holder</name><argument_list>(<argument><expr><call><name><name>header</name><operator>.</operator><name>sHeader</name><operator>.</operator><name>columns</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>rows</name></expr></argument>, <argument><expr><name>deletionInfo</name></expr></argument>, <argument><expr><name><name>header</name><operator>.</operator><name>staticRow</name></name></expr></argument>, <argument><expr><call><name><name>header</name><operator>.</operator><name>sHeader</name><operator>.</operator><name>stats</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                       <argument><expr><name>deletionInfo</name></expr></argument>,
+                                       <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>serializedSize</name><parameter_list>(<parameter><decl><type><name>PartitionUpdate</name></type> <name>update</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <try>try <init>(<decl><type><name>UnfilteredRowIterator</name></type> <name>iter</name> <init>= <expr><call><name><name>update</name><operator>.</operator><name>unfilteredIterator</name></name><argument_list>()</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+                <return>return <expr><call><name><name>update</name><operator>.</operator><name>metadata</name><operator>.</operator><name>id</name><operator>.</operator><name>serializedSize</name></name><argument_list>()</argument_list></call>
+                     <operator>+</operator> <call><name><name>UnfilteredRowIteratorSerializer</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><name>iter</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><call><name><name>update</name><operator>.</operator><name>rowCount</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></try>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * A counter mark is basically a pointer to a counter update inside this partition update. That pointer allows
+     * us to update the counter value based on the pre-existing value read during the read-before-write that counters
+     * do. See {@link CounterMutation} to understand how this is used.
+     */</comment>
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>CounterMark</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Row</name></type> <name>row</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ColumnMetadata</name></type> <name>column</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>CellPath</name></type> <name>path</name></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>CounterMark</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>, <parameter><decl><type><name>ColumnMetadata</name></type> <name>column</name></decl></parameter>, <parameter><decl><type><name>CellPath</name></type> <name>path</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>row</name></name> <operator>=</operator> <name>row</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>column</name></name> <operator>=</operator> <name>column</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>path</name></name> <operator>=</operator> <name>path</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>clustering</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>row</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>ColumnMetadata</name></type> <name>column</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>column</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>CellPath</name></type> <name>path</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>path</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>ByteBuffer</name></type> <name>value</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><ternary><condition><expr><name>path</name> <operator>==</operator> <literal type="null">null</literal></expr>
+                 ?</condition><then> <expr><call><name><name>row</name><operator>.</operator><name>getCell</name></name><argument_list>(<argument><expr><name>column</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>buffer</name><argument_list>()</argument_list></call></expr>
+                 </then><else>: <expr><call><name><name>row</name><operator>.</operator><name>getCell</name></name><argument_list>(<argument><expr><name>column</name></expr></argument>, <argument><expr><name>path</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>buffer</name><argument_list>()</argument_list></call></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>setValue</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>value</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// This is a bit of a giant hack as this is the only place where we mutate a Row object. This makes it more efficient</comment>
+            <comment type="line">// for counters however and this won't be needed post-#6506 so that's probably fine.</comment>
+            <assert>assert <expr><name>row</name> <operator>instanceof</operator> <name>BTreeRow</name></expr>;</assert>
+            <expr_stmt><expr><operator>(</operator><operator>(</operator><name>BTreeRow</name><operator>)</operator><name>row</name><operator>)</operator><operator>.</operator><call><name>setValue</name><argument_list>(<argument><expr><name>column</name></expr></argument>, <argument><expr><name>path</name></expr></argument>, <argument><expr><name>value</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * Builder for PartitionUpdates
+     *
+     * This class is not thread safe, but the PartitionUpdate it produces is (since it is immutable).
+     */</comment>
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>Builder</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>TableMetadata</name></type> <name>metadata</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>DecoratedKey</name></type> <name>key</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>MutableDeletionInfo</name></type> <name>deletionInfo</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>canHaveShadowedData</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name><name>Object</name><index>[]</index></name></type> <name>tree</name> <init>= <expr><call><name><name>BTree</name><operator>.</operator><name>empty</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>BTree</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>Row</name></argument>&gt;</argument_list></name></name></type> <name>rowBuilder</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>Row</name></type> <name>staticRow</name> <init>= <expr><name><name>Rows</name><operator>.</operator><name>EMPTY_STATIC_ROW</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>RegularAndStaticColumns</name></type> <name>columns</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>isBuilt</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>Builder</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>,
+                       <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>,
+                       <parameter><decl><type><name>RegularAndStaticColumns</name></type> <name>columns</name></decl></parameter>,
+                       <parameter><decl><type><name>int</name></type> <name>initialRowCapacity</name></decl></parameter>,
+                       <parameter><decl><type><name>boolean</name></type> <name>canHaveShadowedData</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><name>initialRowCapacity</name></expr></argument>, <argument><expr><name>canHaveShadowedData</name></expr></argument>, <argument><expr><name><name>Rows</name><operator>.</operator><name>EMPTY_STATIC_ROW</name></name></expr></argument>, <argument><expr><call><name><name>MutableDeletionInfo</name><operator>.</operator><name>live</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>BTree</name><operator>.</operator><name>empty</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><specifier>private</specifier> <name>Builder</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>,
+                       <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>,
+                       <parameter><decl><type><name>RegularAndStaticColumns</name></type> <name>columns</name></decl></parameter>,
+                       <parameter><decl><type><name>int</name></type> <name>initialRowCapacity</name></decl></parameter>,
+                       <parameter><decl><type><name>boolean</name></type> <name>canHaveShadowedData</name></decl></parameter>,
+                       <parameter><decl><type><name>Holder</name></type> <name>holder</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><name>initialRowCapacity</name></expr></argument>, <argument><expr><name>canHaveShadowedData</name></expr></argument>, <argument><expr><name><name>holder</name><operator>.</operator><name>staticRow</name></name></expr></argument>, <argument><expr><name><name>holder</name><operator>.</operator><name>deletionInfo</name></name></expr></argument>, <argument><expr><name><name>holder</name><operator>.</operator><name>tree</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><specifier>private</specifier> <name>Builder</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>,
+                        <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>,
+                        <parameter><decl><type><name>RegularAndStaticColumns</name></type> <name>columns</name></decl></parameter>,
+                        <parameter><decl><type><name>int</name></type> <name>initialRowCapacity</name></decl></parameter>,
+                        <parameter><decl><type><name>boolean</name></type> <name>canHaveShadowedData</name></decl></parameter>,
+                        <parameter><decl><type><name>Row</name></type> <name>staticRow</name></decl></parameter>,
+                        <parameter><decl><type><name>DeletionInfo</name></type> <name>deletionInfo</name></decl></parameter>,
+                        <parameter><decl><type><name><name>Object</name><index>[]</index></name></type> <name>tree</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>metadata</name></name> <operator>=</operator> <name>metadata</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>key</name></name> <operator>=</operator> <name>key</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columns</name></name> <operator>=</operator> <name>columns</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>rowBuilder</name></name> <operator>=</operator> <call><name>rowBuilder</name><argument_list>(<argument><expr><name>initialRowCapacity</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>canHaveShadowedData</name></name> <operator>=</operator> <name>canHaveShadowedData</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>deletionInfo</name></name> <operator>=</operator> <call><name><name>deletionInfo</name><operator>.</operator><name>mutableCopy</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>staticRow</name></name> <operator>=</operator> <name>staticRow</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>tree</name></name> <operator>=</operator> <name>tree</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><specifier>public</specifier> <name>Builder</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>RegularAndStaticColumns</name></type> <name>columnDefinitions</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>columnDefinitions</name></expr></argument>, <argument><expr><name>size</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><specifier>public</specifier> <name>Builder</name><parameter_list>(<parameter><decl><type><name>PartitionUpdate</name></type> <name>base</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>initialRowCapacity</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name><name>base</name><operator>.</operator><name>metadata</name></name></expr></argument>, <argument><expr><name><name>base</name><operator>.</operator><name>partitionKey</name></name></expr></argument>, <argument><expr><call><name><name>base</name><operator>.</operator><name>columns</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>initialRowCapacity</name></expr></argument>, <argument><expr><name><name>base</name><operator>.</operator><name>canHaveShadowedData</name></name></expr></argument>, <argument><expr><name><name>base</name><operator>.</operator><name>holder</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><specifier>public</specifier> <name>Builder</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>,
+                        <parameter><decl><type><name>ByteBuffer</name></type> <name>key</name></decl></parameter>,
+                        <parameter><decl><type><name>RegularAndStaticColumns</name></type> <name>columns</name></decl></parameter>,
+                        <parameter><decl><type><name>int</name></type> <name>initialRowCapacity</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><call><name><name>metadata</name><operator>.</operator><name>partitioner</name><operator>.</operator><name>decorateKey</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><name>initialRowCapacity</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <comment type="block" format="javadoc">/**
+         * Adds a row to this update.
+         *
+         * There is no particular assumption made on the order of row added to a partition update. It is further
+         * allowed to add the same row (more precisely, multiple row objects for the same clustering).
+         *
+         * Note however that the columns contained in the added row must be a subset of the columns used when
+         * creating this update.
+         *
+         * @param row the row to add.
+         */</comment>
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>add</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>row</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>row</name><operator>.</operator><name>isStatic</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// this assert is expensive, and possibly of limited value; we should consider removing it</comment>
+                <comment type="line">// or introducing a new class of assertions for test purposes</comment>
+                <assert>assert <expr><call><name>columns</name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>statics</name><operator>.</operator><name>containsAll</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>columns</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call> <operator>:</operator> <call><name>columns</name><argument_list>()</argument_list></call><operator>.</operator><name>statics</name> <operator>+</operator> <literal type="string">" is not superset of "</literal> <operator>+</operator> <call><name><name>row</name><operator>.</operator><name>columns</name></name><argument_list>()</argument_list></call></expr>;</assert>
+                <expr_stmt><expr><name>staticRow</name> <operator>=</operator> <ternary><condition><expr><call><name><name>staticRow</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>
+                            ?</condition><then> <expr><name>row</name></expr>
+                            </then><else>: <expr><call><name><name>Rows</name><operator>.</operator><name>merge</name></name><argument_list>(<argument><expr><name>staticRow</name></expr></argument>, <argument><expr><name>row</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <comment type="line">// this assert is expensive, and possibly of limited value; we should consider removing it</comment>
+                <comment type="line">// or introducing a new class of assertions for test purposes</comment>
+                <assert>assert <expr><call><name>columns</name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>regulars</name><operator>.</operator><name>containsAll</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>columns</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call> <operator>:</operator> <call><name>columns</name><argument_list>()</argument_list></call><operator>.</operator><name>regulars</name> <operator>+</operator> <literal type="string">" is not superset of "</literal> <operator>+</operator> <call><name><name>row</name><operator>.</operator><name>columns</name></name><argument_list>()</argument_list></call></expr>;</assert>
+                <expr_stmt><expr><call><name><name>rowBuilder</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>row</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>addPartitionDeletion</name><parameter_list>(<parameter><decl><type><name>DeletionTime</name></type> <name>deletionTime</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>deletionInfo</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>deletionTime</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>add</name><parameter_list>(<parameter><decl><type><name>RangeTombstone</name></type> <name>range</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>deletionInfo</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>range</name></expr></argument>, <argument><expr><name><name>metadata</name><operator>.</operator><name>comparator</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>DecoratedKey</name></type> <name>partitionKey</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>key</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>TableMetadata</name></type> <name>metadata</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>metadata</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>PartitionUpdate</name></type> <name>build</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// assert that we are not calling build() several times</comment>
+            <assert>assert <expr><operator>!</operator><name>isBuilt</name> <operator>:</operator> <literal type="string">"A PartitionUpdate.Builder should only get built once"</literal></expr>;</assert>
+            <decl_stmt><decl><type><name><name>Object</name><index>[]</index></name></type> <name>add</name> <init>= <expr><call><name><name>rowBuilder</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Object</name><index>[]</index></name></type> <name>merged</name> <init>= <expr><name><name>BTree</name><operator>.</operator></name>&lt;<name>Row</name></expr></init></decl>, <decl><type ref="prev"/><name>Row</name></decl>, <decl><type ref="prev"/><name>Row</name>&gt;<name>update</name><argument_list>(<argument><expr><name>tree</name></expr></argument>, <argument><expr><name>add</name></expr></argument>, <argument><expr><name><name>metadata</name><operator>.</operator><name>comparator</name></name></expr></argument>,
+                                                          <argument><expr><call><name><name>UpdateFunction</name><operator>.</operator><name>Simple</name><operator>.</operator><name>of</name></name><argument_list>(<argument><expr><name>Rows</name><operator>::</operator><name>merge</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>EncodingStats</name></type> <name>newStats</name> <init>= <expr><call><name><name>EncodingStats</name><operator>.</operator><name>Collector</name><operator>.</operator><name>collect</name></name><argument_list>(<argument><expr><name>staticRow</name></expr></argument>, <argument><expr><call><name><name>BTree</name><operator>.</operator><name>iterator</name></name><argument_list>(<argument><expr><name>merged</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>deletionInfo</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <expr_stmt><expr><name>isBuilt</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            <return>return <expr><operator>new</operator> <call><name>PartitionUpdate</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>,
+                                       <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>,
+                                       <argument><expr><operator>new</operator> <call><name>Holder</name><argument_list>(<argument><expr><name>columns</name></expr></argument>,
+                                                  <argument><expr><name>merged</name></expr></argument>,
+                                                  <argument><expr><name>deletionInfo</name></expr></argument>,
+                                                  <argument><expr><name>staticRow</name></expr></argument>,
+                                                  <argument><expr><name>newStats</name></expr></argument>)</argument_list></call></expr></argument>,
+                                       <argument><expr><name>deletionInfo</name></expr></argument>,
+                                       <argument><expr><name>canHaveShadowedData</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>RegularAndStaticColumns</name></type> <name>columns</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>columns</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>DeletionTime</name></type> <name>partitionLevelDeletion</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>deletionInfo</name><operator>.</operator><name>getPartitionDeletion</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name><name>BTree</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>Row</name></argument>&gt;</argument_list></name></name></type> <name>rowBuilder</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>initialCapacity</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name><name>BTree</name><operator>.</operator></name>&lt;<name>Row</name><operator>&gt;</operator><call><name>builder</name><argument_list>(<argument><expr><name><name>metadata</name><operator>.</operator><name>comparator</name></name></expr></argument>, <argument><expr><name>initialCapacity</name></expr></argument>)</argument_list></call>
+                   <operator>.</operator><call><name>setQuickResolver</name><argument_list>(<argument><expr><name>Rows</name><operator>::</operator><name>merge</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+        <comment type="block" format="javadoc">/**
+         * Modify this update to set every timestamp for live data to {@code newTimestamp} and
+         * every deletion timestamp to {@code newTimestamp - 1}.
+         *
+         * There is no reason to use that expect on the Paxos code path, where we need ensure that
+         * anything inserted use the ballot timestamp (to respect the order of update decided by
+         * the Paxos algorithm). We use {@code newTimestamp - 1} for deletions because tombstones
+         * always win on timestamp equality and we don't want to delete our own insertions
+         * (typically, when we overwrite a collection, we first set a complex deletion to delete the
+         * previous collection before adding new elements. If we were to set that complex deletion
+         * to the same timestamp that the new elements, it would delete those elements). And since
+         * tombstones always wins on timestamp equality, using -1 guarantees our deletion will still
+         * delete anything from a previous update.
+         */</comment>
+        <function><type><specifier>public</specifier> <name>Builder</name></type> <name>updateAllTimestamp</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>newTimestamp</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>deletionInfo</name><operator>.</operator><name>updateAllTimestamp</name></name><argument_list>(<argument><expr><name>newTimestamp</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>tree</name> <operator>=</operator> <name><name>BTree</name><operator>.</operator></name>&lt;<name>Row</name></expr><operator>,</operator> <expr><name>Row</name><operator>&gt;</operator><call><name>transformAndFilter</name><argument_list>(<argument><expr><name>tree</name></expr></argument>, <argument><expr><lambda><parameter_list>(<parameter><decl><name>x</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>x</name><operator>.</operator><name>updateAllTimestamp</name></name><argument_list>(<argument><expr><name>newTimestamp</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>staticRow</name> <operator>=</operator> <call><name><name>this</name><operator>.</operator><name>staticRow</name><operator>.</operator><name>updateAllTimestamp</name></name><argument_list>(<argument><expr><name>newTimestamp</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="string">"Builder{"</literal> <operator>+</operator>
+                   <literal type="string">"metadata="</literal> <operator>+</operator> <name>metadata</name> <operator>+</operator>
+                   <literal type="string">", key="</literal> <operator>+</operator> <name>key</name> <operator>+</operator>
+                   <literal type="string">", deletionInfo="</literal> <operator>+</operator> <name>deletionInfo</name> <operator>+</operator>
+                   <literal type="string">", canHaveShadowedData="</literal> <operator>+</operator> <name>canHaveShadowedData</name> <operator>+</operator>
+                   <literal type="string">", staticRow="</literal> <operator>+</operator> <name>staticRow</name> <operator>+</operator>
+                   <literal type="string">", columns="</literal> <operator>+</operator> <name>columns</name> <operator>+</operator>
+                   <literal type="string">", isBuilt="</literal> <operator>+</operator> <name>isBuilt</name> <operator>+</operator>
+                   <literal type="char">'}'</literal></expr>;</return>
+        </block_content>}</block></function>
+
+    }</block></class>
+}</block></class>
+</unit>

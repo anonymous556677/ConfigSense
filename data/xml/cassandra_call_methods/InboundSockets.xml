@@ -1,0 +1,271 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/net/InboundSockets.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>ArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ExecutorService</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Consumer</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>ImmutableList</name></name>;</import>
+
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>Channel</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>ChannelFuture</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>ChannelPipeline</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>group</name><operator>.</operator><name>ChannelGroup</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>group</name><operator>.</operator><name>DefaultChannelGroup</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>DefaultEventExecutor</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Future</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>GlobalEventExecutor</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>PromiseNotifier</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>SucceededFuture</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>NamedThreadFactory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+
+<class>class <name>InboundSockets</name>
+<block>{
+    <comment type="block" format="javadoc">/**
+     * A simple struct to wrap up the components needed for each listening socket.
+     */</comment>
+    <class><annotation>@<name>VisibleForTesting</name></annotation>
+    <specifier>static</specifier> class <name>InboundSocket</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>InboundConnectionSettings</name></type> <name>settings</name></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+         * The base {@link Channel} that is doing the socket listen/accept.
+         * Null only until open() is invoked and {@link #binding} has yet to complete.
+         */</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>Channel</name></type> <name>listen</name></decl>;</decl_stmt>
+        <comment type="block" format="javadoc">/**
+         * Once open() is invoked, this holds the future result of opening the socket,
+         * so that its completion can be waited on. Once complete, it sets itself to null.
+         */</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>ChannelFuture</name></type> <name>binding</name></decl>;</decl_stmt>
+
+        <comment type="line">// purely to prevent close racing with open</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>closedWithoutOpening</name></decl>;</decl_stmt>
+
+        <comment type="line">// used to prevent racing on close</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></type> <name>closeFuture</name></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+         * A group of the open, inbound {@link Channel}s connected to this node. This is mostly interesting so that all of
+         * the inbound connections/channels can be closed when the listening socket itself is being closed.
+         */</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ChannelGroup</name></type> <name>connections</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>DefaultEventExecutor</name></type> <name>executor</name></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>InboundSocket</name><parameter_list>(<parameter><decl><type><name>InboundConnectionSettings</name></type> <name>settings</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>settings</name></name> <operator>=</operator> <name>settings</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>executor</name></name> <operator>=</operator> <operator>new</operator> <call><name>DefaultEventExecutor</name><argument_list>(<argument><expr><operator>new</operator> <call><name>NamedThreadFactory</name><argument_list>(<argument><expr><literal type="string">"Listen-"</literal> <operator>+</operator> <name><name>settings</name><operator>.</operator><name>bindAddress</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>connections</name></name> <operator>=</operator> <operator>new</operator> <call><name>DefaultChannelGroup</name><argument_list>(<argument><expr><call><name><name>settings</name><operator>.</operator><name>bindAddress</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>executor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>private</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></type> <name>open</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>open</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>pipeline</name></decl></parameter></parameter_list> -&gt; <block>{<block_content/>}</block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></type> <name>open</name><parameter_list>(<parameter><decl><type><name><name>Consumer</name><argument_list type="generic">&lt;<argument><name>ChannelPipeline</name></argument>&gt;</argument_list></name></type> <name>pipelineInjector</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <synchronized>synchronized <init>(<expr><name>this</name></expr>)</init>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>listen</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><operator>new</operator> <call><name><name>SucceededFuture</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name><name>GlobalEventExecutor</name><operator>.</operator><name>INSTANCE</name></name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><name>binding</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><name>binding</name></expr>;</return></block_content></block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><name>closedWithoutOpening</name></expr>)</condition><block type="pseudo"><block_content>
+                    <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>()</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+                <expr_stmt><expr><name>binding</name> <operator>=</operator> <call><name><name>InboundConnectionInitiator</name><operator>.</operator><name>bind</name></name><argument_list>(<argument><expr><name>settings</name></expr></argument>, <argument><expr><name>connections</name></expr></argument>, <argument><expr><name>pipelineInjector</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></synchronized>
+
+            <return>return <expr><call><name><name>binding</name><operator>.</operator><name>addListener</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>ignore</name></decl></parameter></parameter_list> -&gt; <block>{<block_content>
+                <synchronized>synchronized <init>(<expr><name>this</name></expr>)</init>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>binding</name><operator>.</operator><name>isSuccess</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><name>listen</name> <operator>=</operator> <call><name><name>binding</name><operator>.</operator><name>channel</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                    <expr_stmt><expr><name>binding</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                </block_content>}</block></synchronized>
+            </block_content>}</block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Close this socket and any connections created on it. Once closed, this socket may not be re-opened.
+         *
+         * This may not execute synchronously, so a Future is returned encapsulating its result.
+         * @param shutdownExecutors consumer invoked with the internal executor on completion
+         *                          Note that the consumer will only be invoked once per InboundSocket.
+         *                          Subsequent calls to close will not register a callback to different consumers.
+         */</comment>
+        <function><type><specifier>private</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></type> <name>close</name><parameter_list>(<parameter><decl><type><name><name>Consumer</name><argument_list type="generic">&lt;<argument><name>?</name> <super>super <name>ExecutorService</name></super></argument>&gt;</argument_list></name></type> <name>shutdownExecutors</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>AsyncPromise</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></type> <name>done</name> <init>= <expr><call><name><name>AsyncPromise</name><operator>.</operator><name>uncancellable</name></name><argument_list>(<argument><expr><name><name>GlobalEventExecutor</name><operator>.</operator><name>INSTANCE</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>Runnable</name></type> <name>close</name> <init>= <expr><lambda><parameter_list>()</parameter_list> -&gt; <block>{<block_content>
+                <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>closing</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>listen</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>closing</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>listen</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>closing</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>connections</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><operator>new</operator> <call><name>FutureCombiner</name><argument_list>(<argument><expr><name>closing</name></expr></argument>)</argument_list></call>
+                       <operator>.</operator><call><name>addListener</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>future</name></decl></parameter></parameter_list> -&gt; <block>{<block_content>
+                           <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>shutdownGracefully</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                           <expr_stmt><expr><call><name><name>shutdownExecutors</name><operator>.</operator><name>accept</name></name><argument_list>(<argument><expr><name>executor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                       </block_content>}</block></lambda></expr></argument>)</argument_list></call>
+                       <operator>.</operator><call><name>addListener</name><argument_list>(<argument><expr><operator>new</operator> <call><name><name>PromiseNotifier</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>done</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></lambda></expr></init></decl>;</decl_stmt>
+
+            <synchronized>synchronized <init>(<expr><name>this</name></expr>)</init>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>listen</name> <operator>==</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>binding</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>closedWithoutOpening</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                    <return>return <expr><operator>new</operator> <call><name><name>SucceededFuture</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name><name>GlobalEventExecutor</name><operator>.</operator><name>INSTANCE</name></name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+                </block_content>}</block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>closeFuture</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <return>return <expr><name>closeFuture</name></expr>;</return>
+                </block_content>}</block></if></if_stmt>
+
+                <expr_stmt><expr><name>closeFuture</name> <operator>=</operator> <name>done</name></expr>;</expr_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>listen</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>close</name><operator>.</operator><name>run</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>binding</name><operator>.</operator><name>cancel</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>binding</name><operator>.</operator><name>addListener</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>future</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>close</name><operator>.</operator><name>run</name></name><argument_list>()</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></else></if_stmt>
+
+                <return>return <expr><name>done</name></expr>;</return>
+            </block_content>}</block></synchronized>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isOpen</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>listen</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>listen</name><operator>.</operator><name>isOpen</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>InboundSocket</name></argument>&gt;</argument_list></name></type> <name>sockets</name></decl>;</decl_stmt>
+
+    <constructor><name>InboundSockets</name><parameter_list>(<parameter><decl><type><name>InboundConnectionSettings</name></type> <name>template</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><call><name>withDefaultBindAddresses</name><argument_list>(<argument><expr><name>template</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><name>InboundSockets</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>InboundConnectionSettings</name></argument>&gt;</argument_list></name></type> <name>templates</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>sockets</name></name> <operator>=</operator> <call><name>bindings</name><argument_list>(<argument><expr><name>templates</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>InboundConnectionSettings</name></argument>&gt;</argument_list></name></type> <name>withDefaultBindAddresses</name><parameter_list>(<parameter><decl><type><name>InboundConnectionSettings</name></type> <name>template</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>ImmutableList</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>InboundConnectionSettings</name></argument>&gt;</argument_list></name></name></type> <name>templates</name> <init>= <expr><call><name><name>ImmutableList</name><operator>.</operator><name>builder</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>templates</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>template</name><operator>.</operator><name>withBindAddress</name></name><argument_list>(<argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getLocalAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name>shouldListenOnBroadcastAddress</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>templates</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>template</name><operator>.</operator><name>withBindAddress</name></name><argument_list>(<argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <return>return <expr><call><name><name>templates</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>InboundSocket</name></argument>&gt;</argument_list></name></type> <name>bindings</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>InboundConnectionSettings</name></argument>&gt;</argument_list></name></type> <name>templates</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>ImmutableList</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>InboundSocket</name></argument>&gt;</argument_list></name></name></type> <name>sockets</name> <init>= <expr><call><name><name>ImmutableList</name><operator>.</operator><name>builder</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>InboundConnectionSettings</name></type> <name>template</name> <range>: <expr><name>templates</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>addBindings</name><argument_list>(<argument><expr><name>template</name></expr></argument>, <argument><expr><name>sockets</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <return>return <expr><call><name><name>sockets</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>addBindings</name><parameter_list>(<parameter><decl><type><name>InboundConnectionSettings</name></type> <name>template</name></decl></parameter>, <parameter><decl><type><name><name>ImmutableList</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>InboundSocket</name></argument>&gt;</argument_list></name></name></type> <name>out</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>InboundConnectionSettings</name></type>       <name>settings</name> <init>= <expr><call><name><name>template</name><operator>.</operator><name>withDefaults</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>InboundConnectionSettings</name></type> <name>legacySettings</name> <init>= <expr><call><name><name>template</name><operator>.</operator><name>withLegacySslStoragePortDefaults</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name><name>settings</name><operator>.</operator><name>encryption</name><operator>.</operator><name>enable_legacy_ssl_storage_port</name></name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>InboundSocket</name><argument_list>(<argument><expr><name>legacySettings</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <comment type="block">/*
+             * If the legacy ssl storage port and storage port match, only bind to the
+             * legacy ssl port. This makes it possible to configure a 4.0 node like a 3.0
+             * node with only the ssl_storage_port if required.
+             */</comment>
+            <if_stmt><if>if <condition>(<expr><call><name><name>settings</name><operator>.</operator><name>bindAddress</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>legacySettings</name><operator>.</operator><name>bindAddress</name></name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>InboundSocket</name><argument_list>(<argument><expr><name>settings</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></type> <name>open</name><parameter_list>(<parameter><decl><type><name><name>Consumer</name><argument_list type="generic">&lt;<argument><name>ChannelPipeline</name></argument>&gt;</argument_list></name></type> <name>pipelineInjector</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>opening</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>InboundSocket</name></type> <name>socket</name> <range>: <expr><name>sockets</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>opening</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>socket</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><name>pipelineInjector</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+        <return>return <expr><operator>new</operator> <call><name>FutureCombiner</name><argument_list>(<argument><expr><name>opening</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></type> <name>open</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>opening</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>InboundSocket</name></type> <name>socket</name> <range>: <expr><name>sockets</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>opening</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>socket</name><operator>.</operator><name>open</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <return>return <expr><operator>new</operator> <call><name>FutureCombiner</name><argument_list>(<argument><expr><name>opening</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isListening</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>InboundSocket</name></type> <name>socket</name> <range>: <expr><name>sockets</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>socket</name><operator>.</operator><name>isOpen</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt></block_content></block></for>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></type> <name>close</name><parameter_list>(<parameter><decl><type><name><name>Consumer</name><argument_list type="generic">&lt;<argument><name>?</name> <super>super <name>ExecutorService</name></super></argument>&gt;</argument_list></name></type> <name>shutdownExecutors</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>closing</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>InboundSocket</name></type> <name>address</name> <range>: <expr><name>sockets</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>closing</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>address</name><operator>.</operator><name>close</name></name><argument_list>(<argument><expr><name>shutdownExecutors</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <return>return <expr><operator>new</operator> <call><name>FutureCombiner</name><argument_list>(<argument><expr><name>closing</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+    <function><type><specifier>public</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>Void</name></argument>&gt;</argument_list></name></type> <name>close</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>close</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>e</name></decl></parameter></parameter_list> -&gt; <block>{<block_content/>}</block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>shouldListenOnBroadcastAddress</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>shouldListenOnBroadcastAddress</name></name><argument_list>()</argument_list></call>
+               <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>FBUtilities</name><operator>.</operator><name>getLocalAddressAndPort</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>InboundSocket</name></argument>&gt;</argument_list></name></type> <name>sockets</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>sockets</name></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

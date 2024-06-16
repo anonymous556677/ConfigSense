@@ -1,0 +1,682 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/cql3/statements/BatchStatement.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>statements</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>HashMultiset</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterables</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Maps</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>helpers</name><operator>.</operator><name>MessageFormatter</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>audit</name><operator>.</operator><name>AuditLogContext</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>audit</name><operator>.</operator><name>AuditLogEntryType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableId</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>ColumnMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>PartitionUpdate</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>RowIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>BatchMetrics</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>tracing</name><operator>.</operator><name>Tracing</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name><operator>.</operator><name>messages</name><operator>.</operator><name>ResultMessage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>NoSpamLogger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>Pair</name></name>;</import>
+
+<import>import static <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Predicate</name><operator>.</operator><name>isEqual</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>statements</name><operator>.</operator><name>RequestValidations</name><operator>.</operator><name>checkFalse</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A &lt;code&gt;BATCH&lt;/code&gt; statement parsed from a CQL query.
+ */</comment>
+<class><specifier>public</specifier> class <name>BatchStatement</name> <super_list><implements>implements <super><name>CQLStatement</name></super></implements></super_list>
+<block>{
+    <enum><specifier>public</specifier> enum <name>Type</name>
+    <block>{
+        <decl><name>LOGGED</name></decl>, <decl><name>UNLOGGED</name></decl>, <decl><name>COUNTER</name></decl>
+    }</block></enum>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>Type</name></type> <name>type</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>VariableSpecifications</name></type> <name>bindVariables</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>ModificationStatement</name></argument>&gt;</argument_list></name></type> <name>statements</name></decl>;</decl_stmt>
+
+    <comment type="line">// Columns modified for each table (keyed by the table ID)</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name>RegularAndStaticColumns</name></argument>&gt;</argument_list></name></type> <name>updatedColumns</name></decl>;</decl_stmt>
+    <comment type="line">// Columns on which there is conditions. Note that if there is any, then the batch can only be on a single partition (and thus table).</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>RegularAndStaticColumns</name></type> <name>conditionColumns</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>updatesRegularRows</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>updatesStaticRow</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Attributes</name></type> <name>attrs</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>hasConditions</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>updatesVirtualTables</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>BatchStatement</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>UNLOGGED_BATCH_WARNING</name> <init>= <expr><literal type="string">"Unlogged batch covering {} partitions detected "</literal> <operator>+</operator>
+                                                         <literal type="string">"against table{} {}. You should use a logged batch for "</literal> <operator>+</operator>
+                                                         <literal type="string">"atomicity, or asynchronous writes for performance."</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>LOGGED_BATCH_LOW_GCGS_WARNING</name> <init>= <expr><literal type="string">"Executing a LOGGED BATCH on table{} {}, configured with a "</literal> <operator>+</operator>
+                                                                <literal type="string">"gc_grace_seconds of 0. The gc_grace_seconds is used to TTL "</literal> <operator>+</operator>
+                                                                <literal type="string">"batchlog entries, so setting gc_grace_seconds too low on "</literal> <operator>+</operator>
+                                                                <literal type="string">"tables involved in an atomic batch might cause batchlog "</literal> <operator>+</operator>
+                                                                <literal type="string">"entries to expire before being replayed."</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>BatchMetrics</name></type> <name>metrics</name> <init>= <expr><operator>new</operator> <call><name>BatchMetrics</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new BatchStatement.
+     *
+     * @param type       type of the batch
+     * @param statements the list of statements in the batch
+     * @param attrs      additional attributes for statement (CL, timestamp, timeToLive)
+     */</comment>
+    <constructor><specifier>public</specifier> <name>BatchStatement</name><parameter_list>(<parameter><decl><type><name>Type</name></type> <name>type</name></decl></parameter>, <parameter><decl><type><name>VariableSpecifications</name></type> <name>bindVariables</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>ModificationStatement</name></argument>&gt;</argument_list></name></type> <name>statements</name></decl></parameter>, <parameter><decl><type><name>Attributes</name></type> <name>attrs</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>type</name></name> <operator>=</operator> <name>type</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>bindVariables</name></name> <operator>=</operator> <name>bindVariables</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>statements</name></name> <operator>=</operator> <name>statements</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>attrs</name></name> <operator>=</operator> <name>attrs</name></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>boolean</name></type> <name>hasConditions</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>MultiTableColumnsBuilder</name></type> <name>regularBuilder</name> <init>= <expr><operator>new</operator> <call><name>MultiTableColumnsBuilder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>RegularAndStaticColumns</name><operator>.</operator><name>Builder</name></name></type> <name>conditionBuilder</name> <init>= <expr><call><name><name>RegularAndStaticColumns</name><operator>.</operator><name>builder</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>updateRegular</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>updateStatic</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>updatesVirtualTables</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>ModificationStatement</name></type> <name>stmt</name> <range>: <expr><name>statements</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>regularBuilder</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><call><name><name>stmt</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>stmt</name><operator>.</operator><name>updatedColumns</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>updateRegular</name> <operator>|=</operator> <call><name><name>stmt</name><operator>.</operator><name>updatesRegularRows</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>updatesVirtualTables</name> <operator>|=</operator> <call><name><name>stmt</name><operator>.</operator><name>isVirtual</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>stmt</name><operator>.</operator><name>hasConditions</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>hasConditions</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>conditionBuilder</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><call><name><name>stmt</name><operator>.</operator><name>conditionColumns</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>updateStatic</name> <operator>|=</operator> <call><name><name>stmt</name><operator>.</operator><name>updatesStaticRow</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>updatedColumns</name></name> <operator>=</operator> <call><name><name>regularBuilder</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>conditionColumns</name></name> <operator>=</operator> <call><name><name>conditionBuilder</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>updatesRegularRows</name></name> <operator>=</operator> <name>updateRegular</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>updatesStaticRow</name></name> <operator>=</operator> <name>updateStatic</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>hasConditions</name></name> <operator>=</operator> <name>hasConditions</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>updatesVirtualTables</name></name> <operator>=</operator> <name>updatesVirtualTables</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>ColumnSpecification</name></argument>&gt;</argument_list></name></type> <name>getBindVariables</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>bindVariables</name><operator>.</operator><name>getBindVariables</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name><name>short</name><index>[]</index></name></type> <name>getPartitionKeyBindVariableIndexes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>affectsMultipleTables</name> <init>=
+            <expr><operator>!</operator><call><name><name>statements</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>statements</name><operator>.</operator><name>stream</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>map</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>s</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>s</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>id</name></expr></block_content></block></lambda></expr></argument>)</argument_list></call><operator>.</operator><call><name>allMatch</name><argument_list>(<argument><expr><call><name>isEqual</name><argument_list>(<argument><expr><call><name><name>statements</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><name>id</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// Use the TableMetadata of the first statement for partition key bind indexes.  If the statements affect</comment>
+        <comment type="line">// multiple tables, we won't send partition key bind indexes.</comment>
+        <return>return <expr><ternary><condition><expr><operator>(</operator><name>affectsMultipleTables</name> <operator>||</operator> <call><name><name>statements</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call><operator>)</operator></expr>
+             ?</condition><then> <expr><literal type="null">null</literal></expr>
+             </then><else>: <expr><call><name><name>bindVariables</name><operator>.</operator><name>getPartitionKeyBindVariableIndexes</name></name><argument_list>(<argument><expr><call><name><name>statements</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name><name>Iterable</name><argument_list type="generic">&lt;<argument><name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>functions</name><operator>.</operator><name>Function</name></name></argument>&gt;</argument_list></name></type> <name>getFunctions</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>functions</name><operator>.</operator><name>Function</name></name></argument>&gt;</argument_list></name></type> <name>functions</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>ModificationStatement</name></type> <name>statement</name> <range>: <expr><name>statements</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>statement</name><operator>.</operator><name>addFunctionsTo</name></name><argument_list>(<argument><expr><name>functions</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <return>return <expr><name>functions</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>authorize</name><parameter_list>(<parameter><decl><type><name>ClientState</name></type> <name>state</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument>, <argument><expr><name>UnauthorizedException</name></expr></argument></throws>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>ModificationStatement</name></type> <name>statement</name> <range>: <expr><name>statements</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>statement</name><operator>.</operator><name>authorize</name></name><argument_list>(<argument><expr><name>state</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+    </block_content>}</block></function>
+
+    <comment type="line">// Validates a prepared batch statement without validating its nested statements.</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>validate</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>attrs</name><operator>.</operator><name>isTimeToLiveSet</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Global TTL on the BATCH statement is not supported."</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>boolean</name></type> <name>timestampSet</name> <init>= <expr><call><name><name>attrs</name><operator>.</operator><name>isTimestampSet</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>timestampSet</name></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>hasConditions</name></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Cannot provide custom timestamp for conditional BATCH"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name>isCounter</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Cannot provide custom timestamp for counter BATCH"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>boolean</name></type> <name>hasCounters</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>hasNonCounters</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>boolean</name></type> <name>hasVirtualTables</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>hasRegularTables</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>ModificationStatement</name></type> <name>statement</name> <range>: <expr><name>statements</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>timestampSet</name> <operator>&amp;&amp;</operator> <call><name><name>statement</name><operator>.</operator><name>isTimestampSet</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Timestamp must be set either on BATCH or individual statements"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>statement</name><operator>.</operator><name>isCounter</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>hasCounters</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><name>hasNonCounters</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt></block_content></block></else></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>statement</name><operator>.</operator><name>isVirtual</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>hasVirtualTables</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><name>hasRegularTables</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        </block_content>}</block></for>
+
+        <if_stmt><if>if <condition>(<expr><name>timestampSet</name> <operator>&amp;&amp;</operator> <name>hasCounters</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Cannot provide custom timestamp for a BATCH containing counters"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name>isCounter</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <name>hasNonCounters</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Cannot include non-counter statement in a counter batch"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>hasCounters</name> <operator>&amp;&amp;</operator> <name>hasNonCounters</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Counter and non-counter mutations cannot exist in the same batch"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name>isLogged</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <name>hasCounters</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Cannot include a counter statement in a logged batch"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name>isLogged</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <name>hasVirtualTables</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Cannot include a virtual table statement in a logged batch"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>hasVirtualTables</name> <operator>&amp;&amp;</operator> <name>hasRegularTables</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Mutations for virtual and regular tables cannot exist in the same batch"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>hasConditions</name> <operator>&amp;&amp;</operator> <name>hasVirtualTables</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Conditional BATCH statements cannot include mutations for virtual tables"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>hasConditions</name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>ksName</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>String</name></type> <name>cfName</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>ModificationStatement</name></type> <name>stmt</name> <range>: <expr><name>statements</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>ksName</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>(</operator><operator>!</operator><call><name><name>stmt</name><operator>.</operator><name>keyspace</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>)</argument_list></call> <operator>||</operator> <operator>!</operator><call><name><name>stmt</name><operator>.</operator><name>columnFamily</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name>cfName</name></expr></argument>)</argument_list></call><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+                    <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Batch with conditions cannot span multiple tables"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+                <expr_stmt><expr><name>ksName</name> <operator>=</operator> <call><name><name>stmt</name><operator>.</operator><name>keyspace</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>cfName</name> <operator>=</operator> <call><name><name>stmt</name><operator>.</operator><name>columnFamily</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>isCounter</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>type</name> <operator>==</operator> <name><name>Type</name><operator>.</operator><name>COUNTER</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>isLogged</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>type</name> <operator>==</operator> <name><name>Type</name><operator>.</operator><name>LOGGED</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// The batch itself will be validated in either Parsed#prepare() - for regular CQL3 batches,</comment>
+    <comment type="line">//   or in QueryProcessor.processBatch() - for native protocol batches.</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>validate</name><parameter_list>(<parameter><decl><type><name>ClientState</name></type> <name>state</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>ModificationStatement</name></type> <name>statement</name> <range>: <expr><name>statements</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>statement</name><operator>.</operator><name>validate</name></name><argument_list>(<argument><expr><name>state</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>ModificationStatement</name></argument>&gt;</argument_list></name></type> <name>getStatements</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>statements</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>?</name> <extends>extends <name>IMutation</name></extends></argument>&gt;</argument_list></name></type> <name>getMutations</name><parameter_list>(<parameter><decl><type><name>BatchQueryOptions</name></type> <name>options</name></decl></parameter>,
+                                                  <parameter><decl><type><name>boolean</name></type> <name>local</name></decl></parameter>,
+                                                  <parameter><decl><type><name>long</name></type> <name>batchTimestamp</name></decl></parameter>,
+                                                  <parameter><decl><type><name>int</name></type> <name>nowInSeconds</name></decl></parameter>,
+                                                  <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>statements</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>Collections</name><operator>.</operator><name>emptyList</name></name><argument_list>()</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>List</name><argument_list type="generic">&lt;<argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>partitionKeys</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>statements</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name><name>HashMultiset</name><argument_list type="generic">&lt;<argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>partitionCounts</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>updatedColumns</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>TableMetadata</name></type> <name>metadata</name> <init>= <expr><call><name><name>statements</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call><operator>.</operator><name>metadata</name></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>isize</name> <init>= <expr><call><name><name>statements</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>isize</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ModificationStatement</name></type> <name>stmt</name> <init>= <expr><call><name><name>statements</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>metadata</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>stmt</name><operator>.</operator><name>metadata</name><operator>.</operator><name>id</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>metadata</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>metadata</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>stmtPartitionKeys</name> <init>= <expr><call><name><name>stmt</name><operator>.</operator><name>buildPartitionKeyNames</name></name><argument_list>(<argument><expr><call><name><name>options</name><operator>.</operator><name>forStatement</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>partitionKeys</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>stmtPartitionKeys</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name><name>HashMultiset</name><argument_list type="generic">&lt;<argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>perKeyCountsForTable</name> <init>= <expr><call><name><name>partitionCounts</name><operator>.</operator><name>computeIfAbsent</name></name><argument_list>(<argument><expr><name><name>stmt</name><operator>.</operator><name>metadata</name><operator>.</operator><name>id</name></name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>k</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>HashMultiset</name><operator>.</operator><name>create</name></name><argument_list>()</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>stmtIdx</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>stmtSize</name> <init>= <expr><call><name><name>stmtPartitionKeys</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></init></decl>;</init> <condition><expr><name>stmtIdx</name> <operator>&lt;</operator> <name>stmtSize</name></expr>;</condition> <incr><expr><name>stmtIdx</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>perKeyCountsForTable</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>stmtPartitionKeys</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>stmtIdx</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block></for>
+
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>tablesWithZeroGcGs</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>UpdatesCollector</name></type> <name>collector</name></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>metadata</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>collector</name> <operator>=</operator> <operator>new</operator> <call><name>SingleTableUpdatesCollector</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><call><name><name>updatedColumns</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>metadata</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>partitionCounts</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>metadata</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><name>collector</name> <operator>=</operator> <operator>new</operator> <call><name>BatchUpdatesCollector</name><argument_list>(<argument><expr><name>updatedColumns</name></expr></argument>, <argument><expr><name>partitionCounts</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>isize</name> <init>= <expr><call><name><name>statements</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>isize</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ModificationStatement</name></type> <name>statement</name> <init>= <expr><call><name><name>statements</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name>isLogged</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>statement</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name><name>params</name><operator>.</operator><name>gcGraceSeconds</name></name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>tablesWithZeroGcGs</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>tablesWithZeroGcGs</name> <operator>=</operator> <operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>tablesWithZeroGcGs</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>statement</name><operator>.</operator><name>metadata</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <decl_stmt><decl><type><name>QueryOptions</name></type> <name>statementOptions</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>forStatement</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>timestamp</name> <init>= <expr><call><name><name>attrs</name><operator>.</operator><name>getTimestamp</name></name><argument_list>(<argument><expr><name>batchTimestamp</name></expr></argument>, <argument><expr><name>statementOptions</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>statement</name><operator>.</operator><name>addUpdates</name></name><argument_list>(<argument><expr><name>collector</name></expr></argument>, <argument><expr><call><name><name>partitionKeys</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>statementOptions</name></expr></argument>, <argument><expr><name>local</name></expr></argument>, <argument><expr><name>timestamp</name></expr></argument>, <argument><expr><name>nowInSeconds</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <if_stmt><if>if <condition>(<expr><name>tablesWithZeroGcGs</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>suffix</name> <init>= <expr><ternary><condition><expr><call><name><name>tablesWithZeroGcGs</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">1</literal></expr> ?</condition><then> <expr><literal type="string">""</literal></expr> </then><else>: <expr><literal type="string">"s"</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>NoSpamLogger</name><operator>.</operator><name>log</name></name><argument_list>(<argument><expr><name>logger</name></expr></argument>, <argument><expr><name><name>NoSpamLogger</name><operator>.</operator><name>Level</name><operator>.</operator><name>WARN</name></name></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MINUTES</name></name></expr></argument>, <argument><expr><name>LOGGED_BATCH_LOW_GCGS_WARNING</name></expr></argument>,
+                             <argument><expr><name>suffix</name></expr></argument>, <argument><expr><name>tablesWithZeroGcGs</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>ClientWarn</name><operator>.</operator><name>instance</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><call><name><name>MessageFormatter</name><operator>.</operator><name>arrayFormat</name></name><argument_list>(<argument><expr><name>LOGGED_BATCH_LOW_GCGS_WARNING</name></expr></argument>, <argument><expr><operator>new</operator> <name><name>Object</name><index>[]</index></name> <block>{ <expr><name>suffix</name></expr>, <expr><name>tablesWithZeroGcGs</name></expr> }</block></expr></argument>)</argument_list></call>
+                                                     <operator>.</operator><call><name>getMessage</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name><name>collector</name><operator>.</operator><name>toMutations</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Checks batch size to ensure threshold is met. If not, a warning is logged.
+     *
+     * @param mutations - the batch mutations.
+     */</comment>
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>verifyBatchSize</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>?</name> <extends>extends <name>IMutation</name></extends></argument>&gt;</argument_list></name></type> <name>mutations</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+    <block>{<block_content>
+        <comment type="line">// We only warn for batch spanning multiple mutations (#10876)</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>mutations</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>&lt;=</operator> <literal type="number">1</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>warnThreshold</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getBatchSizeWarnThreshold</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>size</name> <init>= <expr><call><name><name>IMutation</name><operator>.</operator><name>dataSize</name></name><argument_list>(<argument><expr><name>mutations</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>size</name> <operator>&gt;</operator> <name>warnThreshold</name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>tableNames</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>IMutation</name></type> <name>mutation</name> <range>: <expr><name>mutations</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <for>for <control>(<init><decl><type><name>PartitionUpdate</name></type> <name>update</name> <range>: <expr><call><name><name>mutation</name><operator>.</operator><name>getPartitionUpdates</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>tableNames</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            </block_content>}</block></for>
+
+            <decl_stmt><decl><type><name>long</name></type> <name>failThreshold</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getBatchSizeFailThreshold</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>String</name></type> <name>format</name> <init>= <expr><literal type="string">"Batch for {} is of size {}, exceeding specified threshold of {} by {}.{}"</literal></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>size</name> <operator>&gt;</operator> <name>failThreshold</name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><name>format</name></expr></argument>, <argument><expr><name>tableNames</name></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name><argument_list>(<argument><expr><name>failThreshold</name></expr></argument>)</argument_list></call></expr></argument>,
+                              <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name><argument_list>(<argument><expr><name>size</name> <operator>-</operator> <name>failThreshold</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="string">" (see batch_size_fail_threshold_in_kb)"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><name>format</name></expr></argument>, <argument><expr><name>tableNames</name></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name><argument_list>(<argument><expr><name>failThreshold</name></expr></argument>)</argument_list></call></expr></argument>,
+                             <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name><argument_list>(<argument><expr><name>size</name> <operator>-</operator> <name>failThreshold</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="string">" (see batch_size_fail_threshold_in_kb)"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Batch too large"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isWarnEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><name>format</name></expr></argument>, <argument><expr><name>tableNames</name></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name><argument_list>(<argument><expr><name>warnThreshold</name></expr></argument>)</argument_list></call></expr></argument>,
+                            <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>prettyPrintMemory</name></name><argument_list>(<argument><expr><name>size</name> <operator>-</operator> <name>warnThreshold</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="string">""</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>ClientWarn</name><operator>.</operator><name>instance</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><call><name><name>MessageFormatter</name><operator>.</operator><name>arrayFormat</name></name><argument_list>(<argument><expr><name>format</name></expr></argument>, <argument><expr><operator>new</operator> <name><name>Object</name><index>[]</index></name> <block>{<expr><name>tableNames</name></expr>, <expr><name>size</name></expr>, <expr><name>warnThreshold</name></expr>, <expr><name>size</name> <operator>-</operator> <name>warnThreshold</name></expr>, <expr><literal type="string">""</literal></expr>}</block></expr></argument>)</argument_list></call><operator>.</operator><call><name>getMessage</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>verifyBatchType</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>?</name> <extends>extends <name>IMutation</name></extends></argument>&gt;</argument_list></name></type> <name>mutations</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>isLogged</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>mutations</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">1</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>DecoratedKey</name></argument>&gt;</argument_list></name></type> <name>keySet</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>tableNames</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <for>for <control>(<init><decl><type><name>IMutation</name></type> <name>mutation</name> <range>: <expr><name>mutations</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <for>for <control>(<init><decl><type><name>PartitionUpdate</name></type> <name>update</name> <range>: <expr><call><name><name>mutation</name><operator>.</operator><name>getPartitionUpdates</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>keySet</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <expr_stmt><expr><call><name><name>tableNames</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></for>
+            </block_content>}</block></for>
+
+            <comment type="line">// CASSANDRA-11529: log only if we have more than a threshold of keys, this was also suggested in the</comment>
+            <comment type="line">// original ticket that introduced this warning, CASSANDRA-9282</comment>
+            <if_stmt><if>if <condition>(<expr><call><name><name>keySet</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getUnloggedBatchAcrossPartitionsWarnThreshold</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>NoSpamLogger</name><operator>.</operator><name>log</name></name><argument_list>(<argument><expr><name>logger</name></expr></argument>, <argument><expr><name><name>NoSpamLogger</name><operator>.</operator><name>Level</name><operator>.</operator><name>WARN</name></name></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MINUTES</name></name></expr></argument>, <argument><expr><name>UNLOGGED_BATCH_WARNING</name></expr></argument>,
+                                 <argument><expr><call><name><name>keySet</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><ternary><condition><expr><call><name><name>tableNames</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">1</literal></expr> ?</condition><then> <expr><literal type="string">""</literal></expr> </then><else>: <expr><literal type="string">"s"</literal></expr></else></ternary></expr></argument>, <argument><expr><name>tableNames</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <expr_stmt><expr><call><name><name>ClientWarn</name><operator>.</operator><name>instance</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><call><name><name>MessageFormatter</name><operator>.</operator><name>arrayFormat</name></name><argument_list>(<argument><expr><name>UNLOGGED_BATCH_WARNING</name></expr></argument>, <argument><expr><operator>new</operator> <name><name>Object</name><index>[]</index></name><block>{<expr><call><name><name>keySet</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>,
+                                                    <expr><ternary><condition><expr><call><name><name>tableNames</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">1</literal></expr> ?</condition><then> <expr><literal type="string">""</literal></expr> </then><else>: <expr><literal type="string">"s"</literal></expr></else></ternary></expr>, <expr><name>tableNames</name></expr>}</block></expr></argument>)</argument_list></call><operator>.</operator><call><name>getMessage</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+
+    <function><type><specifier>public</specifier> <name>ResultMessage</name></type> <name>execute</name><parameter_list>(<parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>QueryOptions</name></type> <name>options</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>execute</name><argument_list>(<argument><expr><name>queryState</name></expr></argument>, <argument><expr><call><name><name>BatchQueryOptions</name><operator>.</operator><name>withoutPerStatementVariables</name></name><argument_list>(<argument><expr><name>options</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ResultMessage</name></type> <name>execute</name><parameter_list>(<parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>BatchQueryOptions</name></type> <name>options</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>timestamp</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getTimestamp</name></name><argument_list>(<argument><expr><name>queryState</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>nowInSeconds</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getNowInSeconds</name></name><argument_list>(<argument><expr><name>queryState</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>options</name><operator>.</operator><name>getConsistency</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Invalid empty consistency level"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>options</name><operator>.</operator><name>getSerialConsistency</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Invalid empty serial consistency level"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>hasConditions</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>executeWithConditions</name><argument_list>(<argument><expr><name>options</name></expr></argument>, <argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>updatesVirtualTables</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>executeInternalWithoutCondition</name><argument_list>(<argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>    
+            <expr_stmt><expr><call><name>executeWithoutConditions</name><argument_list>(<argument><expr><call><name>getMutations</name><argument_list>(<argument><expr><name>options</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><name>timestamp</name></expr></argument>, <argument><expr><name>nowInSeconds</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>options</name><operator>.</operator><name>getConsistency</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+
+        <return>return <expr><operator>new</operator> <call><name><name>ResultMessage</name><operator>.</operator><name>Void</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>executeWithoutConditions</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>?</name> <extends>extends <name>IMutation</name></extends></argument>&gt;</argument_list></name></type> <name>mutations</name></decl></parameter>, <parameter><decl><type><name>ConsistencyLevel</name></type> <name>cl</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument>, <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>mutations</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name>verifyBatchSize</name><argument_list>(<argument><expr><name>mutations</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>verifyBatchType</name><argument_list>(<argument><expr><name>mutations</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name>updatePartitionsPerBatchMetrics</name><argument_list>(<argument><expr><call><name><name>mutations</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>boolean</name></type> <name>mutateAtomic</name> <init>= <expr><operator>(</operator><call><name>isLogged</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>mutations</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">1</literal><operator>)</operator></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>StorageProxy</name><operator>.</operator><name>mutateWithTriggers</name></name><argument_list>(<argument><expr><name>mutations</name></expr></argument>, <argument><expr><name>cl</name></expr></argument>, <argument><expr><name>mutateAtomic</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>updatePartitionsPerBatchMetrics</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>updatedPartitions</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name>isLogged</name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>partitionsPerLoggedBatch</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>updatedPartitions</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><call><name>isCounter</name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>partitionsPerCounterBatch</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>updatedPartitions</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>partitionsPerUnloggedBatch</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>updatedPartitions</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>ResultMessage</name></type> <name>executeWithConditions</name><parameter_list>(<parameter><decl><type><name>BatchQueryOptions</name></type> <name>options</name></decl></parameter>, <parameter><decl><type><name>QueryState</name></type> <name>state</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Pair</name><argument_list type="generic">&lt;<argument><name>CQL3CasRequest</name></argument>, <argument><name><name>Set</name><argument_list type="generic">&lt;<argument><name>ColumnMetadata</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>p</name> <init>= <expr><call><name>makeCasRequest</name><argument_list>(<argument><expr><name>options</name></expr></argument>, <argument><expr><name>state</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>CQL3CasRequest</name></type> <name>casRequest</name> <init>= <expr><name><name>p</name><operator>.</operator><name>left</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>ColumnMetadata</name></argument>&gt;</argument_list></name></type> <name>columnsWithConditions</name> <init>= <expr><name><name>p</name><operator>.</operator><name>right</name></name></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>String</name></type> <name>ksName</name> <init>= <expr><name><name>casRequest</name><operator>.</operator><name>metadata</name><operator>.</operator><name>keyspace</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>String</name></type> <name>tableName</name> <init>= <expr><name><name>casRequest</name><operator>.</operator><name>metadata</name><operator>.</operator><name>name</name></name></expr></init></decl>;</decl_stmt>
+
+        <try>try <init>(<decl><type><name>RowIterator</name></type> <name>result</name> <init>= <expr><call><name><name>StorageProxy</name><operator>.</operator><name>cas</name></name><argument_list>(<argument><expr><name>ksName</name></expr></argument>,
+                                                   <argument><expr><name>tableName</name></expr></argument>,
+                                                   <argument><expr><name><name>casRequest</name><operator>.</operator><name>key</name></name></expr></argument>,
+                                                   <argument><expr><name>casRequest</name></expr></argument>,
+                                                   <argument><expr><call><name><name>options</name><operator>.</operator><name>getSerialConsistency</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                   <argument><expr><call><name><name>options</name><operator>.</operator><name>getConsistency</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                   <argument><expr><call><name><name>state</name><operator>.</operator><name>getClientState</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                   <argument><expr><call><name><name>options</name><operator>.</operator><name>getNowInSeconds</name></name><argument_list>(<argument><expr><name>state</name></expr></argument>)</argument_list></call></expr></argument>,
+                                                   <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name><argument_list>(<argument><expr><call><name><name>ModificationStatement</name><operator>.</operator><name>buildCasResultSet</name></name><argument_list>(<argument><expr><name>ksName</name></expr></argument>,
+                                                                                  <argument><expr><name>tableName</name></expr></argument>,
+                                                                                  <argument><expr><name>result</name></expr></argument>,
+                                                                                  <argument><expr><name>columnsWithConditions</name></expr></argument>,
+                                                                                  <argument><expr><literal type="boolean">true</literal></expr></argument>,
+                                                                                  <argument><expr><name>state</name></expr></argument>,
+                                                                                  <argument><expr><call><name><name>options</name><operator>.</operator><name>forStatement</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name><name>Pair</name><argument_list type="generic">&lt;<argument><name>CQL3CasRequest</name></argument>,<argument><name><name>Set</name><argument_list type="generic">&lt;<argument><name>ColumnMetadata</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>makeCasRequest</name><parameter_list>(<parameter><decl><type><name>BatchQueryOptions</name></type> <name>options</name></decl></parameter>, <parameter><decl><type><name>QueryState</name></type> <name>state</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>batchTimestamp</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getTimestamp</name></name><argument_list>(<argument><expr><name>state</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>nowInSeconds</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getNowInSeconds</name></name><argument_list>(<argument><expr><name>state</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>DecoratedKey</name></type> <name>key</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>CQL3CasRequest</name></type> <name>casRequest</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>ColumnMetadata</name></argument>&gt;</argument_list></name></type> <name>columnsWithConditions</name> <init>= <expr><operator>new</operator> <call><name><name>LinkedHashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>statements</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ModificationStatement</name></type> <name>statement</name> <init>= <expr><call><name><name>statements</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>QueryOptions</name></type> <name>statementOptions</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>forStatement</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>timestamp</name> <init>= <expr><call><name><name>attrs</name><operator>.</operator><name>getTimestamp</name></name><argument_list>(<argument><expr><name>batchTimestamp</name></expr></argument>, <argument><expr><name>statementOptions</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>pks</name> <init>= <expr><call><name><name>statement</name><operator>.</operator><name>buildPartitionKeyNames</name></name><argument_list>(<argument><expr><name>statementOptions</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>statement</name><operator>.</operator><name>getRestrictions</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>keyIsInRelation</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Batch with conditions cannot span multiple partitions (you cannot use IN on the partition key)"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><name>key</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>key</name> <operator>=</operator> <call><name><name>statement</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>partitioner</name><operator>.</operator><name>decorateKey</name></name><argument_list>(<argument><expr><call><name><name>pks</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>casRequest</name> <operator>=</operator> <operator>new</operator> <call><name>CQL3CasRequest</name><argument_list>(<argument><expr><call><name><name>statement</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>conditionColumns</name></expr></argument>, <argument><expr><name>updatesRegularRows</name></expr></argument>, <argument><expr><name>updatesStaticRow</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><operator>!</operator><call><name><name>key</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><call><name><name>pks</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Batch with conditions cannot span multiple partitions"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+
+            <expr_stmt><expr><call><name>checkFalse</name><argument_list>(<argument><expr><call><name><name>statement</name><operator>.</operator><name>getRestrictions</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>clusteringKeyRestrictionsHasIN</name><argument_list>()</argument_list></call></expr></argument>,
+                       <argument><expr><literal type="string">"IN on the clustering key columns is not supported with conditional %s"</literal></expr></argument>,
+                       <argument><expr><ternary><condition><expr><call><name><name>statement</name><operator>.</operator><name>type</name><operator>.</operator><name>isUpdate</name></name><argument_list>()</argument_list></call></expr>?</condition><then> <expr><literal type="string">"updates"</literal></expr> </then><else>: <expr><literal type="string">"deletions"</literal></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>statement</name><operator>.</operator><name>hasSlices</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// All of the conditions require meaningful Clustering, not Slices</comment>
+                <assert>assert <expr><operator>!</operator><call><name><name>statement</name><operator>.</operator><name>hasConditions</name></name><argument_list>()</argument_list></call></expr>;</assert>
+
+                <decl_stmt><decl><type><name>Slices</name></type> <name>slices</name> <init>= <expr><call><name><name>statement</name><operator>.</operator><name>createSlices</name></name><argument_list>(<argument><expr><name>statementOptions</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <comment type="line">// If all the ranges were invalid we do not need to do anything.</comment>
+                <if_stmt><if>if <condition>(<expr><call><name><name>slices</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <for>for <control>(<init><decl><type><name>Slice</name></type> <name>slice</name> <range>: <expr><name>slices</name></expr></range></decl></init>)</control>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>casRequest</name><operator>.</operator><name>addRangeDeletion</name></name><argument_list>(<argument><expr><name>slice</name></expr></argument>, <argument><expr><name>statement</name></expr></argument>, <argument><expr><name>statementOptions</name></expr></argument>, <argument><expr><name>timestamp</name></expr></argument>, <argument><expr><name>nowInSeconds</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></for>
+
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <decl_stmt><decl><type><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>clustering</name> <init>= <expr><call><name><name>Iterables</name><operator>.</operator><name>getOnlyElement</name></name><argument_list>(<argument><expr><call><name><name>statement</name><operator>.</operator><name>createClustering</name></name><argument_list>(<argument><expr><name>statementOptions</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>statement</name><operator>.</operator><name>hasConditions</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>statement</name><operator>.</operator><name>addConditions</name></name><argument_list>(<argument><expr><name>clustering</name></expr></argument>, <argument><expr><name>casRequest</name></expr></argument>, <argument><expr><name>statementOptions</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <comment type="line">// As soon as we have a ifNotExists, we set columnsWithConditions to null so that everything is in the resultSet</comment>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>statement</name><operator>.</operator><name>hasIfNotExistCondition</name></name><argument_list>()</argument_list></call> <operator>||</operator> <call><name><name>statement</name><operator>.</operator><name>hasIfExistCondition</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><name>columnsWithConditions</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt></block_content></block></if>
+                    <if type="elseif">else if <condition>(<expr><name>columnsWithConditions</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name><name>Iterables</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><name>columnsWithConditions</name></expr></argument>, <argument><expr><call><name><name>statement</name><operator>.</operator><name>getColumnsWithConditions</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>casRequest</name><operator>.</operator><name>addRowUpdate</name></name><argument_list>(<argument><expr><name>clustering</name></expr></argument>, <argument><expr><name>statement</name></expr></argument>, <argument><expr><name>statementOptions</name></expr></argument>, <argument><expr><name>timestamp</name></expr></argument>, <argument><expr><name>nowInSeconds</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></for>
+
+        <return>return <expr><call><name><name>Pair</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>casRequest</name></expr></argument>, <argument><expr><name>columnsWithConditions</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>hasConditions</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>hasConditions</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ResultMessage</name></type> <name>executeLocally</name><parameter_list>(<parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>QueryOptions</name></type> <name>options</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestValidationException</name></expr></argument>, <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>BatchQueryOptions</name></type> <name>batchOptions</name> <init>= <expr><call><name><name>BatchQueryOptions</name><operator>.</operator><name>withoutPerStatementVariables</name></name><argument_list>(<argument><expr><name>options</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>hasConditions</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>executeInternalWithConditions</name><argument_list>(<argument><expr><name>batchOptions</name></expr></argument>, <argument><expr><name>queryState</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name>executeInternalWithoutCondition</name><argument_list>(<argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>batchOptions</name></expr></argument>, <argument><expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><operator>new</operator> <call><name><name>ResultMessage</name><operator>.</operator><name>Void</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>ResultMessage</name></type> <name>executeInternalWithoutCondition</name><parameter_list>(<parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>BatchQueryOptions</name></type> <name>batchOptions</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>timestamp</name> <init>= <expr><call><name><name>batchOptions</name><operator>.</operator><name>getTimestamp</name></name><argument_list>(<argument><expr><name>queryState</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>nowInSeconds</name> <init>= <expr><call><name><name>batchOptions</name><operator>.</operator><name>getNowInSeconds</name></name><argument_list>(<argument><expr><name>queryState</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>IMutation</name></type> <name>mutation</name> <range>: <expr><call><name>getMutations</name><argument_list>(<argument><expr><name>batchOptions</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><name>timestamp</name></expr></argument>, <argument><expr><name>nowInSeconds</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>mutation</name><operator>.</operator><name>apply</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <return>return <expr><literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>ResultMessage</name></type> <name>executeInternalWithConditions</name><parameter_list>(<parameter><decl><type><name>BatchQueryOptions</name></type> <name>options</name></decl></parameter>, <parameter><decl><type><name>QueryState</name></type> <name>state</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Pair</name><argument_list type="generic">&lt;<argument><name>CQL3CasRequest</name></argument>, <argument><name><name>Set</name><argument_list type="generic">&lt;<argument><name>ColumnMetadata</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>p</name> <init>= <expr><call><name>makeCasRequest</name><argument_list>(<argument><expr><name>options</name></expr></argument>, <argument><expr><name>state</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>CQL3CasRequest</name></type> <name>request</name> <init>= <expr><name><name>p</name><operator>.</operator><name>left</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>ColumnMetadata</name></argument>&gt;</argument_list></name></type> <name>columnsWithConditions</name> <init>= <expr><name><name>p</name><operator>.</operator><name>right</name></name></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>String</name></type> <name>ksName</name> <init>= <expr><name><name>request</name><operator>.</operator><name>metadata</name><operator>.</operator><name>keyspace</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>String</name></type> <name>tableName</name> <init>= <expr><name><name>request</name><operator>.</operator><name>metadata</name><operator>.</operator><name>name</name></name></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>timestamp</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getTimestamp</name></name><argument_list>(<argument><expr><name>state</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>nowInSeconds</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getNowInSeconds</name></name><argument_list>(<argument><expr><name>state</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <try>try <init>(<decl><type><name>RowIterator</name></type> <name>result</name> <init>= <expr><call><name><name>ModificationStatement</name><operator>.</operator><name>casInternal</name></name><argument_list>(<argument><expr><name>request</name></expr></argument>, <argument><expr><name>timestamp</name></expr></argument>, <argument><expr><name>nowInSeconds</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ResultSet</name></type> <name>resultSet</name> <init>=
+                <expr><call><name><name>ModificationStatement</name><operator>.</operator><name>buildCasResultSet</name></name><argument_list>(<argument><expr><name>ksName</name></expr></argument>,
+                                                        <argument><expr><name>tableName</name></expr></argument>,
+                                                        <argument><expr><name>result</name></expr></argument>,
+                                                        <argument><expr><name>columnsWithConditions</name></expr></argument>,
+                                                        <argument><expr><literal type="boolean">true</literal></expr></argument>,
+                                                        <argument><expr><name>state</name></expr></argument>,
+                                                        <argument><expr><call><name><name>options</name><operator>.</operator><name>forStatement</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <return>return <expr><operator>new</operator> <call><name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name><argument_list>(<argument><expr><name>resultSet</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"BatchStatement(type=%s, statements=%s)"</literal></expr></argument>, <argument><expr><name>type</name></expr></argument>, <argument><expr><name>statements</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>Parsed</name> <super_list><extends>extends <super><name>QualifiedStatement</name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Type</name></type> <name>type</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Attributes</name><operator>.</operator><name>Raw</name></name></type> <name>attrs</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name><name>ModificationStatement</name><operator>.</operator><name>Parsed</name></name></argument>&gt;</argument_list></name></type> <name>parsedStatements</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>Parsed</name><parameter_list>(<parameter><decl><type><name>Type</name></type> <name>type</name></decl></parameter>, <parameter><decl><type><name><name>Attributes</name><operator>.</operator><name>Raw</name></name></type> <name>attrs</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>ModificationStatement</name><operator>.</operator><name>Parsed</name></name></argument>&gt;</argument_list></name></type> <name>parsedStatements</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>type</name></name> <operator>=</operator> <name>type</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>attrs</name></name> <operator>=</operator> <name>attrs</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>parsedStatements</name></name> <operator>=</operator> <name>parsedStatements</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <comment type="line">// Not doing this in the constructor since we only need this for prepared statements</comment>
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>isFullyQualified</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name><name>ModificationStatement</name><operator>.</operator><name>Parsed</name></name></type> <name>statement</name> <range>: <expr><name>parsedStatements</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>statement</name><operator>.</operator><name>isFullyQualified</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt></block_content></block></for>
+
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>setKeyspace</name><parameter_list>(<parameter><decl><type><name>ClientState</name></type> <name>state</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name><name>ModificationStatement</name><operator>.</operator><name>Parsed</name></name></type> <name>statement</name> <range>: <expr><name>parsedStatements</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>statement</name><operator>.</operator><name>setKeyspace</name></name><argument_list>(<argument><expr><name>state</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>String</name></type> <name>keyspace</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>BatchStatement</name></type> <name>prepare</name><parameter_list>(<parameter><decl><type><name>ClientState</name></type> <name>state</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>ModificationStatement</name></argument>&gt;</argument_list></name></type> <name>statements</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>parsedStatements</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>parsedStatements</name><operator>.</operator><name>forEach</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>s</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>statements</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>s</name><operator>.</operator><name>prepare</name></name><argument_list>(<argument><expr><name>bindVariables</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <decl_stmt><decl><type><name>Attributes</name></type> <name>prepAttrs</name> <init>= <expr><call><name><name>attrs</name><operator>.</operator><name>prepare</name></name><argument_list>(<argument><expr><literal type="string">"[batch]"</literal></expr></argument>, <argument><expr><literal type="string">"[batch]"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>prepAttrs</name><operator>.</operator><name>collectMarkerSpecification</name></name><argument_list>(<argument><expr><name>bindVariables</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <decl_stmt><decl><type><name>BatchStatement</name></type> <name>batchStatement</name> <init>= <expr><operator>new</operator> <call><name>BatchStatement</name><argument_list>(<argument><expr><name>type</name></expr></argument>, <argument><expr><name>bindVariables</name></expr></argument>, <argument><expr><name>statements</name></expr></argument>, <argument><expr><name>prepAttrs</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>batchStatement</name><operator>.</operator><name>validate</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <return>return <expr><name>batchStatement</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>MultiTableColumnsBuilder</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name><name>RegularAndStaticColumns</name><operator>.</operator><name>Builder</name></name></argument>&gt;</argument_list></name></type> <name>perTableBuilders</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>addAll</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>table</name></decl></parameter>, <parameter><decl><type><name>RegularAndStaticColumns</name></type> <name>columns</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>RegularAndStaticColumns</name><operator>.</operator><name>Builder</name></name></type> <name>builder</name> <init>= <expr><call><name><name>perTableBuilders</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>table</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>builder</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>builder</name> <operator>=</operator> <call><name><name>RegularAndStaticColumns</name><operator>.</operator><name>builder</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>perTableBuilders</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name><name>table</name><operator>.</operator><name>id</name></name></expr></argument>, <argument><expr><name>builder</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><name>columns</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name>RegularAndStaticColumns</name></argument>&gt;</argument_list></name></type> <name>build</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name>RegularAndStaticColumns</name></argument>&gt;</argument_list></name></type> <name>m</name> <init>= <expr><call><name><name>Maps</name><operator>.</operator><name>newHashMapWithExpectedSize</name></name><argument_list>(<argument><expr><call><name><name>perTableBuilders</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>TableId</name></argument>, <argument><name><name>RegularAndStaticColumns</name><operator>.</operator><name>Builder</name></name></argument>&gt;</argument_list></name></name></type> <name>p</name> <range>: <expr><call><name><name>perTableBuilders</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>m</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>p</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>p</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>build</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            <return>return <expr><name>m</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>AuditLogContext</name></type> <name>getAuditLogContext</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>AuditLogContext</name><argument_list>(<argument><expr><name><name>AuditLogEntryType</name><operator>.</operator><name>BATCH</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

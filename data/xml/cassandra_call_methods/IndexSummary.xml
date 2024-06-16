@@ -1,0 +1,363 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/io/sstable/IndexSummary.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>DataInputStream</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteOrder</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>DecoratedKey</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>PartitionPosition</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>IPartitioner</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ByteBufferUtil</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>Pair</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Ref</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>WrappedSharedCloseable</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>MemoryUtil</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>Downsampling</name><operator>.</operator><name>BASE_SAMPLING_LEVEL</name></name>;</import>
+
+<comment type="block">/*
+ * Layout of Memory for index summaries:
+ *
+ * There are two sections:
+ *  1. A "header" containing the offset into `bytes` of entries in the summary summary data, consisting of
+ *     one four byte position for each entry in the summary.  This allows us do simple math in getIndex()
+ *     to find the position in the Memory to start reading the actual index summary entry.
+ *     (This is necessary because keys can have different lengths.)
+ *  2.  A sequence of (DecoratedKey, position) pairs, where position is the offset into the actual index file.
+ */</comment>
+<class><specifier>public</specifier> class <name>IndexSummary</name> <super_list><extends>extends <super><name>WrappedSharedCloseable</name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>IndexSummary</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>IndexSummarySerializer</name></type> <name>serializer</name> <init>= <expr><operator>new</operator> <call><name>IndexSummarySerializer</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * A lower bound for the average number of partitions in between each index summary entry. A lower value means
+     * that more partitions will have an entry in the index summary when at the full sampling level.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>minIndexInterval</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>IPartitioner</name></type> <name>partitioner</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>sizeAtFullSampling</name></decl>;</decl_stmt>
+    <comment type="line">// we permit the memory to span a range larger than we use,</comment>
+    <comment type="line">// so we have an accompanying count and length for each part</comment>
+    <comment type="line">// we split our data into two ranges: offsets (indexing into entries),</comment>
+    <comment type="line">// and entries containing the summary data</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Memory</name></type> <name>offsets</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>offsetCount</name></decl>;</decl_stmt>
+    <comment type="line">// entries is a list of (partition key, index file offset) pairs</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Memory</name></type> <name>entries</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>entriesLength</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * A value between 1 and BASE_SAMPLING_LEVEL that represents how many of the original
+     * index summary entries ((1 / indexInterval) * numKeys) have been retained.
+     *
+     * Thus, this summary contains (samplingLevel / BASE_SAMPLING_LEVEL) * ((1 / indexInterval) * numKeys)) entries.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>samplingLevel</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>IndexSummary</name><parameter_list>(<parameter><decl><type><name>IPartitioner</name></type> <name>partitioner</name></decl></parameter>, <parameter><decl><type><name>Memory</name></type> <name>offsets</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>offsetCount</name></decl></parameter>, <parameter><decl><type><name>Memory</name></type> <name>entries</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>entriesLength</name></decl></parameter>,
+                        <parameter><decl><type><name>int</name></type> <name>sizeAtFullSampling</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>minIndexInterval</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>samplingLevel</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><operator>new</operator> <name><name>Memory</name><index>[]</index></name> <block>{ <expr><name>offsets</name></expr>, <expr><name>entries</name></expr> }</block></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <assert>assert <expr><call><name><name>offsets</name><operator>.</operator><name>getInt</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>;</assert>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>partitioner</name></name> <operator>=</operator> <name>partitioner</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>minIndexInterval</name></name> <operator>=</operator> <name>minIndexInterval</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>offsetCount</name></name> <operator>=</operator> <name>offsetCount</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>entriesLength</name></name> <operator>=</operator> <name>entriesLength</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>sizeAtFullSampling</name></name> <operator>=</operator> <name>sizeAtFullSampling</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>offsets</name></name> <operator>=</operator> <name>offsets</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>entries</name></name> <operator>=</operator> <name>entries</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>samplingLevel</name></name> <operator>=</operator> <name>samplingLevel</name></expr>;</expr_stmt>
+        <assert>assert <expr><name>samplingLevel</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>;</assert>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>private</specifier> <name>IndexSummary</name><parameter_list>(<parameter><decl><type><name>IndexSummary</name></type> <name>copy</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>copy</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>partitioner</name></name> <operator>=</operator> <name><name>copy</name><operator>.</operator><name>partitioner</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>minIndexInterval</name></name> <operator>=</operator> <name><name>copy</name><operator>.</operator><name>minIndexInterval</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>offsetCount</name></name> <operator>=</operator> <name><name>copy</name><operator>.</operator><name>offsetCount</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>entriesLength</name></name> <operator>=</operator> <name><name>copy</name><operator>.</operator><name>entriesLength</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>sizeAtFullSampling</name></name> <operator>=</operator> <name><name>copy</name><operator>.</operator><name>sizeAtFullSampling</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>offsets</name></name> <operator>=</operator> <name><name>copy</name><operator>.</operator><name>offsets</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>entries</name></name> <operator>=</operator> <name><name>copy</name><operator>.</operator><name>entries</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>samplingLevel</name></name> <operator>=</operator> <name><name>copy</name><operator>.</operator><name>samplingLevel</name></name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="line">// binary search is notoriously more difficult to get right than it looks; this is lifted from</comment>
+    <comment type="line">// Harmony's Collections implementation</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>binarySearch</name><parameter_list>(<parameter><decl><type><name>PartitionPosition</name></type> <name>key</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// We will be comparing non-native Keys, so use a buffer with appropriate byte order</comment>
+        <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>hollow</name> <init>= <expr><call><name><name>MemoryUtil</name><operator>.</operator><name>getHollowDirectByteBuffer</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>order</name><argument_list>(<argument><expr><name><name>ByteOrder</name><operator>.</operator><name>BIG_ENDIAN</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>low</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>mid</name> <init>= <expr><name>offsetCount</name></expr></init></decl>, <decl><type ref="prev"/><name>high</name> <init>= <expr><name>mid</name> <operator>-</operator> <literal type="number">1</literal></expr></init></decl>, <decl><type ref="prev"/><name>result</name> <init>= <expr><operator>-</operator><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+        <while>while <condition>(<expr><name>low</name> <operator>&lt;=</operator> <name>high</name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>mid</name> <operator>=</operator> <operator>(</operator><name>low</name> <operator>+</operator> <name>high</name><operator>)</operator> <operator>&gt;&gt;</operator> <literal type="number">1</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>fillTemporaryKey</name><argument_list>(<argument><expr><name>mid</name></expr></argument>, <argument><expr><name>hollow</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>result</name> <operator>=</operator> <operator>-</operator><call><name><name>DecoratedKey</name><operator>.</operator><name>compareTo</name></name><argument_list>(<argument><expr><name>partitioner</name></expr></argument>, <argument><expr><name>hollow</name></expr></argument>, <argument><expr><name>key</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>result</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>low</name> <operator>=</operator> <name>mid</name> <operator>+</operator> <literal type="number">1</literal></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><name>result</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <return>return <expr><name>mid</name></expr>;</return>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><name>high</name> <operator>=</operator> <name>mid</name> <operator>-</operator> <literal type="number">1</literal></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></while>
+
+        <return>return <expr><operator>-</operator><name>mid</name> <operator>-</operator> <operator>(</operator><ternary><condition><expr><name>result</name> <operator>&lt;</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><literal type="number">1</literal></expr> </then><else>: <expr><literal type="number">2</literal></expr></else></ternary><operator>)</operator></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Gets the position of the actual index summary entry in our Memory attribute, 'bytes'.
+     * @param index The index of the entry or key to get the position for
+     * @return an offset into our Memory attribute where the actual entry resides
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getPositionInSummary</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// The first section of bytes holds a four-byte position for each entry in the summary, so just multiply by 4.</comment>
+        <return>return <expr><call><name><name>offsets</name><operator>.</operator><name>getInt</name></name><argument_list>(<argument><expr><name>index</name> <operator>&lt;&lt;</operator> <literal type="number">2</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>byte</name><index>[]</index></name></type> <name>getKey</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>start</name> <init>= <expr><call><name>getPositionInSummary</name><argument_list>(<argument><expr><name>index</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>keySize</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><call><name>calculateEnd</name><argument_list>(<argument><expr><name>index</name></expr></argument>)</argument_list></call> <operator>-</operator> <name>start</name> <operator>-</operator> <literal type="number">8L</literal><operator>)</operator></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>byte</name><index>[]</index></name></type> <name>key</name> <init>= <expr><operator>new</operator> <name><name>byte</name><index>[<expr><name>keySize</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>entries</name><operator>.</operator><name>getBytes</name></name><argument_list>(<argument><expr><name>start</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>keySize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>key</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>fillTemporaryKey</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>buffer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>start</name> <init>= <expr><call><name>getPositionInSummary</name><argument_list>(<argument><expr><name>index</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>keySize</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><call><name>calculateEnd</name><argument_list>(<argument><expr><name>index</name></expr></argument>)</argument_list></call> <operator>-</operator> <name>start</name> <operator>-</operator> <literal type="number">8L</literal><operator>)</operator></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>entries</name><operator>.</operator><name>setByteBuffer</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><name>start</name></expr></argument>, <argument><expr><name>keySize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>addTo</name><parameter_list>(<parameter><decl><type><name><name>Ref</name><operator>.</operator><name>IdentityCollection</name></name></type> <name>identities</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>super</name><operator>.</operator><name>addTo</name></name><argument_list>(<argument><expr><name>identities</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>identities</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>offsets</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>identities</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>entries</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getPosition</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>entries</name><operator>.</operator><name>getLong</name></name><argument_list>(<argument><expr><call><name>calculateEnd</name><argument_list>(<argument><expr><name>index</name></expr></argument>)</argument_list></call> <operator>-</operator> <literal type="number">8</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getEndInSummary</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>calculateEnd</name><argument_list>(<argument><expr><name>index</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>long</name></type> <name>calculateEnd</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>index</name> <operator>==</operator> <operator>(</operator><name>offsetCount</name> <operator>-</operator> <literal type="number">1</literal><operator>)</operator></expr> ?</condition><then> <expr><name>entriesLength</name></expr> </then><else>: <expr><call><name>getPositionInSummary</name><argument_list>(<argument><expr><name>index</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getMinIndexInterval</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>minIndexInterval</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>double</name></type> <name>getEffectiveIndexInterval</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>(</operator><name>BASE_SAMPLING_LEVEL</name> <operator>/</operator> <operator>(</operator><name>double</name><operator>)</operator> <name>samplingLevel</name><operator>)</operator> <operator>*</operator> <name>minIndexInterval</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns an estimate of the total number of keys in the SSTable.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getEstimatedKeyCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>(</operator><operator>(</operator><name>long</name><operator>)</operator> <call><name>getMaxNumberOfEntries</name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="number">1</literal><operator>)</operator> <operator>*</operator> <name>minIndexInterval</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>size</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>offsetCount</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getSamplingLevel</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>samplingLevel</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns the number of entries this summary would have if it were at the full sampling level, which is equal
+     * to the number of entries in the primary on-disk index divided by the min index interval.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getMaxNumberOfEntries</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>sizeAtFullSampling</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns the amount of off-heap memory used for the entries portion of this summary.
+     * @return size in bytes
+     */</comment>
+    <function><type><name>long</name></type> <name>getEntriesLength</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>entriesLength</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>Memory</name></type> <name>getOffsets</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>offsets</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>Memory</name></type> <name>getEntries</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>entries</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getOffHeapSize</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>offsetCount</name> <operator>*</operator> <literal type="number">4</literal> <operator>+</operator> <name>entriesLength</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns the number of primary (on-disk) index entries between the index summary entry at `index` and the next
+     * index summary entry (assuming there is one).  Without any downsampling, this will always be equivalent to
+     * the index interval.
+     *
+     * @param index the index of an index summary entry (between zero and the index entry size)
+     *
+     * @return the number of partitions after `index` until the next partition with a summary entry
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getEffectiveIndexIntervalAfterIndex</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>Downsampling</name><operator>.</operator><name>getEffectiveIndexIntervalAfterIndex</name></name><argument_list>(<argument><expr><name>index</name></expr></argument>, <argument><expr><name>samplingLevel</name></expr></argument>, <argument><expr><name>minIndexInterval</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>IndexSummary</name></type> <name>sharedCopy</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>IndexSummary</name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>IndexSummarySerializer</name>
+    <block>{
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>IndexSummary</name></type> <name>t</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><name><name>t</name><operator>.</operator><name>minIndexInterval</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><name><name>t</name><operator>.</operator><name>offsetCount</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeLong</name></name><argument_list>(<argument><expr><call><name><name>t</name><operator>.</operator><name>getOffHeapSize</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><name><name>t</name><operator>.</operator><name>samplingLevel</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><name><name>t</name><operator>.</operator><name>sizeAtFullSampling</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <comment type="line">// our on-disk representation treats the offsets and the summary data as one contiguous structure,</comment>
+            <comment type="line">// in which the offsets are based from the start of the structure. i.e., if the offsets occupy</comment>
+            <comment type="line">// X bytes, the value of the first offset will be X. In memory we split the two regions up, so that</comment>
+            <comment type="line">// the summary values are indexed from zero, so we apply a correction to the offsets when de/serializing.</comment>
+            <comment type="line">// In this case adding X to each of the offsets.</comment>
+            <decl_stmt><decl><type><name>int</name></type> <name>baseOffset</name> <init>= <expr><name><name>t</name><operator>.</operator><name>offsetCount</name></name> <operator>*</operator> <literal type="number">4</literal></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl> ;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>t</name><operator>.</operator><name>offsetCount</name></name></expr> ;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>offset</name> <init>= <expr><call><name><name>t</name><operator>.</operator><name>offsets</name><operator>.</operator><name>getInt</name></name><argument_list>(<argument><expr><name>i</name> <operator>*</operator> <literal type="number">4</literal></expr></argument>)</argument_list></call> <operator>+</operator> <name>baseOffset</name></expr></init></decl>;</decl_stmt>
+                <comment type="line">// our serialization format for this file uses native byte order, so if this is different to the</comment>
+                <comment type="line">// default Java serialization order (BIG_ENDIAN) we have to reverse our bytes</comment>
+                <if_stmt><if>if <condition>(<expr><call><name><name>ByteOrder</name><operator>.</operator><name>nativeOrder</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <name><name>ByteOrder</name><operator>.</operator><name>BIG_ENDIAN</name></name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>offset</name> <operator>=</operator> <call><name><name>Integer</name><operator>.</operator><name>reverseBytes</name></name><argument_list>(<argument><expr><name>offset</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><name>offset</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><name><name>t</name><operator>.</operator><name>entries</name></name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name><name>t</name><operator>.</operator><name>entriesLength</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation>
+        <type><specifier>public</specifier> <name>IndexSummary</name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputStream</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>IPartitioner</name></type> <name>partitioner</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>expectedMinIndexInterval</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>maxIndexInterval</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>minIndexInterval</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>minIndexInterval</name> <operator>!=</operator> <name>expectedMinIndexInterval</name></expr>)</condition>
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IOException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Cannot read index summary because min_index_interval changed from %d to %d."</literal></expr></argument>,
+                                                    <argument><expr><name>minIndexInterval</name></expr></argument>, <argument><expr><name>expectedMinIndexInterval</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>int</name></type> <name>offsetCount</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>offheapSize</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readLong</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>samplingLevel</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>fullSamplingSummarySize</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>int</name></type> <name>effectiveIndexInterval</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>Math</name><operator>.</operator><name>ceil</name></name><argument_list>(<argument><expr><operator>(</operator><name>BASE_SAMPLING_LEVEL</name> <operator>/</operator> <operator>(</operator><name>double</name><operator>)</operator> <name>samplingLevel</name><operator>)</operator> <operator>*</operator> <name>minIndexInterval</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>effectiveIndexInterval</name> <operator>&gt;</operator> <name>maxIndexInterval</name></expr>)</condition>
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IOException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Rebuilding index summary because the effective index interval (%d) is higher than"</literal> <operator>+</operator>
+                                                    <literal type="string">" the current max index interval (%d)"</literal></expr></argument>, <argument><expr><name>effectiveIndexInterval</name></expr></argument>, <argument><expr><name>maxIndexInterval</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>Memory</name></type> <name>offsets</name> <init>= <expr><call><name><name>Memory</name><operator>.</operator><name>allocate</name></name><argument_list>(<argument><expr><name>offsetCount</name> <operator>*</operator> <literal type="number">4</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Memory</name></type> <name>entries</name> <init>= <expr><call><name><name>Memory</name><operator>.</operator><name>allocate</name></name><argument_list>(<argument><expr><name>offheapSize</name> <operator>-</operator> <call><name><name>offsets</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>FBUtilities</name><operator>.</operator><name>copy</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>MemoryOutputStream</name><argument_list>(<argument><expr><name>offsets</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>offsets</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>FBUtilities</name><operator>.</operator><name>copy</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>MemoryOutputStream</name><argument_list>(<argument><expr><name>entries</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>entries</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>ioe</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>offsets</name><operator>.</operator><name>free</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>entries</name><operator>.</operator><name>free</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <throw>throw <expr><name>ioe</name></expr>;</throw>
+            </block_content>}</block></catch></try>
+            <comment type="line">// our on-disk representation treats the offsets and the summary data as one contiguous structure,</comment>
+            <comment type="line">// in which the offsets are based from the start of the structure. i.e., if the offsets occupy</comment>
+            <comment type="line">// X bytes, the value of the first offset will be X. In memory we split the two regions up, so that</comment>
+            <comment type="line">// the summary values are indexed from zero, so we apply a correction to the offsets when de/serializing.</comment>
+            <comment type="line">// In this case subtracting X from each of the offsets.</comment>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl> ;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>offsets</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr> ;</condition> <incr><expr><name>i</name> <operator>+=</operator> <literal type="number">4</literal></expr></incr>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>offsets</name><operator>.</operator><name>setInt</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><call><name><name>offsets</name><operator>.</operator><name>getInt</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call> <operator>-</operator> <call><name><name>offsets</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call><operator>)</operator></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            <return>return <expr><operator>new</operator> <call><name>IndexSummary</name><argument_list>(<argument><expr><name>partitioner</name></expr></argument>, <argument><expr><name>offsets</name></expr></argument>, <argument><expr><name>offsetCount</name></expr></argument>, <argument><expr><name>entries</name></expr></argument>, <argument><expr><call><name><name>entries</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>fullSamplingSummarySize</name></expr></argument>, <argument><expr><name>minIndexInterval</name></expr></argument>, <argument><expr><name>samplingLevel</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Deserializes the first and last key stored in the summary
+         *
+         * Only for use by offline tools like SSTableMetadataViewer, otherwise SSTable.first/last should be used.
+         */</comment>
+        <function><type><specifier>public</specifier> <name><name>Pair</name><argument_list type="generic">&lt;<argument><name>DecoratedKey</name></argument>, <argument><name>DecoratedKey</name></argument>&gt;</argument_list></name></type> <name>deserializeFirstLastKey</name><parameter_list>(<parameter><decl><type><name>DataInputStream</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>IPartitioner</name></type> <name>partitioner</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>skipBytes</name></name><argument_list>(<argument><expr><literal type="number">4</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt> <comment type="line">// minIndexInterval</comment>
+            <decl_stmt><decl><type><name>int</name></type> <name>offsetCount</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>offheapSize</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readLong</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>skipBytes</name></name><argument_list>(<argument><expr><literal type="number">8</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt> <comment type="line">// samplingLevel, fullSamplingSummarySize</comment>
+
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>skip</name></name><argument_list>(<argument><expr><name>offsetCount</name> <operator>*</operator> <literal type="number">4</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>skip</name></name><argument_list>(<argument><expr><name>offheapSize</name> <operator>-</operator> <name>offsetCount</name> <operator>*</operator> <literal type="number">4</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <decl_stmt><decl><type><name>DecoratedKey</name></type> <name>first</name> <init>= <expr><call><name><name>partitioner</name><operator>.</operator><name>decorateKey</name></name><argument_list>(<argument><expr><call><name><name>ByteBufferUtil</name><operator>.</operator><name>readWithLength</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>DecoratedKey</name></type> <name>last</name> <init>= <expr><call><name><name>partitioner</name><operator>.</operator><name>decorateKey</name></name><argument_list>(<argument><expr><call><name><name>ByteBufferUtil</name><operator>.</operator><name>readWithLength</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <return>return <expr><call><name><name>Pair</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>first</name></expr></argument>, <argument><expr><name>last</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

@@ -1,0 +1,807 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/RowIndexEntry.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>codahale</name><operator>.</operator><name>metrics</name><operator>.</operator><name>Histogram</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cache</name><operator>.</operator><name>IMeasurableMemory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>ISerializer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>IndexInfo</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>format</name><operator>.</operator><name>Version</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataInputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputBuffer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>FileDataInput</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>FileHandle</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>RandomAccessReader</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>TrackedDataInputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>DefaultNameFactory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>MetricNameFactory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ObjectSizes</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>vint</name><operator>.</operator><name>VIntCoding</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>github</name><operator>.</operator><name>jamm</name><operator>.</operator><name>Unmetered</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>CassandraMetricsRegistry</name><operator>.</operator><name>Metrics</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Binary format of {@code RowIndexEntry} is defined as follows:
+ * {@code
+ * (long) position (64 bit long, vint encoded)
+ *  (int) serialized size of data that follows (32 bit int, vint encoded)
+ * -- following for indexed entries only (so serialized size &gt; 0)
+ *  (int) DeletionTime.localDeletionTime
+ * (long) DeletionTime.markedForDeletionAt
+ *  (int) number of IndexInfo objects (32 bit int, vint encoded)
+ *    (*) serialized IndexInfo objects, see below
+ *    (*) offsets of serialized IndexInfo objects, since version "ma" (3.0)
+ *        Each IndexInfo object's offset is relative to the first IndexInfo object.
+ * }
+ * &lt;p&gt;
+ * See {@link IndexInfo} for a description of the serialized format.
+ * &lt;/p&gt;
+ *
+ * &lt;p&gt;
+ * For each partition, the layout of the index file looks like this:
+ * &lt;/p&gt;
+ * &lt;ol&gt;
+ *     &lt;li&gt;partition key - prefixed with {@code short} length&lt;/li&gt;
+ *     &lt;li&gt;serialized {@code RowIndexEntry} objects&lt;/li&gt;
+ * &lt;/ol&gt;
+ *
+ * &lt;p&gt;
+ *     Generally, we distinguish between index entries that have &lt;i&gt;index
+ *     samples&lt;/i&gt; (list of {@link IndexInfo} objects) and those who don't.
+ *     For each &lt;i&gt;portion&lt;/i&gt; of data for a single partition in the data file,
+ *     an index sample is created. The size of that &lt;i&gt;portion&lt;/i&gt; is defined
+ *     by {@link org.apache.cassandra.config.Config#column_index_size_in_kb}.
+ * &lt;/p&gt;
+ * &lt;p&gt;
+ *     Index entries with less than 2 index samples, will just store the
+ *     position in the data file.
+ * &lt;/p&gt;
+ * &lt;p&gt;
+ *     Note: legacy sstables for index entries are those sstable formats that
+ *     do &lt;i&gt;not&lt;/i&gt; have an offsets table to index samples ({@link IndexInfo}
+ *     objects). These are those sstables created on Cassandra versions
+ *     earlier than 3.0.
+ * &lt;/p&gt;
+ * &lt;p&gt;
+ *     For index entries with index samples we store the index samples
+ *     ({@link IndexInfo} objects). The bigger the partition, the more
+ *     index samples are created. Since a huge amount of index samples
+ *     will "pollute" the heap and cause huge GC pressure, Cassandra 3.6
+ *     (CASSANDRA-11206) distinguishes between index entries with an
+ *     "acceptable" amount of index samples per partition and those
+ *     with an "enormous" amount of index samples. The barrier
+ *     is controlled by the configuration parameter
+ *     {@link org.apache.cassandra.config.Config#column_index_cache_size_in_kb}.
+ *     Index entries with a total serialized size of index samples up to
+ *     {@code column_index_cache_size_in_kb} will be held in an array.
+ *     Index entries exceeding that value will always be accessed from
+ *     disk.
+ * &lt;/p&gt;
+ * &lt;p&gt;
+ *     This results in these classes:
+ * &lt;/p&gt;
+ * &lt;ul&gt;
+ *     &lt;li&gt;{@link RowIndexEntry} just stores the offset in the data file.&lt;/li&gt;
+ *     &lt;li&gt;{@link IndexedEntry} is for index entries with index samples
+ *     and used for both current and legacy sstables, which do not exceed
+ *     {@link org.apache.cassandra.config.Config#column_index_cache_size_in_kb}.&lt;/li&gt;
+ *     &lt;li&gt;{@link ShallowIndexedEntry} is for index entries with index samples
+ *     that exceed {@link org.apache.cassandra.config.Config#column_index_cache_size_in_kb}
+ *     for sstables with an offset table to the index samples.&lt;/li&gt;
+ * &lt;/ul&gt;
+ * &lt;p&gt;
+ *     Since access to index samples on disk (obviously) requires some file
+ *     reader, that functionality is encapsulated in implementations of
+ *     {@link IndexInfoRetriever}. There is an implementation to access
+ *     index samples of legacy sstables (without the offsets table),
+ *     an implementation of access sstables with an offsets table.
+ * &lt;/p&gt;
+ * &lt;p&gt;
+ *     Until now (Cassandra 3.x), we still support reading from &lt;i&gt;legacy&lt;/i&gt; sstables -
+ *     i.e. sstables created by Cassandra &amp;lt; 3.0 (see {@link org.apache.cassandra.io.sstable.format.big.BigFormat}.
+ * &lt;/p&gt;
+ *
+ */</comment>
+<class><specifier>public</specifier> class <name><name>RowIndexEntry</name><parameter_list>&lt;<parameter><name>T</name></parameter>&gt;</parameter_list></name> <super_list><implements>implements <super><name>IMeasurableMemory</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>EMPTY_SIZE</name> <init>= <expr><call><name><name>ObjectSizes</name><operator>.</operator><name>measure</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>RowIndexEntry</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// constants for type of row-index-entry as serialized for saved-cache</comment>
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>CACHE_NOT_INDEXED</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>CACHE_INDEXED</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>CACHE_INDEXED_SHALLOW</name> <init>= <expr><literal type="number">2</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>Histogram</name></type> <name>indexEntrySizeHistogram</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>Histogram</name></type> <name>indexInfoCountHistogram</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>Histogram</name></type> <name>indexInfoGetsHistogram</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>Histogram</name></type> <name>indexInfoReadsHistogram</name></decl>;</decl_stmt>
+    <static>static
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>MetricNameFactory</name></type> <name>factory</name> <init>= <expr><operator>new</operator> <call><name>DefaultNameFactory</name><argument_list>(<argument><expr><literal type="string">"Index"</literal></expr></argument>, <argument><expr><literal type="string">"RowIndexEntry"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name>indexEntrySizeHistogram</name> <operator>=</operator> <call><name><name>Metrics</name><operator>.</operator><name>histogram</name></name><argument_list>(<argument><expr><call><name><name>factory</name><operator>.</operator><name>createMetricName</name></name><argument_list>(<argument><expr><literal type="string">"IndexedEntrySize"</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>indexInfoCountHistogram</name> <operator>=</operator> <call><name><name>Metrics</name><operator>.</operator><name>histogram</name></name><argument_list>(<argument><expr><call><name><name>factory</name><operator>.</operator><name>createMetricName</name></name><argument_list>(<argument><expr><literal type="string">"IndexInfoCount"</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>indexInfoGetsHistogram</name> <operator>=</operator> <call><name><name>Metrics</name><operator>.</operator><name>histogram</name></name><argument_list>(<argument><expr><call><name><name>factory</name><operator>.</operator><name>createMetricName</name></name><argument_list>(<argument><expr><literal type="string">"IndexInfoGets"</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>indexInfoReadsHistogram</name> <operator>=</operator> <call><name><name>Metrics</name><operator>.</operator><name>histogram</name></name><argument_list>(<argument><expr><call><name><name>factory</name><operator>.</operator><name>createMetricName</name></name><argument_list>(<argument><expr><literal type="string">"IndexInfoReads"</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></static>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>long</name></type> <name>position</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>RowIndexEntry</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>position</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>position</name></name> <operator>=</operator> <name>position</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * @return true if this index entry contains the row-level tombstone and column summary.  Otherwise,
+     * caller should fetch these from the row header.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isIndexed</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>columnsIndexCount</name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">1</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>indexOnHeap</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>DeletionTime</name></type> <name>deletionTime</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <throw>throw <expr><operator>new</operator> <call><name>UnsupportedOperationException</name><argument_list>()</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>columnsIndexCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>unsharedHeapSize</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>EMPTY_SIZE</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @param dataFilePosition  position of the partition in the {@link org.apache.cassandra.io.sstable.Component.Type#DATA} file
+     * @param indexFilePosition position in the {@link org.apache.cassandra.io.sstable.Component.Type#PRIMARY_INDEX} of the {@link RowIndexEntry}
+     * @param deletionTime      deletion time of {@link RowIndexEntry}
+     * @param headerLength      deletion time of {@link RowIndexEntry}
+     * @param columnIndexCount  number of {@link IndexInfo} entries in the {@link RowIndexEntry}
+     * @param indexedPartSize   serialized size of all serialized {@link IndexInfo} objects and their offsets
+     * @param indexSamples      list with IndexInfo offsets (if total serialized size is less than {@link org.apache.cassandra.config.Config#column_index_cache_size_in_kb}
+     * @param offsets           offsets of IndexInfo offsets
+     * @param idxInfoSerializer the {@link IndexInfo} serializer
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>dataFilePosition</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>indexFilePosition</name></decl></parameter>,
+                                                  <parameter><decl><type><name>DeletionTime</name></type> <name>deletionTime</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>headerLength</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>columnIndexCount</name></decl></parameter>,
+                                                  <parameter><decl><type><name>int</name></type> <name>indexedPartSize</name></decl></parameter>,
+                                                  <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>indexSamples</name></decl></parameter>, <parameter><decl><type><name><name>int</name><index>[]</index></name></type> <name>offsets</name></decl></parameter>,
+                                                  <parameter><decl><type><name><name>ISerializer</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>idxInfoSerializer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// If the "partition building code" in BigTableWriter.append() via ColumnIndex returns a list</comment>
+        <comment type="line">// of IndexInfo objects, which is the case if the serialized size is less than</comment>
+        <comment type="line">// Config.column_index_cache_size_in_kb, AND we have more than one IndexInfo object, we</comment>
+        <comment type="line">// construct an IndexedEntry object. (note: indexSamples.size() and columnIndexCount have the same meaning)</comment>
+        <if_stmt><if>if <condition>(<expr><name>indexSamples</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>indexSamples</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">1</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><operator>new</operator> <call><name>IndexedEntry</name><argument_list>(<argument><expr><name>dataFilePosition</name></expr></argument>, <argument><expr><name>deletionTime</name></expr></argument>, <argument><expr><name>headerLength</name></expr></argument>,
+                                    <argument><expr><call><name><name>indexSamples</name><operator>.</operator><name>toArray</name></name><argument_list>(<argument><expr><operator>new</operator> <name><name>IndexInfo</name><index>[<expr><call><name><name>indexSamples</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>]</index></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>offsets</name></expr></argument>,
+                                    <argument><expr><name>indexedPartSize</name></expr></argument>, <argument><expr><name>idxInfoSerializer</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+        <comment type="line">// Here we have to decide whether we have serialized IndexInfo objects that exceeds</comment>
+        <comment type="line">// Config.column_index_cache_size_in_kb (not exceeding case covered above).</comment>
+        <comment type="line">// Such a "big" indexed-entry is represented as a shallow one.</comment>
+        <if_stmt><if>if <condition>(<expr><name>columnIndexCount</name> <operator>&gt;</operator> <literal type="number">1</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><operator>new</operator> <call><name>ShallowIndexedEntry</name><argument_list>(<argument><expr><name>dataFilePosition</name></expr></argument>, <argument><expr><name>indexFilePosition</name></expr></argument>,
+                                           <argument><expr><name>deletionTime</name></expr></argument>, <argument><expr><name>headerLength</name></expr></argument>, <argument><expr><name>columnIndexCount</name></expr></argument>,
+                                           <argument><expr><name>indexedPartSize</name></expr></argument>, <argument><expr><name>idxInfoSerializer</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+        <comment type="line">// Last case is that there are no index samples.</comment>
+        <return>return <expr><operator>new</operator> <call><name><name>RowIndexEntry</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>dataFilePosition</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>IndexInfoRetriever</name></type> <name>openWithIndex</name><parameter_list>(<parameter><decl><type><name>FileHandle</name></type> <name>indexFile</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <interface><specifier>public</specifier> interface <name><name>IndexSerializer</name><parameter_list>&lt;<parameter><name>T</name></parameter>&gt;</parameter_list></name>
+    <block>{
+        <function_decl><type><name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>rie</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>indexInfo</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>;</function_decl>
+
+        <function_decl><type><name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>indexFilePosition</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>;</function_decl>
+        <function><type><specifier>default</specifier> <name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>RandomAccessReader</name></type> <name>reader</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <return>return <expr><call><name>deserialize</name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><call><name><name>reader</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+
+        </block_content>}</block></function>
+
+        <function><type><specifier>default</specifier> <name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>FileDataInput</name></type> <name>input</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <return>return <expr><call><name>deserialize</name><argument_list>(<argument><expr><name>input</name></expr></argument>, <argument><expr><call><name><name>input</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+
+        </block_content>}</block></function>
+
+        <function_decl><type><name>void</name></type> <name>serializeForCache</name><parameter_list>(<parameter><decl><type><name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>rie</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>;</function_decl>
+        <function_decl><type><name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>deserializeForCache</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>;</function_decl>
+
+        <function_decl><type><name>long</name></type> <name>deserializePositionAndSkip</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>;</function_decl>
+
+        <function_decl><type><name><name>ISerializer</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>indexInfoSerializer</name><parameter_list>()</parameter_list>;</function_decl>
+    }</block></interface>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>Serializer</name> <super_list><implements>implements <super><name><name>IndexSerializer</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>IndexInfo</name><operator>.</operator><name>Serializer</name></name></type> <name>idxInfoSerializer</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Version</name></type> <name>version</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>Serializer</name><parameter_list>(<parameter><decl><type><name>Version</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>idxInfoSerializer</name></name> <operator>=</operator> <call><name><name>IndexInfo</name><operator>.</operator><name>serializer</name></name><argument_list>(<argument><expr><name>version</name></expr></argument>, <argument><expr><name>header</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>version</name></name> <operator>=</operator> <name>version</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name><name>IndexInfo</name><operator>.</operator><name>Serializer</name></name></type> <name>indexInfoSerializer</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>idxInfoSerializer</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>rie</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>indexInfo</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>rie</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>out</name></expr></argument>, <argument><expr><name>indexInfo</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>serializeForCache</name><parameter_list>(<parameter><decl><type><name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>rie</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>rie</name><operator>.</operator><name>serializeForCache</name></name><argument_list>(<argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>deserializeForCache</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>position</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <switch>switch <condition>(<expr><call><name><name>in</name><operator>.</operator><name>readByte</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><name>CACHE_NOT_INDEXED</name></expr>:</case>
+                    <return>return <expr><operator>new</operator> <call><name><name>RowIndexEntry</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call></expr>;</return>
+                <case>case <expr><name>CACHE_INDEXED</name></expr>:</case>
+                    <return>return <expr><operator>new</operator> <call><name>IndexedEntry</name><argument_list>(<argument><expr><name>position</name></expr></argument>, <argument><expr><name>in</name></expr></argument>, <argument><expr><name>idxInfoSerializer</name></expr></argument>)</argument_list></call></expr>;</return>
+                <case>case <expr><name>CACHE_INDEXED_SHALLOW</name></expr>:</case>
+                    <return>return <expr><operator>new</operator> <call><name>ShallowIndexedEntry</name><argument_list>(<argument><expr><name>position</name></expr></argument>, <argument><expr><name>in</name></expr></argument>, <argument><expr><name>idxInfoSerializer</name></expr></argument>)</argument_list></call></expr>;</return>
+                <default>default:</default>
+                    <throw>throw <expr><operator>new</operator> <call><name>AssertionError</name><argument_list>()</argument_list></call></expr>;</throw>
+            </block_content>}</block></switch>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>skipForCache</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <switch>switch <condition>(<expr><call><name><name>in</name><operator>.</operator><name>readByte</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><name>CACHE_NOT_INDEXED</name></expr>:</case>
+                    <break>break;</break>
+                <case>case <expr><name>CACHE_INDEXED</name></expr>:</case>
+                    <expr_stmt><expr><call><name><name>IndexedEntry</name><operator>.</operator><name>skipForCache</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <break>break;</break>
+                <case>case <expr><name>CACHE_INDEXED_SHALLOW</name></expr>:</case>
+                    <expr_stmt><expr><call><name><name>ShallowIndexedEntry</name><operator>.</operator><name>skipForCache</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <break>break;</break>
+                <default>default:</default>
+                    <assert>assert <expr><literal type="boolean">false</literal></expr>;</assert>
+            </block_content>}</block></switch>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>indexFilePosition</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>position</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>size</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <return>return <expr><operator>new</operator> <call><name><name>RowIndexEntry</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>long</name></type> <name>headerLength</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>DeletionTime</name></type> <name>deletionTime</name> <init>= <expr><call><name><name>DeletionTime</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>int</name></type> <name>columnsIndexCount</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                <decl_stmt><decl><type><name>int</name></type> <name>indexedPartSize</name> <init>= <expr><name>size</name> <operator>-</operator> <call><name>serializedSize</name><argument_list>(<argument><expr><name>deletionTime</name></expr></argument>, <argument><expr><name>headerLength</name></expr></argument>, <argument><expr><name>columnsIndexCount</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>size</name> <operator>&lt;=</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getColumnIndexCacheSize</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <return>return <expr><operator>new</operator> <call><name>IndexedEntry</name><argument_list>(<argument><expr><name>position</name></expr></argument>, <argument><expr><name>in</name></expr></argument>, <argument><expr><name>deletionTime</name></expr></argument>, <argument><expr><name>headerLength</name></expr></argument>, <argument><expr><name>columnsIndexCount</name></expr></argument>,
+                                            <argument><expr><name>idxInfoSerializer</name></expr></argument>, <argument><expr><name>indexedPartSize</name></expr></argument>)</argument_list></call></expr>;</return>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>skipBytes</name></name><argument_list>(<argument><expr><name>indexedPartSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <return>return <expr><operator>new</operator> <call><name>ShallowIndexedEntry</name><argument_list>(<argument><expr><name>position</name></expr></argument>,
+                                                   <argument><expr><name>indexFilePosition</name></expr></argument>,
+                                                   <argument><expr><name>deletionTime</name></expr></argument>, <argument><expr><name>headerLength</name></expr></argument>, <argument><expr><name>columnsIndexCount</name></expr></argument>,
+                                                   <argument><expr><name>indexedPartSize</name></expr></argument>, <argument><expr><name>idxInfoSerializer</name></expr></argument>)</argument_list></call></expr>;</return>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>deserializePositionAndSkip</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>position</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>size</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>skipBytesFully</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <return>return <expr><name>position</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Reads only the data 'position' of the index entry and returns it. Note that this left 'in' in the middle
+         * of reading an entry, so this is only useful if you know what you are doing and in most case 'deserialize'
+         * should be used instead.
+         */</comment>
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>long</name></type> <name>readPosition</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>skip</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>Version</name></type> <name>version</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>readPosition</name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>skipPromotedIndex</name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>skipPromotedIndex</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>size</name> <operator>&lt;=</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>skipBytesFully</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>serializeOffsets</name><parameter_list>(<parameter><decl><type><name>DataOutputBuffer</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name><name>int</name><index>[]</index></name></type> <name>indexOffsets</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>columnIndexCount</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>columnIndexCount</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><name><name>indexOffsets</name><index>[<expr><name>i</name></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>int</name></type> <name>serializedSize</name><parameter_list>(<parameter><decl><type><name>DeletionTime</name></type> <name>deletionTime</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>headerLength</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>columnIndexCount</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><name>headerLength</name></expr></argument>)</argument_list></call>
+               <operator>+</operator> <operator>(</operator><name>int</name><operator>)</operator> <call><name><name>DeletionTime</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><name>deletionTime</name></expr></argument>)</argument_list></call>
+               <operator>+</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><name>columnIndexCount</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>indexInfo</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>serializeForCache</name><parameter_list>(<parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeByte</name></name><argument_list>(<argument><expr><name>CACHE_NOT_INDEXED</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * An entry in the row index for a row whose columns are indexed - used for both legacy and current formats.
+     */</comment>
+    <class><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>IndexedEntry</name> <super_list><extends>extends <super><name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>BASE_SIZE</name></decl>;</decl_stmt>
+
+        <static>static
+        <block>{<block_content>
+            <expr_stmt><expr><name>BASE_SIZE</name> <operator>=</operator> <call><name><name>ObjectSizes</name><operator>.</operator><name>measure</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>IndexedEntry</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name><name>DeletionTime</name><operator>.</operator><name>LIVE</name></name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></static>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>DeletionTime</name></type> <name>deletionTime</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>headerLength</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>IndexInfo</name><index>[]</index></name></type> <name>columnsIndex</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>int</name><index>[]</index></name></type> <name>offsets</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>indexedPartSize</name></decl>;</decl_stmt>
+        <decl_stmt><decl><annotation>@<name>Unmetered</name></annotation>
+        <type><specifier>private</specifier> <specifier>final</specifier> <name><name>ISerializer</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>idxInfoSerializer</name></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>IndexedEntry</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>dataFilePosition</name></decl></parameter>, <parameter><decl><type><name>DeletionTime</name></type> <name>deletionTime</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>headerLength</name></decl></parameter>,
+                             <parameter><decl><type><name><name>IndexInfo</name><index>[]</index></name></type> <name>columnsIndex</name></decl></parameter>, <parameter><decl><type><name><name>int</name><index>[]</index></name></type> <name>offsets</name></decl></parameter>,
+                             <parameter><decl><type><name>int</name></type> <name>indexedPartSize</name></decl></parameter>, <parameter><decl><type><name><name>ISerializer</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>idxInfoSerializer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>dataFilePosition</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>headerLength</name></name> <operator>=</operator> <name>headerLength</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>deletionTime</name></name> <operator>=</operator> <name>deletionTime</name></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columnsIndex</name></name> <operator>=</operator> <name>columnsIndex</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>offsets</name></name> <operator>=</operator> <name>offsets</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>indexedPartSize</name></name> <operator>=</operator> <name>indexedPartSize</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>idxInfoSerializer</name></name> <operator>=</operator> <name>idxInfoSerializer</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <constructor><specifier>private</specifier> <name>IndexedEntry</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>dataFilePosition</name></decl></parameter>, <parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>,
+                             <parameter><decl><type><name>DeletionTime</name></type> <name>deletionTime</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>headerLength</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>columnIndexCount</name></decl></parameter>,
+                             <parameter><decl><type><name><name>IndexInfo</name><operator>.</operator><name>Serializer</name></name></type> <name>idxInfoSerializer</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>indexedPartSize</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>dataFilePosition</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>headerLength</name></name> <operator>=</operator> <name>headerLength</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>deletionTime</name></name> <operator>=</operator> <name>deletionTime</name></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>columnsIndexCount</name> <init>= <expr><name>columnIndexCount</name></expr></init></decl>;</decl_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columnsIndex</name></name> <operator>=</operator> <operator>new</operator> <name><name>IndexInfo</name><index>[<expr><name>columnsIndexCount</name></expr>]</index></name></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>columnsIndexCount</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columnsIndex</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <call><name><name>idxInfoSerializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>offsets</name></name> <operator>=</operator> <operator>new</operator> <name><name>int</name><index>[<expr><name><name>this</name><operator>.</operator><name>columnsIndex</name><operator>.</operator><name>length</name></name></expr>]</index></name></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>offsets</name><operator>.</operator><name>length</name></name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><name><name>offsets</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>indexedPartSize</name></name> <operator>=</operator> <name>indexedPartSize</name></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>idxInfoSerializer</name></name> <operator>=</operator> <name>idxInfoSerializer</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <comment type="block" format="javadoc">/**
+         * Constructor called from {@link Serializer#deserializeForCache(org.apache.cassandra.io.util.DataInputPlus)}.
+         */</comment>
+        <constructor><specifier>private</specifier> <name>IndexedEntry</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>dataFilePosition</name></decl></parameter>, <parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name><name>ISerializer</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>idxInfoSerializer</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>dataFilePosition</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>headerLength</name></name> <operator>=</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>deletionTime</name></name> <operator>=</operator> <call><name><name>DeletionTime</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>columnsIndexCount</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>TrackedDataInputPlus</name></type> <name>trackedIn</name> <init>= <expr><operator>new</operator> <call><name>TrackedDataInputPlus</name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columnsIndex</name></name> <operator>=</operator> <operator>new</operator> <name><name>IndexInfo</name><index>[<expr><name>columnsIndexCount</name></expr>]</index></name></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>columnsIndexCount</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columnsIndex</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <call><name><name>idxInfoSerializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>trackedIn</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>offsets</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>indexedPartSize</name></name> <operator>=</operator> <operator>(</operator><name>int</name><operator>)</operator> <call><name><name>trackedIn</name><operator>.</operator><name>getBytesRead</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>idxInfoSerializer</name></name> <operator>=</operator> <name>idxInfoSerializer</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>indexOnHeap</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>int</name></type> <name>columnsIndexCount</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name><name>columnsIndex</name><operator>.</operator><name>length</name></name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>DeletionTime</name></type> <name>deletionTime</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>deletionTime</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>IndexInfoRetriever</name></type> <name>openWithIndex</name><parameter_list>(<parameter><decl><type><name>FileHandle</name></type> <name>indexFile</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>indexEntrySizeHistogram</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><call><name>serializedSize</name><argument_list>(<argument><expr><name>deletionTime</name></expr></argument>, <argument><expr><name>headerLength</name></expr></argument>, <argument><expr><name><name>columnsIndex</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call> <operator>+</operator> <name>indexedPartSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>indexInfoCountHistogram</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name><name>columnsIndex</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><operator>new</operator> <class><super><name>IndexInfoRetriever</name></super><argument_list>()</argument_list>
+            <block>{
+                <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>retrievals</name></decl>;</decl_stmt>
+
+                <function><annotation>@<name>Override</name></annotation>
+                <type><specifier>public</specifier> <name>IndexInfo</name></type> <name>columnsIndex</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>retrievals</name><operator>++</operator></expr>;</expr_stmt>
+                    <return>return <expr><name><name>columnsIndex</name><index>[<expr><name>index</name></expr>]</index></name></expr>;</return>
+                </block_content>}</block></function>
+
+                <function><type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>indexInfoGetsHistogram</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>retrievals</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></function>
+            }</block></class></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>long</name></type> <name>unsharedHeapSize</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>entrySize</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>IndexInfo</name></type> <name>idx</name> <range>: <expr><name>columnsIndex</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>entrySize</name> <operator>+=</operator> <call><name><name>idx</name><operator>.</operator><name>unsharedHeapSize</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            <return>return <expr><name>BASE_SIZE</name>
+                <operator>+</operator> <name>entrySize</name>
+                <operator>+</operator> <call><name><name>ObjectSizes</name><operator>.</operator><name>sizeOfReferenceArray</name></name><argument_list>(<argument><expr><name><name>columnsIndex</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>indexInfo</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <assert>assert <expr><name>indexedPartSize</name> <operator>!=</operator> <name><name>Integer</name><operator>.</operator><name>MIN_VALUE</name></name></expr>;</assert>
+
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><call><name>serializedSize</name><argument_list>(<argument><expr><name>deletionTime</name></expr></argument>, <argument><expr><name>headerLength</name></expr></argument>, <argument><expr><name><name>columnsIndex</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call> <operator>+</operator> <name>indexedPartSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>headerLength</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>DeletionTime</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>deletionTime</name></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name><name>columnsIndex</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>IndexInfo</name></type> <name>info</name> <range>: <expr><name>columnsIndex</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>idxInfoSerializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>info</name></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>offset</name> <range>: <expr><name>offsets</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><name>offset</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>serializeForCache</name><parameter_list>(<parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeByte</name></name><argument_list>(<argument><expr><name>CACHE_INDEXED</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>headerLength</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>DeletionTime</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>deletionTime</name></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><call><name>columnsIndexCount</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <for>for <control>(<init><decl><type><name>IndexInfo</name></type> <name>indexInfo</name> <range>: <expr><name>columnsIndex</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>idxInfoSerializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>indexInfo</name></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block></function>
+
+        <function><type><specifier>static</specifier> <name>void</name></type> <name>skipForCache</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>DeletionTime</name><operator>.</operator><name>serializer</name><operator>.</operator><name>skip</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * An entry in the row index for a row whose columns are indexed and the {@link IndexInfo} objects
+     * are not read into the key cache.
+     */</comment>
+    <class><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>ShallowIndexedEntry</name> <super_list><extends>extends <super><name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>BASE_SIZE</name></decl>;</decl_stmt>
+
+        <static>static
+        <block>{<block_content>
+            <expr_stmt><expr><name>BASE_SIZE</name> <operator>=</operator> <call><name><name>ObjectSizes</name><operator>.</operator><name>measure</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>ShallowIndexedEntry</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name><name>DeletionTime</name><operator>.</operator><name>LIVE</name></name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="number">10</literal></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></static>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>indexFilePosition</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>DeletionTime</name></type> <name>deletionTime</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>headerLength</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>columnsIndexCount</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>indexedPartSize</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>offsetsOffset</name></decl>;</decl_stmt>
+        <decl_stmt><decl><annotation>@<name>Unmetered</name></annotation>
+        <type><specifier>private</specifier> <specifier>final</specifier> <name><name>ISerializer</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>idxInfoSerializer</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>fieldsSerializedSize</name></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+         * See {@link #create(long, long, DeletionTime, long, int, int, List, int[], ISerializer)} for a description
+         * of the parameters.
+         */</comment>
+        <constructor><specifier>private</specifier> <name>ShallowIndexedEntry</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>dataFilePosition</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>indexFilePosition</name></decl></parameter>,
+                                    <parameter><decl><type><name>DeletionTime</name></type> <name>deletionTime</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>headerLength</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>columnIndexCount</name></decl></parameter>,
+                                    <parameter><decl><type><name>int</name></type> <name>indexedPartSize</name></decl></parameter>, <parameter><decl><type><name><name>ISerializer</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>idxInfoSerializer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>dataFilePosition</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <assert>assert <expr><name>columnIndexCount</name> <operator>&gt;</operator> <literal type="number">1</literal></expr>;</assert>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>indexFilePosition</name></name> <operator>=</operator> <name>indexFilePosition</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>headerLength</name></name> <operator>=</operator> <name>headerLength</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>deletionTime</name></name> <operator>=</operator> <name>deletionTime</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columnsIndexCount</name></name> <operator>=</operator> <name>columnIndexCount</name></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>indexedPartSize</name></name> <operator>=</operator> <name>indexedPartSize</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>idxInfoSerializer</name></name> <operator>=</operator> <name>idxInfoSerializer</name></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>fieldsSerializedSize</name></name> <operator>=</operator> <call><name>serializedSize</name><argument_list>(<argument><expr><name>deletionTime</name></expr></argument>, <argument><expr><name>headerLength</name></expr></argument>, <argument><expr><name>columnIndexCount</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>offsetsOffset</name></name> <operator>=</operator> <name>indexedPartSize</name> <operator>+</operator> <name>fieldsSerializedSize</name> <operator>-</operator> <name>columnsIndexCount</name> <operator>*</operator> <name><name>TypeSizes</name><operator>.</operator><name>INT_SIZE</name></name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <comment type="block" format="javadoc">/**
+         * Constructor for key-cache deserialization
+         */</comment>
+        <constructor><specifier>private</specifier> <name>ShallowIndexedEntry</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>dataFilePosition</name></decl></parameter>, <parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name><name>IndexInfo</name><operator>.</operator><name>Serializer</name></name></type> <name>idxInfoSerializer</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>dataFilePosition</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>indexFilePosition</name></name> <operator>=</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>headerLength</name></name> <operator>=</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>deletionTime</name></name> <operator>=</operator> <call><name><name>DeletionTime</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columnsIndexCount</name></name> <operator>=</operator> <operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>indexedPartSize</name></name> <operator>=</operator> <operator>(</operator><name>int</name><operator>)</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>idxInfoSerializer</name></name> <operator>=</operator> <name>idxInfoSerializer</name></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>fieldsSerializedSize</name></name> <operator>=</operator> <call><name>serializedSize</name><argument_list>(<argument><expr><name>deletionTime</name></expr></argument>, <argument><expr><name>headerLength</name></expr></argument>, <argument><expr><name>columnsIndexCount</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>offsetsOffset</name></name> <operator>=</operator> <name>indexedPartSize</name> <operator>+</operator> <name>fieldsSerializedSize</name> <operator>-</operator> <name>columnsIndexCount</name> <operator>*</operator> <name><name>TypeSizes</name><operator>.</operator><name>INT_SIZE</name></name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>int</name></type> <name>columnsIndexCount</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>columnsIndexCount</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>DeletionTime</name></type> <name>deletionTime</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>deletionTime</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>IndexInfoRetriever</name></type> <name>openWithIndex</name><parameter_list>(<parameter><decl><type><name>FileHandle</name></type> <name>indexFile</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>indexEntrySizeHistogram</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>indexedPartSize</name> <operator>+</operator> <name>fieldsSerializedSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>indexInfoCountHistogram</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>columnsIndexCount</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><operator>new</operator> <call><name>ShallowInfoRetriever</name><argument_list>(<argument><expr><name>indexFilePosition</name> <operator>+</operator>
+                                            <call><name><name>VIntCoding</name><operator>.</operator><name>computeUnsignedVIntSize</name></name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call> <operator>+</operator>
+                                            <call><name><name>VIntCoding</name><operator>.</operator><name>computeUnsignedVIntSize</name></name><argument_list>(<argument><expr><name>indexedPartSize</name> <operator>+</operator> <name>fieldsSerializedSize</name></expr></argument>)</argument_list></call> <operator>+</operator>
+                                            <name>fieldsSerializedSize</name></expr></argument>,
+                                            <argument><expr><name>offsetsOffset</name> <operator>-</operator> <name>fieldsSerializedSize</name></expr></argument>,
+                                            <argument><expr><call><name><name>indexFile</name><operator>.</operator><name>createReader</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>idxInfoSerializer</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>long</name></type> <name>unsharedHeapSize</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>BASE_SIZE</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>indexInfo</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>fieldsSerializedSize</name> <operator>+</operator> <call><name><name>indexInfo</name><operator>.</operator><name>limit</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>headerLength</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>DeletionTime</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>deletionTime</name></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>columnsIndexCount</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><name>indexInfo</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>serializeForCache</name><parameter_list>(<parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeByte</name></name><argument_list>(<argument><expr><name>CACHE_INDEXED_SHALLOW</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>indexFilePosition</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>headerLength</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>DeletionTime</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>deletionTime</name></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>columnsIndexCount</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><name>indexedPartSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>static</specifier> <name>void</name></type> <name>skipForCache</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>DeletionTime</name><operator>.</operator><name>serializer</name><operator>.</operator><name>skip</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>ShallowInfoRetriever</name> <super_list><extends>extends <super><name>FileIndexInfoRetriever</name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>offsetsOffset</name></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>ShallowInfoRetriever</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>indexInfoFilePosition</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>offsetsOffset</name></decl></parameter>,
+                                     <parameter><decl><type><name>FileDataInput</name></type> <name>indexReader</name></decl></parameter>, <parameter><decl><type><name><name>ISerializer</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>idxInfoSerializer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>indexInfoFilePosition</name></expr></argument>, <argument><expr><name>indexReader</name></expr></argument>, <argument><expr><name>idxInfoSerializer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>offsetsOffset</name></name> <operator>=</operator> <name>offsetsOffset</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><name>IndexInfo</name></type> <name>fetchIndex</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <comment type="line">// seek to position in "offsets to IndexInfo" table</comment>
+            <expr_stmt><expr><call><name><name>indexReader</name><operator>.</operator><name>seek</name></name><argument_list>(<argument><expr><name>indexInfoFilePosition</name> <operator>+</operator> <name>offsetsOffset</name> <operator>+</operator> <name>index</name> <operator>*</operator> <name><name>TypeSizes</name><operator>.</operator><name>INT_SIZE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <comment type="line">// read offset of IndexInfo</comment>
+            <decl_stmt><decl><type><name>int</name></type> <name>indexInfoPos</name> <init>= <expr><call><name><name>indexReader</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <comment type="line">// seek to posision of IndexInfo</comment>
+            <expr_stmt><expr><call><name><name>indexReader</name><operator>.</operator><name>seek</name></name><argument_list>(<argument><expr><name>indexInfoFilePosition</name> <operator>+</operator> <name>indexInfoPos</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <comment type="line">// finally, deserialize IndexInfo</comment>
+            <return>return <expr><call><name><name>idxInfoSerializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>indexReader</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * Base class to access {@link IndexInfo} objects.
+     */</comment>
+    <interface><specifier>public</specifier> interface <name>IndexInfoRetriever</name> <super_list><extends>extends <super><name>AutoCloseable</name></super></extends></super_list>
+    <block>{
+        <function_decl><type><name>IndexInfo</name></type> <name>columnsIndex</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>;</function_decl>
+
+        <function_decl><type><name>void</name></type> <name>close</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>;</function_decl>
+    }</block></interface>
+
+    <comment type="block" format="javadoc">/**
+     * Base class to access {@link IndexInfo} objects on disk that keeps already
+     * read {@link IndexInfo} on heap.
+     */</comment>
+    <class><specifier>private</specifier> <specifier>abstract</specifier> <specifier>static</specifier> class <name>FileIndexInfoRetriever</name> <super_list><implements>implements <super><name>IndexInfoRetriever</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>indexInfoFilePosition</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>ISerializer</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>idxInfoSerializer</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>FileDataInput</name></type> <name>indexReader</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>retrievals</name></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+         *
+         * @param indexInfoFilePosition offset of first serialized {@link IndexInfo} object
+         * @param indexReader file data input to access the index file, closed by this instance
+         * @param idxInfoSerializer the index serializer to deserialize {@link IndexInfo} objects
+         */</comment>
+        <constructor><name>FileIndexInfoRetriever</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>indexInfoFilePosition</name></decl></parameter>, <parameter><decl><type><name>FileDataInput</name></type> <name>indexReader</name></decl></parameter>, <parameter><decl><type><name><name>ISerializer</name><argument_list type="generic">&lt;<argument><name>IndexInfo</name></argument>&gt;</argument_list></name></type> <name>idxInfoSerializer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>indexInfoFilePosition</name></name> <operator>=</operator> <name>indexInfoFilePosition</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>idxInfoSerializer</name></name> <operator>=</operator> <name>idxInfoSerializer</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>indexReader</name></name> <operator>=</operator> <name>indexReader</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <specifier>final</specifier> <name>IndexInfo</name></type> <name>columnsIndex</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><name>retrievals</name><operator>++</operator></expr>;</expr_stmt>
+            <return>return <expr><call><name>fetchIndex</name><argument_list>(<argument><expr><name>index</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function_decl><type><specifier>abstract</specifier> <name>IndexInfo</name></type> <name>fetchIndex</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>;</function_decl>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>indexReader</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>indexInfoGetsHistogram</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>retrievals</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>indexInfoReadsHistogram</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>retrievals</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

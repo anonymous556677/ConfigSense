@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/utils/RecomputingSupplier.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>CompletableFuture</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ExecutionException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ExecutorService</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeoutException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicBoolean</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicReference</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>Supplier</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Supplier that caches the last computed value until it is reset, forcing every caller of
+ * {@link RecomputingSupplier#get(long, TimeUnit)} to wait until this value is computed if
+ * it was not computed yet.
+ *
+ * Calling {@link RecomputingSupplier#recompute()} won't reset value for the already
+ * waiting consumers, but instead will schedule one recomputation as soon as current one is done.
+ */</comment>
+<class><specifier>public</specifier> class <name><name>RecomputingSupplier</name><parameter_list>&lt;<parameter><name>T</name></parameter>&gt;</parameter_list></name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Supplier</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>supplier</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>AtomicReference</name><argument_list type="generic">&lt;<argument><name><name>CompletableFuture</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>cached</name> <init>= <expr><operator>new</operator> <call><name><name>AtomicReference</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>AtomicBoolean</name></type> <name>workInProgress</name> <init>= <expr><operator>new</operator> <call><name>AtomicBoolean</name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ExecutorService</name></type> <name>executor</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>RecomputingSupplier</name><parameter_list>(<parameter><decl><type><name><name>Supplier</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>supplier</name></decl></parameter>, <parameter><decl><type><name>ExecutorService</name></type> <name>executor</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>supplier</name></name> <operator>=</operator> <name>supplier</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>executor</name></name> <operator>=</operator> <name>executor</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>recompute</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>CompletableFuture</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>current</name> <init>= <expr><call><name><name>cached</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>origWip</name> <init>= <expr><call><name><name>workInProgress</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>origWip</name> <operator>||</operator> <operator>(</operator><name>current</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>current</name><operator>.</operator><name>isDone</name></name><argument_list>()</argument_list></call><operator>)</operator></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>cached</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <name>current</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><name>this</name><operator>::</operator><name>recompute</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <return>return;</return> <comment type="line">// if work is has not started yet, schedule task for the future</comment>
+        </block_content>}</block></if></if_stmt>
+
+        <assert>assert <expr><name>current</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>current</name><operator>.</operator><name>isDone</name></name><argument_list>()</argument_list></call></expr>;</assert>
+
+        <comment type="line">// The work is not in progress, and current future is done. Try to submit a new task.</comment>
+        <decl_stmt><decl><type><name><name>CompletableFuture</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>lazyValue</name> <init>= <expr><operator>new</operator> <call><name><name>CompletableFuture</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>cached</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>current</name></expr></argument>, <argument><expr><name>lazyValue</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><lambda><parameter_list>()</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name>doWork</name><argument_list>(<argument><expr><name>lazyValue</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><name>this</name><operator>::</operator><name>recompute</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt> <comment type="line">// Lost CAS, resubmit</comment>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>doWork</name><parameter_list>(<parameter><decl><type><name><name>CompletableFuture</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>lazyValue</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>T</name></type> <name>value</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Throwable</name></type> <name>err</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>sanityCheck</name><argument_list>(<argument><expr><call><name><name>workInProgress</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>value</name> <operator>=</operator> <call><name><name>supplier</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name>err</name> <operator>=</operator> <name>t</name></expr>;</expr_stmt>
+        </block_content>}</block></catch>
+        <finally>finally
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>sanityCheck</name><argument_list>(<argument><expr><call><name><name>workInProgress</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></finally></try>
+
+        <if_stmt><if>if <condition>(<expr><name>err</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>lazyValue</name><operator>.</operator><name>complete</name></name><argument_list>(<argument><expr><name>value</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>lazyValue</name><operator>.</operator><name>completeExceptionally</name></name><argument_list>(<argument><expr><name>err</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>sanityCheck</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>check</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><name>check</name> <operator>:</operator> <literal type="string">"At most one task should be executing using this executor"</literal></expr>;</assert>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>T</name></type> <name>get</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>timeout</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>timeUnit</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>InterruptedException</name></expr></argument>, <argument><expr><name>ExecutionException</name></expr></argument>, <argument><expr><name>TimeoutException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>CompletableFuture</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>lazyValue</name> <init>= <expr><call><name><name>cached</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// recompute was never called yet, return null.</comment>
+        <if_stmt><if>if <condition>(<expr><name>lazyValue</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name><name>lazyValue</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>timeout</name></expr></argument>, <argument><expr><name>timeUnit</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="string">"RecomputingSupplier{"</literal> <operator>+</operator>
+               <literal type="string">"supplier="</literal> <operator>+</operator> <name>supplier</name> <operator>+</operator>
+               <literal type="string">", cached="</literal> <operator>+</operator> <name>cached</name> <operator>+</operator>
+               <literal type="string">", workInProgress="</literal> <operator>+</operator> <name>workInProgress</name> <operator>+</operator>
+               <literal type="string">", executor="</literal> <operator>+</operator> <name>executor</name> <operator>+</operator>
+               <literal type="char">'}'</literal></expr>;</return>
+    </block_content>}</block></function>
+}</block></class></unit>

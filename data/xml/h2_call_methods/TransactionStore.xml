@@ -1,0 +1,963 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/h2database/h2/src/main/org/h2/mvstore/tx/TransactionStore.java"><comment type="block">/*
+ * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Initial Developer: H2 Group
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>tx</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>ArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>BitSet</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Iterator</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Objects</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicReference</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicReferenceArray</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>IsolationLevel</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>Cursor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>DataUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>MVMap</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>MVStore</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>RootReference</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>rtree</name><operator>.</operator><name>MVRTreeMap</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>rtree</name><operator>.</operator><name>SpatialDataType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>type</name><operator>.</operator><name>DataType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>type</name><operator>.</operator><name>LongDataType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>type</name><operator>.</operator><name>MetaType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>type</name><operator>.</operator><name>ObjectDataType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>mvstore</name><operator>.</operator><name>type</name><operator>.</operator><name>StringDataType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>StringUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>VersionedValue</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A store that supports concurrent MVCC read-committed transactions.
+ */</comment>
+<class><specifier>public</specifier> class <name>TransactionStore</name> <block>{
+
+    <comment type="block" format="javadoc">/**
+     * The store.
+     */</comment>
+    <decl_stmt><decl><type><specifier>final</specifier> <name>MVStore</name></type> <name>store</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Default blocked transaction timeout
+     */</comment>
+    <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>timeoutMillis</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The persisted map of prepared transactions.
+     * Key: transactionId, value: [ status, name ].
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>Integer</name></argument>, <argument><name><name>Object</name><index>[]</index></name></argument>&gt;</argument_list></name></type> <name>preparedTransactions</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>typeRegistry</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Undo logs.
+     * &lt;p&gt;
+     * If the first entry for a transaction doesn't have a logId
+     * of 0, then the transaction is partially committed (which means rollback
+     * is not possible). Log entries are written before the data is changed
+     * (write-ahead).
+     * &lt;p&gt;
+     * Key: opId, value: [ mapId, key, oldValue ].
+     */</comment>
+    <decl_stmt><decl><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unchecked"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>final</specifier> <name><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name><index>[]</index></name></type> <name>undoLogs</name> <init>= <expr><operator>new</operator> <name><name>MVMap</name><index>[<expr><name>MAX_OPEN_TRANSACTIONS</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>MVMap</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>, <argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></name></type> <name>undoLogBuilder</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>dataType</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * This BitSet is used as vacancy indicator for transaction slots in transactions[].
+     * It provides easy way to find first unoccupied slot, and also allows for copy-on-write
+     * non-blocking updates.
+     */</comment>
+    <decl_stmt><decl><type><specifier>final</specifier> <name><name>AtomicReference</name><argument_list type="generic">&lt;<argument><name>VersionedBitSet</name></argument>&gt;</argument_list></name></type> <name>openTransactions</name> <init>= <expr><operator>new</operator> <call><name><name>AtomicReference</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><operator>new</operator> <call><name>VersionedBitSet</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * This is intended to be the source of ultimate truth about transaction being committed.
+     * Once bit is set, corresponding transaction is logically committed,
+     * although it might be plenty of "uncommitted" entries in various maps
+     * and undo record are still around.
+     * Nevertheless, all of those should be considered by other transactions as committed.
+     */</comment>
+    <decl_stmt><decl><type><specifier>final</specifier> <name><name>AtomicReference</name><argument_list type="generic">&lt;<argument><name>BitSet</name></argument>&gt;</argument_list></name></type> <name>committingTransactions</name> <init>= <expr><operator>new</operator> <call><name><name>AtomicReference</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><operator>new</operator> <call><name>BitSet</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>init</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Soft limit on the number of concurrently opened transactions.
+     * Not really needed but used by some test.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>maxTransactionId</name> <init>= <expr><name>MAX_OPEN_TRANSACTIONS</name></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Array holding all open transaction objects.
+     * Position in array is "transaction id".
+     * VolatileReferenceArray would do the job here, but there is no such thing in Java yet
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>AtomicReferenceArray</name><argument_list type="generic">&lt;<argument><name>Transaction</name></argument>&gt;</argument_list></name></type> <name>transactions</name> <init>=
+                                                        <expr><operator>new</operator> <call><name><name>AtomicReferenceArray</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>MAX_OPEN_TRANSACTIONS</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>TYPE_REGISTRY_NAME</name> <init>= <expr><literal type="string">"_"</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The prefix for undo log entries.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>UNDO_LOG_NAME_PREFIX</name> <init>= <expr><literal type="string">"undoLog"</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// must come before open in lexicographical order</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>char</name></type> <name>UNDO_LOG_COMMITTED</name> <init>= <expr><literal type="char">'-'</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>char</name></type> <name>UNDO_LOG_OPEN</name> <init>= <expr><literal type="char">'.'</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Hard limit on the number of concurrently opened transactions
+     */</comment>
+    <comment type="line">// TODO: introduce constructor parameter instead of a static field, driven by URL parameter</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MAX_OPEN_TRANSACTIONS</name> <init>= <expr><literal type="number">65535</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Generate a string used to name undo log map for a specific transaction.
+     * This name will contain transaction id.
+     *
+     * @param transactionId of the corresponding transaction
+     * @return undo log name
+     */</comment>
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>String</name></type> <name>getUndoLogName</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>transactionId</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>transactionId</name> <operator>&gt;</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><name>UNDO_LOG_NAME_PREFIX</name> <operator>+</operator> <name>UNDO_LOG_OPEN</name> <operator>+</operator> <name>transactionId</name></expr>
+                </then><else>: <expr><name>UNDO_LOG_NAME_PREFIX</name> <operator>+</operator> <name>UNDO_LOG_OPEN</name></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create a new transaction store.
+     *
+     * @param store the store
+     */</comment>
+    <constructor><specifier>public</specifier> <name>TransactionStore</name><parameter_list>(<parameter><decl><type><name>MVStore</name></type> <name>store</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>store</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>ObjectDataType</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>public</specifier> <name>TransactionStore</name><parameter_list>(<parameter><decl><type><name>MVStore</name></type> <name>store</name></decl></parameter>, <parameter><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>dataType</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>store</name></expr></argument>, <argument><expr><operator>new</operator> <call><name><name>MetaType</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name><name>store</name><operator>.</operator><name>backgroundExceptionHandler</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>dataType</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Create a new transaction store.
+     * @param store the store
+     * @param metaDataType the data type for type registry map values
+     * @param dataType default data type for map keys and values
+     * @param timeoutMillis lock acquisition timeout in milliseconds, 0 means no wait
+     */</comment>
+    <constructor><specifier>public</specifier> <name>TransactionStore</name><parameter_list>(<parameter><decl><type><name>MVStore</name></type> <name>store</name></decl></parameter>, <parameter><decl><type><name><name>MetaType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>metaDataType</name></decl></parameter>, <parameter><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>dataType</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>timeoutMillis</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>store</name></name> <operator>=</operator> <name>store</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>dataType</name></name> <operator>=</operator> <name>dataType</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>timeoutMillis</name></name> <operator>=</operator> <name>timeoutMillis</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>typeRegistry</name></name> <operator>=</operator> <call><name>openTypeRegistry</name><argument_list>(<argument><expr><name>store</name></expr></argument>, <argument><expr><name>metaDataType</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>preparedTransactions</name></name> <operator>=</operator> <call><name><name>store</name><operator>.</operator><name>openMap</name></name><argument_list>(<argument><expr><literal type="string">"openTransactions"</literal></expr></argument>, <argument><expr><operator>new</operator> <call><name><name>MVMap</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;&gt;</argument_list></name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>undoLogBuilder</name></name> <operator>=</operator> <call><name>createUndoLogBuilder</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><block>{<expr><literal type="string">"unchecked"</literal></expr>,<argument><expr><literal type="string">"rawtypes"</literal></expr></argument>}</block></expr></argument>)</argument_list></annotation>
+    <type><name><name>MVMap</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>, <argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></name></type> <name>createUndoLogBuilder</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name><name>MVMap</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></name><argument_list>()</argument_list></call>
+                <operator>.</operator><call><name>singleWriter</name><argument_list>()</argument_list></call>
+                <operator>.</operator><call><name>keyType</name><argument_list>(<argument><expr><name><name>LongDataType</name><operator>.</operator><name>INSTANCE</name></name></expr></argument>)</argument_list></call>
+                <operator>.</operator><call><name>valueType</name><argument_list>(<argument><expr><operator>new</operator> <call><name><name>Record</name><operator>.</operator><name>Type</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>openTypeRegistry</name><parameter_list>(<parameter><decl><type><name>MVStore</name></type> <name>store</name></decl></parameter>, <parameter><decl><type><name><name>MetaType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>metaDataType</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name><name>MVMap</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></name></type> <name>typeRegistryBuilder</name> <init>=
+                                    <expr><operator>new</operator> <call><name><name>MVMap</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></name><argument_list>()</argument_list></call>
+                                                <operator>.</operator><call><name>keyType</name><argument_list>(<argument><expr><name><name>StringDataType</name><operator>.</operator><name>INSTANCE</name></name></expr></argument>)</argument_list></call>
+                                                <operator>.</operator><call><name>valueType</name><argument_list>(<argument><expr><name>metaDataType</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>store</name><operator>.</operator><name>openMap</name></name><argument_list>(<argument><expr><name>TYPE_REGISTRY_NAME</name></expr></argument>, <argument><expr><name>typeRegistryBuilder</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Initialize the store without any RollbackListener.
+     * @see #init(RollbackListener)
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>init</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>init</name><argument_list>(<argument><expr><name>ROLLBACK_LISTENER_NONE</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Initialize the store. This is needed before a transaction can be opened.
+     * If the transaction store is corrupt, this method can throw an exception,
+     * in which case the store can only be used for reading.
+     *
+     * @param listener to notify about transaction rollback
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>init</name><parameter_list>(<parameter><decl><type><name>RollbackListener</name></type> <name>listener</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>init</name></expr>)</condition> <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>String</name></type> <name>mapName</name> <range>: <expr><call><name><name>store</name><operator>.</operator><name>getMapNames</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control> <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>mapName</name><operator>.</operator><name>startsWith</name></name><argument_list>(<argument><expr><name>UNDO_LOG_NAME_PREFIX</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+                    <comment type="line">// Unexpectedly short name may be encountered upon upgrade from older version</comment>
+                    <comment type="line">// where undo log was persisted as a single map, remove it.</comment>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>mapName</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <call><name><name>UNDO_LOG_NAME_PREFIX</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                        <comment type="line">// make a decision about tx status based on a log name</comment>
+                        <comment type="line">// to handle upgrade from a previous versions</comment>
+                        <decl_stmt><decl><type><name>boolean</name></type> <name>committed</name> <init>= <expr><call><name><name>mapName</name><operator>.</operator><name>charAt</name></name><argument_list>(<argument><expr><call><name><name>UNDO_LOG_NAME_PREFIX</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call> <operator>==</operator> <name>UNDO_LOG_COMMITTED</name></expr></init></decl>;</decl_stmt>
+                        <if_stmt><if>if <condition>(<expr><call><name><name>store</name><operator>.</operator><name>hasData</name></name><argument_list>(<argument><expr><name>mapName</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+                            <decl_stmt><decl><type><name>int</name></type> <name>transactionId</name> <init>= <expr><call><name><name>StringUtils</name><operator>.</operator><name>parseUInt31</name></name><argument_list>(<argument><expr><name>mapName</name></expr></argument>, <argument><expr><call><name><name>UNDO_LOG_NAME_PREFIX</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="number">1</literal></expr></argument>,
+                                    <argument><expr><call><name><name>mapName</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                            <decl_stmt><decl><type><name>VersionedBitSet</name></type> <name>openTxBitSet</name> <init>= <expr><call><name><name>openTransactions</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>openTxBitSet</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+                                <decl_stmt><decl><type><name><name>Object</name><index>[]</index></name></type> <name>data</name> <init>= <expr><call><name><name>preparedTransactions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                                <decl_stmt><decl><type><name>int</name></type> <name>status</name></decl>;</decl_stmt>
+                                <decl_stmt><decl><type><name>String</name></type> <name>name</name></decl>;</decl_stmt>
+                                <if_stmt><if>if <condition>(<expr><name>data</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                                    <expr_stmt><expr><name>status</name> <operator>=</operator> <name><name>Transaction</name><operator>.</operator><name>STATUS_OPEN</name></name></expr>;</expr_stmt>
+                                    <expr_stmt><expr><name>name</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                                </block_content>}</block></if> <else>else <block>{<block_content>
+                                    <expr_stmt><expr><name>status</name> <operator>=</operator> <operator>(</operator><name>Integer</name><operator>)</operator> <name><name>data</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr>;</expr_stmt>
+                                    <expr_stmt><expr><name>name</name> <operator>=</operator> <operator>(</operator><name>String</name><operator>)</operator> <name><name>data</name><index>[<expr><literal type="number">1</literal></expr>]</index></name></expr>;</expr_stmt>
+                                </block_content>}</block></else></if_stmt>
+                                <decl_stmt><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>, <argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>undoLog</name> <init>= <expr><call><name><name>store</name><operator>.</operator><name>openMap</name></name><argument_list>(<argument><expr><name>mapName</name></expr></argument>, <argument><expr><name>undoLogBuilder</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                                <expr_stmt><expr><name><name>undoLogs</name><index>[<expr><name>transactionId</name></expr>]</index></name> <operator>=</operator> <name>undoLog</name></expr>;</expr_stmt>
+                                <decl_stmt><decl><type><name>Long</name></type> <name>lastUndoKey</name> <init>= <expr><call><name><name>undoLog</name><operator>.</operator><name>lastKey</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                                <assert>assert <expr><name>lastUndoKey</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</assert>
+                                <assert>assert <expr><call><name>getTransactionId</name><argument_list>(<argument><expr><name>lastUndoKey</name></expr></argument>)</argument_list></call> <operator>==</operator> <name>transactionId</name></expr>;</assert>
+                                <decl_stmt><decl><type><name>long</name></type> <name>logId</name> <init>= <expr><call><name>getLogId</name><argument_list>(<argument><expr><name>lastUndoKey</name></expr></argument>)</argument_list></call> <operator>+</operator> <literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+                                <if_stmt><if>if <condition>(<expr><name>committed</name></expr>)</condition> <block>{<block_content>
+                                    <comment type="line">// give it a proper name and used marker record instead</comment>
+                                    <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>renameMap</name></name><argument_list>(<argument><expr><name>undoLog</name></expr></argument>, <argument><expr><call><name>getUndoLogName</name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                                    <expr_stmt><expr><call><name>markUndoLogAsCommitted</name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                                </block_content>}</block></if> <else>else <block>{<block_content>
+                                    <expr_stmt><expr><name>committed</name> <operator>=</operator> <name>logId</name> <operator>&gt;</operator> <name>LOG_ID_MASK</name></expr>;</expr_stmt>
+                                </block_content>}</block></else></if_stmt>
+                                <if_stmt><if>if <condition>(<expr><name>committed</name></expr>)</condition> <block>{<block_content>
+                                    <expr_stmt><expr><name>status</name> <operator>=</operator> <name><name>Transaction</name><operator>.</operator><name>STATUS_COMMITTED</name></name></expr>;</expr_stmt>
+                                    <expr_stmt><expr><name>lastUndoKey</name> <operator>=</operator> <call><name><name>undoLog</name><operator>.</operator><name>lowerKey</name></name><argument_list>(<argument><expr><name>lastUndoKey</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                                    <assert>assert <expr><name>lastUndoKey</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name>getTransactionId</name><argument_list>(<argument><expr><name>lastUndoKey</name></expr></argument>)</argument_list></call> <operator>==</operator> <name>transactionId</name></expr>;</assert>
+                                    <expr_stmt><expr><name>logId</name> <operator>=</operator> <ternary><condition><expr><name>lastUndoKey</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="number">0</literal></expr> </then><else>: <expr><call><name>getLogId</name><argument_list>(<argument><expr><name>lastUndoKey</name></expr></argument>)</argument_list></call> <operator>+</operator> <literal type="number">1</literal></expr></else></ternary></expr>;</expr_stmt>
+                                </block_content>}</block></if></if_stmt>
+                                <expr_stmt><expr><call><name>registerTransaction</name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>, <argument><expr><name>status</name></expr></argument>, <argument><expr><name>name</name></expr></argument>, <argument><expr><name>logId</name></expr></argument>, <argument><expr><name>timeoutMillis</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>,
+                                        <argument><expr><name><name>IsolationLevel</name><operator>.</operator><name>READ_COMMITTED</name></name></expr></argument>, <argument><expr><name>listener</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                                <continue>continue;</continue>
+                            </block_content>}</block></if></if_stmt>
+                        </block_content>}</block></if></if_stmt>
+                    </block_content>}</block></if></if_stmt>
+
+                    <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>store</name><operator>.</operator><name>isReadOnly</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                        <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>removeMap</name></name><argument_list>(<argument><expr><name>mapName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></for>
+            <expr_stmt><expr><name>init</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>markUndoLogAsCommitted</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>transactionId</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>addUndoLogRecord</name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>, <argument><expr><name>LOG_ID_MASK</name></expr></argument>, <argument><expr><name><name>Record</name><operator>.</operator><name>COMMIT_MARKER</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Commit all transactions that are in the committed state, and
+     * rollback all open transactions.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>endLeftoverTransactions</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>Transaction</name></argument>&gt;</argument_list></name></type> <name>list</name> <init>= <expr><call><name>getOpenTransactions</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>Transaction</name></type> <name>t</name> <range>: <expr><name>list</name></expr></range></decl></init>)</control> <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>status</name> <init>= <expr><call><name><name>t</name><operator>.</operator><name>getStatus</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>status</name> <operator>==</operator> <name><name>Transaction</name><operator>.</operator><name>STATUS_COMMITTED</name></name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>t</name><operator>.</operator><name>commit</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>status</name> <operator>!=</operator> <name><name>Transaction</name><operator>.</operator><name>STATUS_PREPARED</name></name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>t</name><operator>.</operator><name>rollback</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <function><type><name>int</name></type> <name>getMaxTransactionId</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>maxTransactionId</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the maximum transaction id, after which ids are re-used. If the old
+     * transaction is still in use when re-using an old id, the new transaction
+     * fails.
+     *
+     * @param max the maximum id
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setMaxTransactionId</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>max</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>DataUtils</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><name>max</name> <operator>&lt;=</operator> <name>MAX_OPEN_TRANSACTIONS</name></expr></argument>,
+                <argument><expr><literal type="string">"Concurrent transactions limit is too high: {0}"</literal></expr></argument>, <argument><expr><name>max</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>maxTransactionId</name></name> <operator>=</operator> <name>max</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check whether a given map exists.
+     *
+     * @param name the map name
+     * @return true if it exists
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>hasMap</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>store</name><operator>.</operator><name>hasMap</name></name><argument_list>(<argument><expr><name>name</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>LOG_ID_BITS</name> <init>= <expr><name><name>Transaction</name><operator>.</operator><name>LOG_ID_BITS</name></name></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>LOG_ID_MASK</name> <init>= <expr><operator>(</operator><literal type="number">1L</literal> <operator>&lt;&lt;</operator> <name>LOG_ID_BITS</name><operator>)</operator> <operator>-</operator> <literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Combine the transaction id and the log id to an operation id.
+     *
+     * @param transactionId the transaction id
+     * @param logId the log id
+     * @return the operation id
+     */</comment>
+    <function><type><specifier>static</specifier> <name>long</name></type> <name>getOperationId</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>transactionId</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>logId</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>DataUtils</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><name>transactionId</name> <operator>&gt;=</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>transactionId</name> <operator>&lt;</operator> <operator>(</operator><literal type="number">1</literal> <operator>&lt;&lt;</operator> <operator>(</operator><literal type="number">64</literal> <operator>-</operator> <name>LOG_ID_BITS</name><operator>)</operator><operator>)</operator></expr></argument>,
+                <argument><expr><literal type="string">"Transaction id out of range: {0}"</literal></expr></argument>, <argument><expr><name>transactionId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>DataUtils</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><name>logId</name> <operator>&gt;=</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>logId</name> <operator>&lt;=</operator> <name>LOG_ID_MASK</name></expr></argument>,
+                <argument><expr><literal type="string">"Transaction log id out of range: {0}"</literal></expr></argument>, <argument><expr><name>logId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><operator>(</operator><operator>(</operator><name>long</name><operator>)</operator> <name>transactionId</name> <operator>&lt;&lt;</operator> <name>LOG_ID_BITS</name><operator>)</operator> <operator>|</operator> <name>logId</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the transaction id for the given operation id.
+     *
+     * @param operationId the operation id
+     * @return the transaction id
+     */</comment>
+    <function><type><specifier>static</specifier> <name>int</name></type> <name>getTransactionId</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>operationId</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><name>operationId</name> <operator>&gt;&gt;&gt;</operator> <name>LOG_ID_BITS</name><operator>)</operator></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the log id for the given operation id.
+     *
+     * @param operationId the operation id
+     * @return the log id
+     */</comment>
+    <function><type><specifier>static</specifier> <name>long</name></type> <name>getLogId</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>operationId</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><name>operationId</name> <operator>&amp;</operator> <name>LOG_ID_MASK</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the list of unclosed transactions that have pending writes.
+     *
+     * @return the list of transactions (sorted by id)
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>Transaction</name></argument>&gt;</argument_list></name></type> <name>getOpenTransactions</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if<condition>(<expr><operator>!</operator><name>init</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name>init</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Transaction</name></argument>&gt;</argument_list></name></type> <name>list</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>transactionId</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>BitSet</name></type> <name>bitSet</name> <init>= <expr><call><name><name>openTransactions</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <while>while<condition>(<expr><operator>(</operator><name>transactionId</name> <operator>=</operator> <call><name><name>bitSet</name><operator>.</operator><name>nextSetBit</name></name><argument_list>(<argument><expr><name>transactionId</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call><operator>)</operator> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>Transaction</name></type> <name>transaction</name> <init>= <expr><call><name>getTransaction</name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if<condition>(<expr><name>transaction</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <if_stmt><if>if<condition>(<expr><call><name><name>transaction</name><operator>.</operator><name>getStatus</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <name><name>Transaction</name><operator>.</operator><name>STATUS_CLOSED</name></name></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>list</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>transaction</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></while>
+        <return>return <expr><name>list</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Close the transaction store.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>commit</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Begin a new transaction.
+     *
+     * @return the transaction
+     */</comment>
+    <function><type><specifier>public</specifier> <name>Transaction</name></type> <name>begin</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>begin</name><argument_list>(<argument><expr><name>ROLLBACK_LISTENER_NONE</name></expr></argument>, <argument><expr><name>timeoutMillis</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name><name>IsolationLevel</name><operator>.</operator><name>READ_COMMITTED</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Begin a new transaction.
+     * @param listener to be notified in case of a rollback
+     * @param timeoutMillis to wait for a blocking transaction
+     * @param ownerId of the owner (Session?) to be reported by getBlockerId
+     * @param isolationLevel of new transaction
+     * @return the transaction
+     */</comment>
+    <function><type><specifier>public</specifier> <name>Transaction</name></type> <name>begin</name><parameter_list>(<parameter><decl><type><name>RollbackListener</name></type> <name>listener</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>timeoutMillis</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>ownerId</name></decl></parameter>,
+            <parameter><decl><type><name>IsolationLevel</name></type> <name>isolationLevel</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>Transaction</name></type> <name>transaction</name> <init>= <expr><call><name>registerTransaction</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name><name>Transaction</name><operator>.</operator><name>STATUS_OPEN</name></name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>,
+                <argument><expr><name>timeoutMillis</name></expr></argument>, <argument><expr><name>ownerId</name></expr></argument>, <argument><expr><name>isolationLevel</name></expr></argument>, <argument><expr><name>listener</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><name>transaction</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>Transaction</name></type> <name>registerTransaction</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>txId</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>status</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>logId</name></decl></parameter>,
+                                            <parameter><decl><type><name>int</name></type> <name>timeoutMillis</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>ownerId</name></decl></parameter>,
+                                            <parameter><decl><type><name>IsolationLevel</name></type> <name>isolationLevel</name></decl></parameter>, <parameter><decl><type><name>RollbackListener</name></type> <name>listener</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>transactionId</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>sequenceNo</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>success</name></decl>;</decl_stmt>
+        <do>do <block>{<block_content>
+            <decl_stmt><decl><type><name>VersionedBitSet</name></type> <name>original</name> <init>= <expr><call><name><name>openTransactions</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>txId</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>transactionId</name> <operator>=</operator> <call><name><name>original</name><operator>.</operator><name>nextClearBit</name></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><name>transactionId</name> <operator>=</operator> <name>txId</name></expr>;</expr_stmt>
+                <assert>assert <expr><operator>!</operator><call><name><name>original</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>)</argument_list></call></expr>;</assert>
+            </block_content>}</block></else></if_stmt>
+            <if_stmt><if>if <condition>(<expr><name>transactionId</name> <operator>&gt;</operator> <name>maxTransactionId</name></expr>)</condition> <block>{<block_content>
+                <throw>throw <expr><call><name><name>DataUtils</name><operator>.</operator><name>newMVStoreException</name></name><argument_list>(
+                        <argument><expr><name><name>DataUtils</name><operator>.</operator><name>ERROR_TOO_MANY_OPEN_TRANSACTIONS</name></name></expr></argument>,
+                        <argument><expr><literal type="string">"There are {0} open transactions"</literal></expr></argument>,
+                        <argument><expr><name>transactionId</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+            <decl_stmt><decl><type><name>VersionedBitSet</name></type> <name>clone</name> <init>= <expr><call><name><name>original</name><operator>.</operator><name>clone</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>clone</name><operator>.</operator><name>set</name></name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>sequenceNo</name> <operator>=</operator> <call><name><name>clone</name><operator>.</operator><name>getVersion</name></name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="number">1</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>clone</name><operator>.</operator><name>setVersion</name></name><argument_list>(<argument><expr><name>sequenceNo</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>success</name> <operator>=</operator> <call><name><name>openTransactions</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>original</name></expr></argument>, <argument><expr><name>clone</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block> while<condition>(<expr><operator>!</operator><name>success</name></expr>)</condition>;</do>
+
+        <decl_stmt><decl><type><name>Transaction</name></type> <name>transaction</name> <init>= <expr><operator>new</operator> <call><name>Transaction</name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>transactionId</name></expr></argument>, <argument><expr><name>sequenceNo</name></expr></argument>, <argument><expr><name>status</name></expr></argument>, <argument><expr><name>name</name></expr></argument>, <argument><expr><name>logId</name></expr></argument>,
+                <argument><expr><name>timeoutMillis</name></expr></argument>, <argument><expr><name>ownerId</name></expr></argument>, <argument><expr><name>isolationLevel</name></expr></argument>, <argument><expr><name>listener</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <assert>assert <expr><call><name><name>transactions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="null">null</literal></expr>;</assert>
+        <expr_stmt><expr><call><name><name>transactions</name><operator>.</operator><name>set</name></name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>, <argument><expr><name>transaction</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name><name>undoLogs</name><index>[<expr><name>transactionId</name></expr>]</index></name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>undoName</name> <init>= <expr><call><name>getUndoLogName</name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>undoLog</name> <init>= <expr><call><name><name>store</name><operator>.</operator><name>openMap</name></name><argument_list>(<argument><expr><name>undoName</name></expr></argument>, <argument><expr><name>undoLogBuilder</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name><name>undoLogs</name><index>[<expr><name>transactionId</name></expr>]</index></name> <operator>=</operator> <name>undoLog</name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>transaction</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Store a transaction.
+     *
+     * @param t the transaction
+     */</comment>
+    <function><type><name>void</name></type> <name>storeTransaction</name><parameter_list>(<parameter><decl><type><name>Transaction</name></type> <name>t</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>t</name><operator>.</operator><name>getStatus</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Transaction</name><operator>.</operator><name>STATUS_PREPARED</name></name> <operator>||</operator>
+                <call><name><name>t</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Object</name><index>[]</index></name></type> <name>v</name> <init>= <expr><block>{ <expr><call><name><name>t</name><operator>.</operator><name>getStatus</name></name><argument_list>()</argument_list></call></expr>, <expr><call><name><name>t</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr> }</block></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>preparedTransactions</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>t</name><operator>.</operator><name>getId</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>v</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>t</name><operator>.</operator><name>wasStored</name></name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Add an undo log entry.
+     *
+     * @param transactionId id of the transaction
+     * @param logId sequential number of the log record within transaction
+     * @param record Record(mapId, key, previousValue) to add
+     * @return key for the added record
+     */</comment>
+    <function><type><name>long</name></type> <name>addUndoLogRecord</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>transactionId</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>logId</name></decl></parameter>, <parameter><decl><type><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>record</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>, <argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>undoLog</name> <init>= <expr><name><name>undoLogs</name><index>[<expr><name>transactionId</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>undoKey</name> <init>= <expr><call><name>getOperationId</name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>, <argument><expr><name>logId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>logId</name> <operator>==</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>undoLog</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DataUtils</name><operator>.</operator><name>newMVStoreException</name></name><argument_list>(
+                    <argument><expr><name><name>DataUtils</name><operator>.</operator><name>ERROR_TOO_MANY_OPEN_TRANSACTIONS</name></name></expr></argument>,
+                    <argument><expr><literal type="string">"An old transaction with the same id "</literal> <operator>+</operator>
+                    <literal type="string">"is still open: {0}"</literal></expr></argument>,
+                    <argument><expr><name>transactionId</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>undoLog</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name>undoKey</name></expr></argument>, <argument><expr><name>record</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>undoKey</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Remove an undo log entry.
+     * @param transactionId id of the transaction
+     */</comment>
+    <function><type><name>void</name></type> <name>removeUndoLogRecord</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>transactionId</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>undoLogs</name><index>[<expr><name>transactionId</name></expr>]</index></name><operator>.</operator><call><name>trimLast</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Remove the given map.
+     *
+     * @param map the map
+     */</comment>
+    <function><type><name>void</name></type> <name>removeMap</name><parameter_list>(<parameter><decl><type><name><name>TransactionMap</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>map</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>removeMap</name></name><argument_list>(<argument><expr><name><name>map</name><operator>.</operator><name>map</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Commit a transaction.
+     *  @param t transaction to commit
+     *  @param recovery if called during initial transaction recovery procedure
+     *                  therefore undo log is stored under "committed" name already
+     */</comment>
+    <function><type><name>void</name></type> <name>commit</name><parameter_list>(<parameter><decl><type><name>Transaction</name></type> <name>t</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>recovery</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>store</name><operator>.</operator><name>isClosed</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>transactionId</name> <init>= <expr><name><name>t</name><operator>.</operator><name>transactionId</name></name></expr></init></decl>;</decl_stmt>
+            <comment type="line">// First, mark log as "committed".</comment>
+            <comment type="line">// It does not change the way this transaction is treated by others,</comment>
+            <comment type="line">// but preserves fact of commit in case of abrupt termination.</comment>
+            <decl_stmt><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>undoLog</name> <init>= <expr><name><name>undoLogs</name><index>[<expr><name>transactionId</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Cursor</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>cursor</name></decl>;</decl_stmt>
+            <if_stmt><if>if<condition>(<expr><name>recovery</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name>removeUndoLogRecord</name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>cursor</name> <operator>=</operator> <call><name><name>undoLog</name><operator>.</operator><name>cursor</name></name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><name>cursor</name> <operator>=</operator> <call><name><name>undoLog</name><operator>.</operator><name>cursor</name></name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name>markUndoLogAsCommitted</name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+
+            <comment type="line">// this is an atomic action that causes all changes</comment>
+            <comment type="line">// made by this transaction, to be considered as "committed"</comment>
+            <expr_stmt><expr><call><name>flipCommittingTransactionsBit</name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <decl_stmt><decl><type><name><name>CommitDecisionMaker</name><argument_list type="generic">&lt;<argument><name>Object</name></argument>&gt;</argument_list></name></type> <name>commitDecisionMaker</name> <init>= <expr><operator>new</operator> <call><name><name>CommitDecisionMaker</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <try>try <block>{<block_content>
+                <while>while <condition>(<expr><call><name><name>cursor</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                    <decl_stmt><decl><type><name>Long</name></type> <name>undoKey</name> <init>= <expr><call><name><name>cursor</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>op</name> <init>= <expr><call><name><name>cursor</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>int</name></type> <name>mapId</name> <init>= <expr><name><name>op</name><operator>.</operator><name>mapId</name></name></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>Object</name></argument>, <argument><name><name>VersionedValue</name><argument_list type="generic">&lt;<argument><name>Object</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>map</name> <init>= <expr><call><name>openMap</name><argument_list>(<argument><expr><name>mapId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>map</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>map</name><operator>.</operator><name>isClosed</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content> <comment type="line">// might be null if map was removed later</comment>
+                        <decl_stmt><decl><type><name>Object</name></type> <name>key</name> <init>= <expr><name><name>op</name><operator>.</operator><name>key</name></name></expr></init></decl>;</decl_stmt>
+                        <expr_stmt><expr><call><name><name>commitDecisionMaker</name><operator>.</operator><name>setUndoKey</name></name><argument_list>(<argument><expr><name>undoKey</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <comment type="line">// second parameter (value) is not really</comment>
+                        <comment type="line">// used by CommitDecisionMaker</comment>
+                        <expr_stmt><expr><call><name><name>map</name><operator>.</operator><name>operate</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>commitDecisionMaker</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></while>
+            </block_content>}</block> <finally>finally <block>{<block_content>
+                <try>try <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>undoLog</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block> <finally>finally <block>{<block_content>
+                    <expr_stmt><expr><call><name>flipCommittingTransactionsBit</name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></finally></try>
+            </block_content>}</block></finally></try>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>flipCommittingTransactionsBit</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>transactionId</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>flag</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>success</name></decl>;</decl_stmt>
+        <do>do <block>{<block_content>
+            <decl_stmt><decl><type><name>BitSet</name></type> <name>original</name> <init>= <expr><call><name><name>committingTransactions</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <assert>assert <expr><call><name><name>original</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>)</argument_list></call> <operator>!=</operator> <name>flag</name> <operator>:</operator> <ternary><condition><expr><name>flag</name></expr> ?</condition><then> <expr><literal type="string">"Double commit"</literal></expr> </then><else>: <expr><literal type="string">"Mysterious bit's disappearance"</literal></expr></else></ternary></expr>;</assert>
+            <decl_stmt><decl><type><name>BitSet</name></type> <name>clone</name> <init>= <expr><operator>(</operator><name>BitSet</name><operator>)</operator> <call><name><name>original</name><operator>.</operator><name>clone</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>clone</name><operator>.</operator><name>set</name></name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>, <argument><expr><name>flag</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>success</name> <operator>=</operator> <call><name><name>committingTransactions</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>original</name></expr></argument>, <argument><expr><name>clone</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block> while<condition>(<expr><operator>!</operator><name>success</name></expr>)</condition>;</do>
+    </block_content>}</block></function>
+
+    <function><type><parameter_list type="generic">&lt;<parameter><name>K</name></parameter>,<parameter><name>V</name></parameter>&gt;</parameter_list> <name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name><name>VersionedValue</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>openVersionedMap</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>, <parameter><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>K</name></argument>&gt;</argument_list></name></type> <name>keyType</name></decl></parameter>, <parameter><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>valueType</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name><name>VersionedValueType</name><argument_list type="generic">&lt;<argument><name>V</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>vt</name> <init>= <expr><ternary><condition><expr><name>valueType</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><operator>new</operator> <call><name><name>VersionedValueType</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>valueType</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name>openMap</name><argument_list>(<argument><expr><name>name</name></expr></argument>, <argument><expr><name>keyType</name></expr></argument>, <argument><expr><name>vt</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Open the map with the given name.
+     *
+     * @param &lt;K&gt; the key type
+     * @param &lt;V&gt; the value type
+     * @param name the map name
+     * @param keyType the key type
+     * @param valueType the value type
+     * @return the map
+     */</comment>
+    <function><type><specifier>public</specifier> <parameter_list type="generic">&lt;<parameter><name>K</name></parameter>,<parameter><name>V</name></parameter>&gt;</parameter_list> <name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></type> <name>openMap</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>, <parameter><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>K</name></argument>&gt;</argument_list></name></type> <name>keyType</name></decl></parameter>, <parameter><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>valueType</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>store</name><operator>.</operator><name>openMap</name></name><argument_list>(<argument><expr><name>name</name></expr></argument>, <argument><expr><operator>new</operator> <call><name><name>TxMapBuilder</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name><argument_list>(<argument><expr><name>typeRegistry</name></expr></argument>, <argument><expr><name>dataType</name></expr></argument>)</argument_list></call>
+                                            <operator>.</operator><call><name>keyType</name><argument_list>(<argument><expr><name>keyType</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>valueType</name><argument_list>(<argument><expr><name>valueType</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Open the map with the given id.
+     *
+     * @param &lt;K&gt; key type
+     * @param &lt;V&gt; value type
+     *
+     * @param mapId the id
+     * @return the map
+     */</comment>
+    <function><type><parameter_list type="generic">&lt;<parameter><name>K</name></parameter>,<parameter><name>V</name></parameter>&gt;</parameter_list> <name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name><name>VersionedValue</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>openMap</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>mapId</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name><name>VersionedValue</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>map</name> <init>= <expr><call><name><name>store</name><operator>.</operator><name>getMap</name></name><argument_list>(<argument><expr><name>mapId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>map</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>mapName</name> <init>= <expr><call><name><name>store</name><operator>.</operator><name>getMapName</name></name><argument_list>(<argument><expr><name>mapId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>mapName</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <comment type="line">// the map was removed later on</comment>
+                <return>return <expr><literal type="null">null</literal></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <decl_stmt><decl><type><name><name>MVMap</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name><name>VersionedValue</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></name></type> <name>txMapBuilder</name> <init>= <expr><operator>new</operator> <call><name><name>TxMapBuilder</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>typeRegistry</name></expr></argument>, <argument><expr><name>dataType</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>map</name> <operator>=</operator> <call><name><name>store</name><operator>.</operator><name>openMap</name></name><argument_list>(<argument><expr><name>mapId</name></expr></argument>, <argument><expr><name>txMapBuilder</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>map</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><parameter_list type="generic">&lt;<parameter><name>K</name></parameter>,<parameter><name>V</name></parameter>&gt;</parameter_list> <name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>,<argument><name><name>VersionedValue</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>getMap</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>mapId</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name><name>VersionedValue</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>map</name> <init>= <expr><call><name><name>store</name><operator>.</operator><name>getMap</name></name><argument_list>(<argument><expr><name>mapId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>map</name> <operator>==</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><name>init</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>map</name> <operator>=</operator> <call><name>openMap</name><argument_list>(<argument><expr><name>mapId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <assert>assert <expr><name>map</name> <operator>!=</operator> <literal type="null">null</literal> <operator>:</operator> <literal type="string">"map with id "</literal> <operator>+</operator> <name>mapId</name> <operator>+</operator> <literal type="string">" is missing"</literal> <operator>+</operator>
+                                <operator>(</operator><ternary><condition><expr><name>init</name></expr> ?</condition><then> <expr><literal type="string">""</literal></expr> </then><else>: <expr><literal type="string">" during initialization"</literal></expr></else></ternary><operator>)</operator></expr>;</assert>
+        <return>return <expr><name>map</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * End this transaction. Change status to CLOSED and vacate transaction slot.
+     * Will try to commit MVStore if autocommitDelay is 0 or if database is idle
+     * and amount of unsaved changes is sizable.
+     *
+     * @param t the transaction
+     * @param hasChanges true if transaction has done any updates
+     *                  (even if they are fully rolled back),
+     *                   false if it just performed a data access
+     */</comment>
+    <function><type><name>void</name></type> <name>endTransaction</name><parameter_list>(<parameter><decl><type><name>Transaction</name></type> <name>t</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>hasChanges</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>t</name><operator>.</operator><name>closeIt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>txId</name> <init>= <expr><name><name>t</name><operator>.</operator><name>transactionId</name></name></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>transactions</name><operator>.</operator><name>set</name></name><argument_list>(<argument><expr><name>txId</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>boolean</name></type> <name>success</name></decl>;</decl_stmt>
+        <do>do <block>{<block_content>
+            <decl_stmt><decl><type><name>VersionedBitSet</name></type> <name>original</name> <init>= <expr><call><name><name>openTransactions</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <assert>assert <expr><call><name><name>original</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>txId</name></expr></argument>)</argument_list></call></expr>;</assert>
+            <decl_stmt><decl><type><name>VersionedBitSet</name></type> <name>clone</name> <init>= <expr><call><name><name>original</name><operator>.</operator><name>clone</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>clone</name><operator>.</operator><name>clear</name></name><argument_list>(<argument><expr><name>txId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>success</name> <operator>=</operator> <call><name><name>openTransactions</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>original</name></expr></argument>, <argument><expr><name>clone</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block> while<condition>(<expr><operator>!</operator><name>success</name></expr>)</condition>;</do>
+
+        <if_stmt><if>if <condition>(<expr><name>hasChanges</name></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>wasStored</name> <init>= <expr><name><name>t</name><operator>.</operator><name>wasStored</name></name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>wasStored</name> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>preparedTransactions</name><operator>.</operator><name>isClosed</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>preparedTransactions</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>txId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>store</name><operator>.</operator><name>getFileStore</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>wasStored</name> <operator>||</operator> <call><name><name>store</name><operator>.</operator><name>getAutoCommitDelay</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>commit</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if> <else>else <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name>isUndoEmpty</name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                        <comment type="line">// to avoid having to store the transaction log,</comment>
+                        <comment type="line">// if there is no open transaction,</comment>
+                        <comment type="line">// and if there have been many changes, store them now</comment>
+                        <decl_stmt><decl><type><name>int</name></type> <name>unsaved</name> <init>= <expr><call><name><name>store</name><operator>.</operator><name>getUnsavedMemory</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                        <decl_stmt><decl><type><name>int</name></type> <name>max</name> <init>= <expr><call><name><name>store</name><operator>.</operator><name>getAutoCommitMemory</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                        <comment type="line">// save at 3/4 capacity</comment>
+                        <if_stmt><if>if <condition>(<expr><name>unsaved</name> <operator>*</operator> <literal type="number">4</literal> <operator>&gt;</operator> <name>max</name> <operator>*</operator> <literal type="number">3</literal></expr>)</condition> <block>{<block_content>
+                            <expr_stmt><expr><call><name><name>store</name><operator>.</operator><name>tryCommit</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                        </block_content>}</block></if></if_stmt>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the root references (snapshots) for undo-log maps.
+     * Those snapshots can potentially be used to optimize TransactionMap.size().
+     *
+     * @return the array of root references or null if snapshotting is not possible
+     */</comment>
+    <function><type><name><name><name>RootReference</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name><index>[]</index></name></type> <name>collectUndoLogRootReferences</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>BitSet</name></type> <name>opentransactions</name> <init>= <expr><call><name><name>openTransactions</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unchecked"</literal></expr></argument>)</argument_list></annotation>
+        <type><name><name><name>RootReference</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name><index>[]</index></name></type> <name>undoLogRootReferences</name> <init>= <expr><operator>new</operator> <name><name>RootReference</name><index>[<expr><call><name><name>opentransactions</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr>]</index></name></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><call><name><name>opentransactions</name><operator>.</operator><name>nextSetBit</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr>;</condition> <incr><expr><name>i</name> <operator>=</operator> <call><name><name>opentransactions</name><operator>.</operator><name>nextSetBit</name></name><argument_list>(<argument><expr><name>i</name><operator>+</operator><literal type="number">1</literal></expr></argument>)</argument_list></call></expr></incr>)</control> <block>{<block_content>
+            <decl_stmt><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>undoLog</name> <init>= <expr><name><name>undoLogs</name><index>[<expr><name>i</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>undoLog</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <decl_stmt><decl><type><name><name>RootReference</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>rootReference</name> <init>= <expr><call><name><name>undoLog</name><operator>.</operator><name>getRoot</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>rootReference</name><operator>.</operator><name>needFlush</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                    <comment type="line">// abort attempt to collect snapshots for all undo logs</comment>
+                    <comment type="line">// because map's append buffer can't be flushed from a non-owning thread</comment>
+                    <return>return <expr><literal type="null">null</literal></expr>;</return>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><name><name>undoLogRootReferences</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <name>rootReference</name></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><name>undoLogRootReferences</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Calculate the size for undo log entries.
+     *
+     * @param undoLogRootReferences the root references
+     * @return the number of key-value pairs
+     */</comment>
+    <function><type><specifier>static</specifier> <name>long</name></type> <name>calculateUndoLogsTotalSize</name><parameter_list>(<parameter><decl><type><name><name><name>RootReference</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name><index>[]</index></name></type> <name>undoLogRootReferences</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>undoLogsTotalSize</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name><name>RootReference</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>rootReference</name> <range>: <expr><name>undoLogRootReferences</name></expr></range></decl></init>)</control> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>rootReference</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>undoLogsTotalSize</name> <operator>+=</operator> <call><name><name>rootReference</name><operator>.</operator><name>getTotalCount</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><name>undoLogsTotalSize</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>isUndoEmpty</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>BitSet</name></type> <name>openTrans</name> <init>= <expr><call><name><name>openTransactions</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><call><name><name>openTrans</name><operator>.</operator><name>nextSetBit</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr>;</condition> <incr><expr><name>i</name> <operator>=</operator> <call><name><name>openTrans</name><operator>.</operator><name>nextSetBit</name></name><argument_list>(<argument><expr><name>i</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr></incr>)</control> <block>{<block_content>
+            <decl_stmt><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>undoLog</name> <init>= <expr><name><name>undoLogs</name><index>[<expr><name>i</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>undoLog</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>undoLog</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get Transaction object for a transaction id.
+     *
+     * @param transactionId id for an open transaction
+     * @return Transaction object.
+     */</comment>
+    <function><type><name>Transaction</name></type> <name>getTransaction</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>transactionId</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>transactions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Rollback to an old savepoint.
+     *
+     * @param t the transaction
+     * @param maxLogId the last log id
+     * @param toLogId the log id to roll back to
+     */</comment>
+    <function><type><name>void</name></type> <name>rollbackTo</name><parameter_list>(<parameter><decl><type><name>Transaction</name></type> <name>t</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>maxLogId</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>toLogId</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>transactionId</name> <init>= <expr><call><name><name>t</name><operator>.</operator><name>getId</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>undoLog</name> <init>= <expr><name><name>undoLogs</name><index>[<expr><name>transactionId</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>RollbackDecisionMaker</name></type> <name>decisionMaker</name> <init>= <expr><operator>new</operator> <call><name>RollbackDecisionMaker</name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>transactionId</name></expr></argument>, <argument><expr><name>toLogId</name></expr></argument>, <argument><expr><name><name>t</name><operator>.</operator><name>listener</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>long</name></type> <name>logId</name> <init>= <expr><name>maxLogId</name> <operator>-</operator> <literal type="number">1</literal></expr></init></decl>;</init> <condition><expr><name>logId</name> <operator>&gt;=</operator> <name>toLogId</name></expr>;</condition> <incr><expr><name>logId</name><operator>--</operator></expr></incr>)</control> <block>{<block_content>
+            <decl_stmt><decl><type><name>Long</name></type> <name>undoKey</name> <init>= <expr><call><name>getOperationId</name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>, <argument><expr><name>logId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>undoLog</name><operator>.</operator><name>operate</name></name><argument_list>(<argument><expr><name>undoKey</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>decisionMaker</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>decisionMaker</name><operator>.</operator><name>reset</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the changes of the given transaction, starting from the latest log id
+     * back to the given log id.
+     *
+     * @param t the transaction
+     * @param maxLogId the maximum log id
+     * @param toLogId the minimum log id
+     * @return the changes
+     */</comment>
+    <function><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>Change</name></argument>&gt;</argument_list></name></type> <name>getChanges</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>Transaction</name></type> <name>t</name></decl></parameter>, <parameter><decl><type><specifier>final</specifier> <name>long</name></type> <name>maxLogId</name></decl></parameter>,
+            <parameter><decl><type><specifier>final</specifier> <name>long</name></type> <name>toLogId</name></decl></parameter>)</parameter_list> <block>{<block_content>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>Long</name></argument>,<argument><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>undoLog</name> <init>= <expr><name><name>undoLogs</name><index>[<expr><call><name><name>t</name><operator>.</operator><name>getId</name></name><argument_list>()</argument_list></call></expr>]</index></name></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <class><super><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>Change</name></argument>&gt;</argument_list></name></super><argument_list>()</argument_list> <block>{
+
+            <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>logId</name> <init>= <expr><name>maxLogId</name> <operator>-</operator> <literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><specifier>private</specifier> <name>Change</name></type> <name>current</name></decl>;</decl_stmt>
+
+            <function><type><specifier>private</specifier> <name>void</name></type> <name>fetchNext</name><parameter_list>()</parameter_list> <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>transactionId</name> <init>= <expr><call><name><name>t</name><operator>.</operator><name>getId</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <while>while <condition>(<expr><name>logId</name> <operator>&gt;=</operator> <name>toLogId</name></expr>)</condition> <block>{<block_content>
+                    <decl_stmt><decl><type><name>Long</name></type> <name>undoKey</name> <init>= <expr><call><name>getOperationId</name><argument_list>(<argument><expr><name>transactionId</name></expr></argument>, <argument><expr><name>logId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name><name>Record</name><argument_list type="generic">&lt;<argument><name>?</name></argument>,<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>op</name> <init>= <expr><call><name><name>undoLog</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>undoKey</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><name>logId</name><operator>--</operator></expr>;</expr_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>op</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                        <comment type="line">// partially rolled back: load previous</comment>
+                        <expr_stmt><expr><name>undoKey</name> <operator>=</operator> <call><name><name>undoLog</name><operator>.</operator><name>floorKey</name></name><argument_list>(<argument><expr><name>undoKey</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <if_stmt><if>if <condition>(<expr><name>undoKey</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name>getTransactionId</name><argument_list>(<argument><expr><name>undoKey</name></expr></argument>)</argument_list></call> <operator>!=</operator> <name>transactionId</name></expr>)</condition> <block>{<block_content>
+                            <break>break;</break>
+                        </block_content>}</block></if></if_stmt>
+                        <expr_stmt><expr><name>logId</name> <operator>=</operator> <call><name>getLogId</name><argument_list>(<argument><expr><name>undoKey</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <continue>continue;</continue>
+                    </block_content>}</block></if></if_stmt>
+                    <decl_stmt><decl><type><name>int</name></type> <name>mapId</name> <init>= <expr><name><name>op</name><operator>.</operator><name>mapId</name></name></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>Object</name></argument>, <argument><name><name>VersionedValue</name><argument_list type="generic">&lt;<argument><name>Object</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>m</name> <init>= <expr><call><name>openMap</name><argument_list>(<argument><expr><name>mapId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>m</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content> <comment type="line">// could be null if map was removed later on</comment>
+                        <decl_stmt><decl><type><name><name>VersionedValue</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>oldValue</name> <init>= <expr><name><name>op</name><operator>.</operator><name>oldValue</name></name></expr></init></decl>;</decl_stmt>
+                        <expr_stmt><expr><name>current</name> <operator>=</operator> <operator>new</operator> <call><name>Change</name><argument_list>(<argument><expr><call><name><name>m</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>op</name><operator>.</operator><name>key</name></name></expr></argument>,
+                                <argument><expr><ternary><condition><expr><name>oldValue</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>oldValue</name><operator>.</operator><name>getCurrentValue</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <return>return;</return>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></while>
+                <expr_stmt><expr><name>current</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>boolean</name></type> <name>hasNext</name><parameter_list>()</parameter_list> <block>{<block_content>
+                <if_stmt><if>if<condition>(<expr><name>current</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><call><name>fetchNext</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <return>return <expr><name>current</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>Change</name></type> <name>next</name><parameter_list>()</parameter_list> <block>{<block_content>
+                <if_stmt><if>if<condition>(<expr><operator>!</operator><call><name>hasNext</name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                    <throw>throw <expr><call><name><name>DataUtils</name><operator>.</operator><name>newUnsupportedOperationException</name></name><argument_list>(<argument><expr><literal type="string">"no data"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+                </block_content>}</block></if></if_stmt>
+                <decl_stmt><decl><type><name>Change</name></type> <name>result</name> <init>= <expr><name>current</name></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><name>current</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+                <return>return <expr><name>result</name></expr>;</return>
+            </block_content>}</block></function>
+
+        }</block></class></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * A change in a map.
+     */</comment>
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>Change</name> <block>{
+
+        <comment type="block" format="javadoc">/**
+         * The name of the map where the change occurred.
+         */</comment>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>String</name></type> <name>mapName</name></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+         * The key.
+         */</comment>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>Object</name></type> <name>key</name></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+         * The value.
+         */</comment>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>Object</name></type> <name>value</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>Change</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>mapName</name></decl></parameter>, <parameter><decl><type><name>Object</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>Object</name></type> <name>value</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>mapName</name></name> <operator>=</operator> <name>mapName</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>key</name></name> <operator>=</operator> <name>key</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>value</name></name> <operator>=</operator> <name>value</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * This listener can be registered with the transaction to be notified of
+     * every compensating change during transaction rollback.
+     * Normally this is not required, if no external resources were modified,
+     * because state of all transactional maps will be restored automatically.
+     * Only state of external resources, possibly modified by triggers
+     * need to be restored.
+     */</comment>
+    <interface><specifier>public</specifier> interface <name>RollbackListener</name> <block>{
+
+        <comment type="block" format="javadoc">/**
+         * Notified of a single map change (add/update/remove)
+         * @param map modified
+         * @param key of the modified entry
+         * @param existingValue value in the map (null if delete is rolled back)
+         * @param restoredValue value to be restored (null if add is rolled back)
+         */</comment>
+        <function_decl><type><name>void</name></type> <name>onRollback</name><parameter_list>(<parameter><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>Object</name></argument>,<argument><name><name>VersionedValue</name><argument_list type="generic">&lt;<argument><name>Object</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>map</name></decl></parameter>, <parameter><decl><type><name>Object</name></type> <name>key</name></decl></parameter>,
+                        <parameter><decl><type><name><name>VersionedValue</name><argument_list type="generic">&lt;<argument><name>Object</name></argument>&gt;</argument_list></name></type> <name>existingValue</name></decl></parameter>, <parameter><decl><type><name><name>VersionedValue</name><argument_list type="generic">&lt;<argument><name>Object</name></argument>&gt;</argument_list></name></type> <name>restoredValue</name></decl></parameter>)</parameter_list>;</function_decl>
+    }</block></interface>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>RollbackListener</name></type> <name>ROLLBACK_LISTENER_NONE</name> <init>= <expr><lambda><parameter_list>(<parameter><decl><name>map</name></decl></parameter>, <parameter><decl><name>key</name></decl></parameter>, <parameter><decl><name>existingValue</name></decl></parameter>, <parameter><decl><name>restoredValue</name></decl></parameter>)</parameter_list> -&gt; <block>{<block_content/>}</block></lambda></expr></init></decl>;</decl_stmt>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name><name>TxMapBuilder</name><parameter_list>&lt;<parameter><name>K</name></parameter>,<parameter><name>V</name></parameter>&gt;</parameter_list></name> <super_list><extends>extends <super><name><name>MVMap</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>K</name></argument>,<argument><name>V</name></argument>&gt;</argument_list></name></name></super></extends></super_list> <block>{
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>typeRegistry</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>DataType</name></type> <name>defaultDataType</name></decl>;</decl_stmt>
+
+        <constructor><name>TxMapBuilder</name><parameter_list>(<parameter><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>typeRegistry</name></decl></parameter>, <parameter><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>defaultDataType</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>typeRegistry</name></name> <operator>=</operator> <name>typeRegistry</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>defaultDataType</name></name> <operator>=</operator> <name>defaultDataType</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>registerDataType</name><parameter_list>(<parameter><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>dataType</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>key</name> <init>= <expr><call><name>getDataTypeRegistrationKey</name><argument_list>(<argument><expr><name>dataType</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>registeredDataType</name> <init>= <expr><call><name><name>typeRegistry</name><operator>.</operator><name>putIfAbsent</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><name>dataType</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if<condition>(<expr><name>registeredDataType</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <comment type="line">// TODO: ensure type consistency</comment>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>static</specifier> <name>String</name></type> <name>getDataTypeRegistrationKey</name><parameter_list>(<parameter><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>dataType</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <return>return <expr><call><name><name>Integer</name><operator>.</operator><name>toHexString</name></name><argument_list>(<argument><expr><call><name><name>Objects</name><operator>.</operator><name>hashCode</name></name><argument_list>(<argument><expr><name>dataType</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unchecked"</literal></expr></argument>)</argument_list></annotation>
+        <annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>,<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>MVStore</name></type> <name>store</name></decl></parameter>, <parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>Object</name></argument>&gt;</argument_list></name></type> <name>config</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <decl_stmt><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>K</name></argument>&gt;</argument_list></name></type> <name>keyType</name> <init>= <expr><call><name>getKeyType</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>keyType</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <decl_stmt><decl><type><name>String</name></type> <name>keyTypeKey</name> <init>= <expr><operator>(</operator><name>String</name><operator>)</operator> <call><name><name>config</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><literal type="string">"key"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>keyTypeKey</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>keyType</name> <operator>=</operator> <operator>(</operator><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>K</name></argument>&gt;</argument_list></name><operator>)</operator><call><name><name>typeRegistry</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>keyTypeKey</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>keyType</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                        <throw>throw <expr><call><name><name>DataUtils</name><operator>.</operator><name>newMVStoreException</name></name><argument_list>(<argument><expr><name><name>DataUtils</name><operator>.</operator><name>ERROR_UNKNOWN_DATA_TYPE</name></name></expr></argument>,
+                                <argument><expr><literal type="string">"Data type with hash {0} can not be found"</literal></expr></argument>, <argument><expr><name>keyTypeKey</name></expr></argument>)</argument_list></call></expr>;</throw>
+                    </block_content>}</block></if></if_stmt>
+                    <expr_stmt><expr><call><name>setKeyType</name><argument_list>(<argument><expr><name>keyType</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><call><name>registerDataType</name><argument_list>(<argument><expr><name>keyType</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+
+            <decl_stmt><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>valueType</name> <init>= <expr><call><name>getValueType</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>valueType</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <decl_stmt><decl><type><name>String</name></type> <name>valueTypeKey</name> <init>= <expr><operator>(</operator><name>String</name><operator>)</operator> <call><name><name>config</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><literal type="string">"val"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>valueTypeKey</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>valueType</name> <operator>=</operator> <operator>(</operator><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name><operator>)</operator><call><name><name>typeRegistry</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>valueTypeKey</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>valueType</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                        <throw>throw <expr><call><name><name>DataUtils</name><operator>.</operator><name>newMVStoreException</name></name><argument_list>(<argument><expr><name><name>DataUtils</name><operator>.</operator><name>ERROR_UNKNOWN_DATA_TYPE</name></name></expr></argument>,
+                                <argument><expr><literal type="string">"Data type with hash {0} can not be found"</literal></expr></argument>, <argument><expr><name>valueTypeKey</name></expr></argument>)</argument_list></call></expr>;</throw>
+                    </block_content>}</block></if></if_stmt>
+                    <expr_stmt><expr><call><name>setValueType</name><argument_list>(<argument><expr><name>valueType</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><call><name>registerDataType</name><argument_list>(<argument><expr><name>valueType</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name>getKeyType</name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name>setKeyType</name><argument_list>(<argument><expr><name>defaultDataType</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name>registerDataType</name><argument_list>(<argument><expr><call><name>getKeyType</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name>getValueType</name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name>setValueType</name><argument_list>(<argument><expr><operator>(</operator><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>?</name> <super>super <name>V</name></super></argument>&gt;</argument_list></name><operator>)</operator> <operator>new</operator> <call><name><name>VersionedValueType</name><argument_list type="generic">&lt;<argument><name>V</name></argument>,<argument><name>Object</name></argument>&gt;</argument_list></name><argument_list>(<argument><expr><name>defaultDataType</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name>registerDataType</name><argument_list>(<argument><expr><call><name>getValueType</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>config</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><literal type="string">"store"</literal></expr></argument>, <argument><expr><name>store</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>config</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><literal type="string">"key"</literal></expr></argument>, <argument><expr><call><name>getKeyType</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>config</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><literal type="string">"val"</literal></expr></argument>, <argument><expr><call><name>getValueType</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><call><name>create</name><argument_list>(<argument><expr><name>config</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unchecked"</literal></expr></argument>)</argument_list></annotation>
+        <type><specifier>protected</specifier> <name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>,<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>create</name><parameter_list>(<parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>,<argument><name>Object</name></argument>&gt;</argument_list></name></type> <name>config</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><literal type="string">"rtree"</literal><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><call><name><name>config</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><literal type="string">"type"</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+                <decl_stmt><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></type> <name>map</name> <init>= <expr><operator>(</operator><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name><operator>)</operator> <operator>new</operator> <call><name><name>MVRTreeMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>config</name></expr></argument>, <argument><expr><operator>(</operator><name>SpatialDataType</name><operator>)</operator> <call><name>getKeyType</name><argument_list>()</argument_list></call></expr></argument>,
+                        <argument><expr><call><name>getValueType</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <return>return <expr><name>map</name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <return>return <expr><operator>new</operator> <call><name><name>TMVMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>config</name></expr></argument>, <argument><expr><call><name>getKeyType</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>getValueType</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <class><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name><name>TMVMap</name><parameter_list>&lt;<parameter><name>K</name></parameter>,<parameter><name>V</name></parameter>&gt;</parameter_list></name> <super_list><extends>extends <super><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>,<argument><name>V</name></argument>&gt;</argument_list></name></super></extends></super_list> <block>{
+            <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>String</name></type> <name>type</name></decl>;</decl_stmt>
+
+            <constructor><name>TMVMap</name><parameter_list>(<parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>Object</name></argument>&gt;</argument_list></name></type> <name>config</name></decl></parameter>, <parameter><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>K</name></argument>&gt;</argument_list></name></type> <name>keyType</name></decl></parameter>, <parameter><decl><type><name><name>DataType</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>valueType</name></decl></parameter>)</parameter_list> <block>{<block_content>
+                <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>config</name></expr></argument>, <argument><expr><name>keyType</name></expr></argument>, <argument><expr><name>valueType</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>type</name> <operator>=</operator> <operator>(</operator><name>String</name><operator>)</operator><call><name><name>config</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><literal type="string">"type"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></constructor>
+
+            <constructor><specifier>private</specifier> <name>TMVMap</name><parameter_list>(<parameter><decl><type><name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></type> <name>source</name></decl></parameter>)</parameter_list> <block>{<block_content>
+                <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>source</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>type</name> <operator>=</operator> <call><name><name>source</name><operator>.</operator><name>getType</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></constructor>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>protected</specifier> <name><name>MVMap</name><argument_list type="generic">&lt;<argument><name>K</name></argument>, <argument><name>V</name></argument>&gt;</argument_list></name></type> <name>cloneIt</name><parameter_list>()</parameter_list> <block>{<block_content>
+                <return>return <expr><operator>new</operator> <call><name><name>TMVMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>public</specifier> <name>String</name></type> <name>getType</name><parameter_list>()</parameter_list> <block>{<block_content>
+                <return>return <expr><name>type</name></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><annotation>@<name>Override</name></annotation>
+            <type><specifier>protected</specifier> <name>String</name></type> <name>asString</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>)</parameter_list> <block>{<block_content>
+                <decl_stmt><decl><type><name>StringBuilder</name></type> <name>buff</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>buff</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><call><name><name>super</name><operator>.</operator><name>asString</name></name><argument_list>(<argument><expr><name>name</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>DataUtils</name><operator>.</operator><name>appendMap</name></name><argument_list>(<argument><expr><name>buff</name></expr></argument>, <argument><expr><literal type="string">"key"</literal></expr></argument>, <argument><expr><call><name>getDataTypeRegistrationKey</name><argument_list>(<argument><expr><call><name>getKeyType</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>DataUtils</name><operator>.</operator><name>appendMap</name></name><argument_list>(<argument><expr><name>buff</name></expr></argument>, <argument><expr><literal type="string">"val"</literal></expr></argument>, <argument><expr><call><name>getDataTypeRegistrationKey</name><argument_list>(<argument><expr><call><name>getValueType</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><call><name><name>buff</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</return>
+            </block_content>}</block></function>
+        }</block></class>
+    }</block></class>
+}</block></class>
+</unit>

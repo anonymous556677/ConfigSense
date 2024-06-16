@@ -1,0 +1,533 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/net/OutboundConnectionSettings.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name></name>;</package>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Preconditions</name></name>;</import>
+
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>WriteBufferWaterMark</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>auth</name><operator>.</operator><name>IInternodeAuthenticator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>Config</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>EncryptionOptions</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>EncryptionOptions</name><operator>.</operator><name>ServerEncryptionOptions</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>SystemKeyspace</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>IEndpointSnitch</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name><operator>.</operator><name>getEndpointSnitch</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>MessagingService</name><operator>.</operator><name>VERSION_40</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>MessagingService</name><operator>.</operator><name>instance</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A collection of settings to be passed around for outbound connections.
+ */</comment>
+<class><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><block>{ <expr><literal type="string">"WeakerAccess"</literal></expr>, <argument><expr><literal type="string">"unused"</literal></expr></argument> }</block></expr></argument>)</argument_list></annotation>
+<specifier>public</specifier> class <name>OutboundConnectionSettings</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>INTRADC_TCP_NODELAY_PROPERTY</name> <init>= <expr><name><name>Config</name><operator>.</operator><name>PROPERTY_PREFIX</name></name> <operator>+</operator> <literal type="string">"otc_intradc_tcp_nodelay"</literal></expr></init></decl>;</decl_stmt>
+    <comment type="block" format="javadoc">/**
+     * Enabled/disable TCP_NODELAY for intradc connections. Defaults to enabled.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>INTRADC_TCP_NODELAY</name> <init>= <expr><call><name><name>Boolean</name><operator>.</operator><name>parseBoolean</name></name><argument_list>(<argument><expr><call><name><name>System</name><operator>.</operator><name>getProperty</name></name><argument_list>(<argument><expr><name>INTRADC_TCP_NODELAY_PROPERTY</name></expr></argument>, <argument><expr><literal type="string">"true"</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <enum><specifier>public</specifier> enum <name>Framing</name>
+    <block>{
+        <comment type="line">// for  &lt; VERSION_40, implies no framing</comment>
+        <comment type="line">// for &gt;= VERSION_40, uses simple unprotected frames with header crc but no payload protection</comment>
+        <decl><name>UNPROTECTED</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></decl>,
+        <comment type="line">// for  &lt; VERSION_40, uses the jpountz framing format</comment>
+        <comment type="line">// for &gt;= VERSION_40, uses our framing format with header crc24</comment>
+        <decl><name>LZ4</name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></decl>,
+        <comment type="line">// for  &lt; VERSION_40, implies UNPROTECTED</comment>
+        <comment type="line">// for &gt;= VERSION_40, uses simple frames with separate header and payload crc</comment>
+        <decl><name>CRC</name><argument_list>(<argument><expr><literal type="number">2</literal></expr></argument>)</argument_list></decl>;
+
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>Framing</name></type> <name>forId</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>id</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <switch>switch <condition>(<expr><name>id</name></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><literal type="number">0</literal></expr>:</case> <return>return <expr><name>UNPROTECTED</name></expr>;</return>
+                <case>case <expr><literal type="number">1</literal></expr>:</case> <return>return <expr><name>LZ4</name></expr>;</return>
+                <case>case <expr><literal type="number">2</literal></expr>:</case> <return>return <expr><name>CRC</name></expr>;</return>
+            </block_content>}</block></switch>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>()</argument_list></call></expr>;</throw>
+        </block_content>}</block></function>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>id</name></decl>;</decl_stmt>
+        <constructor><name>Framing</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>id</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>id</name></name> <operator>=</operator> <name>id</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+    }</block></enum>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>IInternodeAuthenticator</name></type> <name>authenticator</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>to</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>connectTo</name></decl>;</decl_stmt> <comment type="line">// may be represented by a different IP address on this node's local network</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>EncryptionOptions</name></type> <name>encryption</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>Framing</name></type> <name>framing</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>Integer</name></type> <name>socketSendBufferSizeInBytes</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>Integer</name></type> <name>applicationSendQueueCapacityInBytes</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>Integer</name></type> <name>applicationSendQueueReserveEndpointCapacityInBytes</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name><name>ResourceLimits</name><operator>.</operator><name>Limit</name></name></type> <name>applicationSendQueueReserveGlobalCapacityInBytes</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>Boolean</name></type> <name>tcpNoDelay</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>int</name></type> <name>flushLowWaterMark</name></decl>, <decl><type ref="prev"/><name>flushHighWaterMark</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>Integer</name></type> <name>tcpConnectTimeoutInMS</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>Integer</name></type> <name>tcpUserTimeoutInMS</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>AcceptVersions</name></type> <name>acceptVersions</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>from</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>SocketFactory</name></type> <name>socketFactory</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>OutboundMessageCallbacks</name></type> <name>callbacks</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>OutboundDebugCallbacks</name></type> <name>debug</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>EndpointMessagingVersions</name></type> <name>endpointToVersion</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>OutboundConnectionSettings</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>to</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>to</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>public</specifier> <name>OutboundConnectionSettings</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>to</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>preferred</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>preferred</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="number">1</literal> <operator>&lt;&lt;</operator> <literal type="number">15</literal></expr></argument>, <argument><expr><literal type="number">1</literal> <operator>&lt;&lt;</operator> <literal type="number">16</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>private</specifier> <name>OutboundConnectionSettings</name><parameter_list>(<parameter><decl><type><name>IInternodeAuthenticator</name></type> <name>authenticator</name></decl></parameter>,
+                                       <parameter><decl><type><name>InetAddressAndPort</name></type> <name>to</name></decl></parameter>,
+                                       <parameter><decl><type><name>InetAddressAndPort</name></type> <name>connectTo</name></decl></parameter>,
+                                       <parameter><decl><type><name>EncryptionOptions</name></type> <name>encryption</name></decl></parameter>,
+                                       <parameter><decl><type><name>Framing</name></type> <name>framing</name></decl></parameter>,
+                                       <parameter><decl><type><name>Integer</name></type> <name>socketSendBufferSizeInBytes</name></decl></parameter>,
+                                       <parameter><decl><type><name>Integer</name></type> <name>applicationSendQueueCapacityInBytes</name></decl></parameter>,
+                                       <parameter><decl><type><name>Integer</name></type> <name>applicationSendQueueReserveEndpointCapacityInBytes</name></decl></parameter>,
+                                       <parameter><decl><type><name><name>ResourceLimits</name><operator>.</operator><name>Limit</name></name></type> <name>applicationSendQueueReserveGlobalCapacityInBytes</name></decl></parameter>,
+                                       <parameter><decl><type><name>Boolean</name></type> <name>tcpNoDelay</name></decl></parameter>,
+                                       <parameter><decl><type><name>int</name></type> <name>flushLowWaterMark</name></decl></parameter>,
+                                       <parameter><decl><type><name>int</name></type> <name>flushHighWaterMark</name></decl></parameter>,
+                                       <parameter><decl><type><name>Integer</name></type> <name>tcpConnectTimeoutInMS</name></decl></parameter>,
+                                       <parameter><decl><type><name>Integer</name></type> <name>tcpUserTimeoutInMS</name></decl></parameter>,
+                                       <parameter><decl><type><name>AcceptVersions</name></type> <name>acceptVersions</name></decl></parameter>,
+                                       <parameter><decl><type><name>InetAddressAndPort</name></type> <name>from</name></decl></parameter>,
+                                       <parameter><decl><type><name>SocketFactory</name></type> <name>socketFactory</name></decl></parameter>,
+                                       <parameter><decl><type><name>OutboundMessageCallbacks</name></type> <name>callbacks</name></decl></parameter>,
+                                       <parameter><decl><type><name>OutboundDebugCallbacks</name></type> <name>debug</name></decl></parameter>,
+                                       <parameter><decl><type><name>EndpointMessagingVersions</name></type> <name>endpointToVersion</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><name>socketSendBufferSizeInBytes</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <name>socketSendBufferSizeInBytes</name> <operator>==</operator> <literal type="number">0</literal> <operator>||</operator> <name>socketSendBufferSizeInBytes</name> <operator>&gt;=</operator> <literal type="number">1</literal> <operator>&lt;&lt;</operator> <literal type="number">10</literal></expr></argument>, <argument><expr><literal type="string">"illegal socket send buffer size: "</literal> <operator>+</operator> <name>socketSendBufferSizeInBytes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><name>applicationSendQueueCapacityInBytes</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <name>applicationSendQueueCapacityInBytes</name> <operator>&gt;=</operator> <literal type="number">1</literal> <operator>&lt;&lt;</operator> <literal type="number">10</literal></expr></argument>, <argument><expr><literal type="string">"illegal application send queue capacity: "</literal> <operator>+</operator> <name>applicationSendQueueCapacityInBytes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><name>tcpUserTimeoutInMS</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <name>tcpUserTimeoutInMS</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr></argument>, <argument><expr><literal type="string">"tcp user timeout must be non negative: "</literal> <operator>+</operator> <name>tcpUserTimeoutInMS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><name>tcpConnectTimeoutInMS</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <name>tcpConnectTimeoutInMS</name> <operator>&gt;</operator> <literal type="number">0</literal></expr></argument>, <argument><expr><literal type="string">"tcp connect timeout must be positive: "</literal> <operator>+</operator> <name>tcpConnectTimeoutInMS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>authenticator</name></name> <operator>=</operator> <name>authenticator</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>to</name></name> <operator>=</operator> <name>to</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>connectTo</name></name> <operator>=</operator> <name>connectTo</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>encryption</name></name> <operator>=</operator> <name>encryption</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>framing</name></name> <operator>=</operator> <name>framing</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>socketSendBufferSizeInBytes</name></name> <operator>=</operator> <name>socketSendBufferSizeInBytes</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>applicationSendQueueCapacityInBytes</name></name> <operator>=</operator> <name>applicationSendQueueCapacityInBytes</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>applicationSendQueueReserveEndpointCapacityInBytes</name></name> <operator>=</operator> <name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>applicationSendQueueReserveGlobalCapacityInBytes</name></name> <operator>=</operator> <name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>tcpNoDelay</name></name> <operator>=</operator> <name>tcpNoDelay</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>flushLowWaterMark</name></name> <operator>=</operator> <name>flushLowWaterMark</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>flushHighWaterMark</name></name> <operator>=</operator> <name>flushHighWaterMark</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>tcpConnectTimeoutInMS</name></name> <operator>=</operator> <name>tcpConnectTimeoutInMS</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>tcpUserTimeoutInMS</name></name> <operator>=</operator> <name>tcpUserTimeoutInMS</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>acceptVersions</name></name> <operator>=</operator> <name>acceptVersions</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>from</name></name> <operator>=</operator> <name>from</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>socketFactory</name></name> <operator>=</operator> <name>socketFactory</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>callbacks</name></name> <operator>=</operator> <name>callbacks</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>debug</name></name> <operator>=</operator> <name>debug</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>endpointToVersion</name></name> <operator>=</operator> <name>endpointToVersion</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>authenticate</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>authenticator</name><operator>.</operator><name>authenticate</name></name><argument_list>(<argument><expr><name><name>to</name><operator>.</operator><name>address</name></name></expr></argument>, <argument><expr><name><name>to</name><operator>.</operator><name>port</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>withEncryption</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>encryption</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"peer: (%s, %s), framing: %s, encryption: %s"</literal></expr></argument>,
+                             <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>, <argument><expr><call><name><name>SocketFactory</name><operator>.</operator><name>encryptionOptionsSummary</name></name><argument_list>(<argument><expr><name>encryption</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withAuthenticator</name><parameter_list>(<parameter><decl><type><name>IInternodeAuthenticator</name></type> <name>authenticator</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unused"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>toEndpoint</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>endpoint</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withConnectTo</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>connectTo</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withEncryption</name><parameter_list>(<parameter><decl><type><name>ServerEncryptionOptions</name></type> <name>encryption</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unused"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withFraming</name><parameter_list>(<parameter><decl><type><name>Framing</name></type> <name>framing</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>, <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withSocketSendBufferSizeInBytes</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>socketSendBufferSizeInBytes</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unused"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withApplicationSendQueueCapacityInBytes</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>applicationSendQueueCapacityInBytes</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withApplicationReserveSendQueueCapacityInBytes</name><parameter_list>(<parameter><decl><type><name>Integer</name></type> <name>applicationReserveSendQueueEndpointCapacityInBytes</name></decl></parameter>, <parameter><decl><type><name><name>ResourceLimits</name><operator>.</operator><name>Limit</name></name></type> <name>applicationReserveSendQueueGlobalCapacityInBytes</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationReserveSendQueueEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationReserveSendQueueGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unused"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withTcpNoDelay</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>tcpNoDelay</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unused"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withNettyBufferBounds</name><parameter_list>(<parameter><decl><type><name>WriteBufferWaterMark</name></type> <name>nettyBufferBounds</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withTcpConnectTimeoutInMS</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>tcpConnectTimeoutInMS</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withTcpUserTimeoutInMS</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>tcpUserTimeoutInMS</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withAcceptVersions</name><parameter_list>(<parameter><decl><type><name>AcceptVersions</name></type> <name>acceptVersions</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withFrom</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>from</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withSocketFactory</name><parameter_list>(<parameter><decl><type><name>SocketFactory</name></type> <name>socketFactory</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withCallbacks</name><parameter_list>(<parameter><decl><type><name>OutboundMessageCallbacks</name></type> <name>callbacks</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withDebugCallbacks</name><parameter_list>(<parameter><decl><type><name>OutboundDebugCallbacks</name></type> <name>debug</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><name>authenticator</name></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><name>connectTo</name></expr></argument>, <argument><expr><name>encryption</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>,
+                                              <argument><expr><name>socketSendBufferSizeInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr></argument>,
+                                              <argument><expr><name>tcpNoDelay</name></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>, <argument><expr><name>tcpConnectTimeoutInMS</name></expr></argument>,
+                                              <argument><expr><name>tcpUserTimeoutInMS</name></expr></argument>, <argument><expr><name>acceptVersions</name></expr></argument>, <argument><expr><name>from</name></expr></argument>, <argument><expr><name>socketFactory</name></expr></argument>, <argument><expr><name>callbacks</name></expr></argument>, <argument><expr><name>debug</name></expr></argument>, <argument><expr><name>endpointToVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withDefaultReserveLimits</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Integer</name></type> <name>applicationReserveSendQueueEndpointCapacityInBytes</name> <init>= <expr><name><name>this</name><operator>.</operator><name>applicationSendQueueReserveEndpointCapacityInBytes</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>ResourceLimits</name><operator>.</operator><name>Limit</name></name></type> <name>applicationReserveSendQueueGlobalCapacityInBytes</name> <init>= <expr><name><name>this</name><operator>.</operator><name>applicationSendQueueReserveGlobalCapacityInBytes</name></name></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>applicationReserveSendQueueEndpointCapacityInBytes</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>applicationReserveSendQueueEndpointCapacityInBytes</name> <operator>=</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getInternodeApplicationSendQueueReserveEndpointCapacityInBytes</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>applicationReserveSendQueueGlobalCapacityInBytes</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>applicationReserveSendQueueGlobalCapacityInBytes</name> <operator>=</operator> <call><name><name>MessagingService</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call><operator>.</operator><name>outboundGlobalReserveLimit</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name>withApplicationReserveSendQueueCapacityInBytes</name><argument_list>(<argument><expr><name>applicationReserveSendQueueEndpointCapacityInBytes</name></expr></argument>, <argument><expr><name>applicationReserveSendQueueGlobalCapacityInBytes</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>IInternodeAuthenticator</name></type> <name>authenticator</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>authenticator</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>authenticator</name></expr> </then><else>: <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getInternodeAuthenticator</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>EndpointMessagingVersions</name></type> <name>endpointToVersion</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>endpointToVersion</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>instance</name><argument_list>()</argument_list></call><operator>.</operator><name>versions</name></expr>;</return></block_content></block></if></if_stmt>
+        <return>return <expr><name>endpointToVersion</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>InetAddressAndPort</name></type> <name>from</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>from</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>from</name></expr> </then><else>: <expr><call><name><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundDebugCallbacks</name></type> <name>debug</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>debug</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>debug</name></expr> </then><else>: <expr><name><name>OutboundDebugCallbacks</name><operator>.</operator><name>NONE</name></name></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>EncryptionOptions</name></type> <name>encryption</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>encryption</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>encryption</name></expr> </then><else>: <expr><call><name>defaultEncryptionOptions</name><argument_list>(<argument><expr><name>to</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>SocketFactory</name></type> <name>socketFactory</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>socketFactory</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>socketFactory</name></expr> </then><else>: <expr><call><name>instance</name><argument_list>()</argument_list></call><operator>.</operator><name>socketFactory</name></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundMessageCallbacks</name></type> <name>callbacks</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>callbacks</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>callbacks</name></expr> </then><else>: <expr><call><name>instance</name><argument_list>()</argument_list></call><operator>.</operator><name>callbacks</name></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>socketSendBufferSizeInBytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>socketSendBufferSizeInBytes</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>socketSendBufferSizeInBytes</name></expr>
+                                                   </then><else>: <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getInternodeSocketSendBufferSizeInBytes</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>applicationSendQueueCapacityInBytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>applicationSendQueueCapacityInBytes</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>applicationSendQueueCapacityInBytes</name></expr>
+                                                           </then><else>: <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getInternodeApplicationSendQueueCapacityInBytes</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>ResourceLimits</name><operator>.</operator><name>Limit</name></name></type> <name>applicationSendQueueReserveGlobalCapacityInBytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>applicationSendQueueReserveGlobalCapacityInBytes</name></expr>
+                                                                        </then><else>: <expr><call><name>instance</name><argument_list>()</argument_list></call><operator>.</operator><name>outboundGlobalReserveLimit</name></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>applicationSendQueueReserveEndpointCapacityInBytes</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>applicationSendQueueReserveEndpointCapacityInBytes</name></expr>
+                                                                          </then><else>: <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getInternodeApplicationReceiveQueueReserveEndpointCapacityInBytes</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>tcpConnectTimeoutInMS</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>tcpConnectTimeoutInMS</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>tcpConnectTimeoutInMS</name></expr>
+                                             </then><else>: <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getInternodeTcpConnectTimeoutInMS</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>tcpUserTimeoutInMS</name><parameter_list>(<parameter><decl><type><name>ConnectionCategory</name></type> <name>category</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// Reusing tcpUserTimeoutInMS for both messaging and streaming, since the connection is created for either one of them.</comment>
+        <if_stmt><if>if <condition>(<expr><name>tcpUserTimeoutInMS</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>tcpUserTimeoutInMS</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <switch>switch <condition>(<expr><name>category</name></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><name>MESSAGING</name></expr>:</case> <return>return <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getInternodeTcpUserTimeoutInMS</name></name><argument_list>()</argument_list></call></expr>;</return>
+            <case>case <expr><name>STREAMING</name></expr>:</case> <return>return <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getInternodeStreamingTcpUserTimeoutInMS</name></name><argument_list>()</argument_list></call></expr>;</return>
+            <default>default:</default> <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Unknown connection category: "</literal> <operator>+</operator> <name>category</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>tcpNoDelay</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>tcpNoDelay</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>tcpNoDelay</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name>isInLocalDC</name><argument_list>(<argument><expr><call><name>getEndpointSnitch</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>getBroadcastAddressAndPort</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>to</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>INTRADC_TCP_NODELAY</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getInterDCTcpNoDelay</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>AcceptVersions</name></type> <name>acceptVersions</name><parameter_list>(<parameter><decl><type><name>ConnectionCategory</name></type> <name>category</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>acceptVersions</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>acceptVersions</name></expr>
+                                      </then><else>: <expr><ternary><condition><expr><call><name><name>category</name><operator>.</operator><name>isStreaming</name></name><argument_list>()</argument_list></call></expr>
+                                        ?</condition><then> <expr><name><name>MessagingService</name><operator>.</operator><name>accept_streaming</name></name></expr>
+                                        </then><else>: <expr><name><name>MessagingService</name><operator>.</operator><name>accept_messaging</name></name></expr></else></ternary></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withLegacyPortIfNecessary</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>messagingVersion</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>withConnectTo</name><argument_list>(<argument><expr><call><name>maybeWithSecurePort</name><argument_list>(<argument><expr><call><name>connectTo</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>messagingVersion</name></expr></argument>, <argument><expr><call><name>withEncryption</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>InetAddressAndPort</name></type> <name>connectTo</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>connectTo</name> <init>= <expr><name><name>this</name><operator>.</operator><name>connectTo</name></name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>connectTo</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>connectTo</name> <operator>=</operator> <call><name><name>SystemKeyspace</name><operator>.</operator><name>getPreferredIP</name></name><argument_list>(<argument><expr><name>to</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <return>return <expr><name>connectTo</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>connectToId</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><operator>!</operator><call><name><name>to</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name>connectTo</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>
+             ?</condition><then> <expr><call><name><name>to</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>
+             </then><else>: <expr><call><name><name>to</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="char">'('</literal> <operator>+</operator> <call><name>connectTo</name><argument_list>()</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="char">')'</literal></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Framing</name></type> <name>framing</name><parameter_list>(<parameter><decl><type><name>ConnectionCategory</name></type> <name>category</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>framing</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>framing</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>category</name><operator>.</operator><name>isStreaming</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name><name>Framing</name><operator>.</operator><name>UNPROTECTED</name></name></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><ternary><condition><expr><call><name>shouldCompressConnection</name><argument_list>(<argument><expr><call><name>getEndpointSnitch</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>getBroadcastAddressAndPort</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>to</name></expr></argument>)</argument_list></call></expr>
+               ?</condition><then> <expr><name><name>Framing</name><operator>.</operator><name>LZ4</name></name></expr> </then><else>: <expr><name><name>Framing</name><operator>.</operator><name>CRC</name></name></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// note that connectTo is updated even if specified, in the case of pre40 messaging and using encryption (to update port)</comment>
+    <function><type><specifier>public</specifier> <name>OutboundConnectionSettings</name></type> <name>withDefaults</name><parameter_list>(<parameter><decl><type><name>ConnectionCategory</name></type> <name>category</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>to</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>()</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <return>return <expr><operator>new</operator> <call><name>OutboundConnectionSettings</name><argument_list>(<argument><expr><call><name>authenticator</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>to</name></expr></argument>, <argument><expr><call><name>connectTo</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>encryption</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>framing</name><argument_list>(<argument><expr><name>category</name></expr></argument>)</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>socketSendBufferSizeInBytes</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>applicationSendQueueCapacityInBytes</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>applicationSendQueueReserveEndpointCapacityInBytes</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>applicationSendQueueReserveGlobalCapacityInBytes</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>tcpNoDelay</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>flushLowWaterMark</name></expr></argument>, <argument><expr><name>flushHighWaterMark</name></expr></argument>,
+                                              <argument><expr><call><name>tcpConnectTimeoutInMS</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>tcpUserTimeoutInMS</name><argument_list>(<argument><expr><name>category</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name>acceptVersions</name><argument_list>(<argument><expr><name>category</name></expr></argument>)</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>from</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>socketFactory</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>callbacks</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>debug</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>endpointToVersion</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>isInLocalDC</name><parameter_list>(<parameter><decl><type><name>IEndpointSnitch</name></type> <name>snitch</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>localHost</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>remoteHost</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>remoteDC</name> <init>= <expr><call><name><name>snitch</name><operator>.</operator><name>getDatacenter</name></name><argument_list>(<argument><expr><name>remoteHost</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>String</name></type> <name>localDC</name> <init>= <expr><call><name><name>snitch</name><operator>.</operator><name>getDatacenter</name></name><argument_list>(<argument><expr><name>localHost</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><name>remoteDC</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>remoteDC</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>localDC</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>static</specifier> <name>EncryptionOptions</name></type> <name>defaultEncryptionOptions</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ServerEncryptionOptions</name></type> <name>options</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getInternodeMessagingEncyptionOptions</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><ternary><condition><expr><call><name><name>options</name><operator>.</operator><name>shouldEncrypt</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><name>options</name></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>static</specifier> <name>boolean</name></type> <name>shouldCompressConnection</name><parameter_list>(<parameter><decl><type><name>IEndpointSnitch</name></type> <name>snitch</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>localHost</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>remoteHost</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>(</operator><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>internodeCompression</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Config</name><operator>.</operator><name>InternodeCompression</name><operator>.</operator><name>all</name></name><operator>)</operator>
+               <operator>||</operator> <operator>(</operator><operator>(</operator><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>internodeCompression</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Config</name><operator>.</operator><name>InternodeCompression</name><operator>.</operator><name>dc</name></name><operator>)</operator> <operator>&amp;&amp;</operator> <operator>!</operator><call><name>isInLocalDC</name><argument_list>(<argument><expr><name>snitch</name></expr></argument>, <argument><expr><name>localHost</name></expr></argument>, <argument><expr><name>remoteHost</name></expr></argument>)</argument_list></call><operator>)</operator></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>InetAddressAndPort</name></type> <name>maybeWithSecurePort</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>address</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>messagingVersion</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isEncrypted</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>isEncrypted</name> <operator>||</operator> <name>messagingVersion</name> <operator>&gt;=</operator> <name>VERSION_40</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>address</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// if we don't know the version of the peer, assume it is 4.0 (or higher) as the only time is would be lower</comment>
+        <comment type="line">// (as in a 3.x version) is during a cluster upgrade (from 3.x to 4.0). In that case the outbound connection will</comment>
+        <comment type="line">// unfortunately fail - however the peer should connect to this node (at some point), and once we learn it's version, it'll be</comment>
+        <comment type="line">// in versions map. thus, when we attempt to reconnect to that node, we'll have the version and we can get the correct port.</comment>
+        <comment type="line">// we will be able to remove this logic at 5.0.</comment>
+        <comment type="line">// Also as of 4.0 we will propagate the "regular" port (which will support both SSL and non-SSL) via gossip so</comment>
+        <comment type="line">// for SSL and version 4.0 always connect to the gossiped port because if SSL is enabled it should ALWAYS</comment>
+        <comment type="line">// listen for SSL on the "regular" port.</comment>
+        <return>return <expr><call><name><name>address</name><operator>.</operator><name>withPort</name></name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getSSLStoragePort</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

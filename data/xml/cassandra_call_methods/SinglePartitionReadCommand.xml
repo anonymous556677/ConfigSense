@@ -1,0 +1,1215 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/SinglePartitionReadCommand.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Sets</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cache</name><operator>.</operator><name>IRowCacheEntry</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cache</name><operator>.</operator><name>RowCacheKey</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cache</name><operator>.</operator><name>RowCacheSentinel</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>lifecycle</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>transform</name><operator>.</operator><name>RTBoundValidator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>transform</name><operator>.</operator><name>Transformation</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>RequestExecutionException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>format</name><operator>.</operator><name>SSTableReader</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>format</name><operator>.</operator><name>SSTableReadsListener</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataInputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>TableMetrics</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>Verb</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>ColumnMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>IndexMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>tracing</name><operator>.</operator><name>Tracing</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>btree</name><operator>.</operator><name>BTreeSet</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A read command that selects a (part of a) single partition.
+ */</comment>
+<class><specifier>public</specifier> class <name>SinglePartitionReadCommand</name> <super_list><extends>extends <super><name>ReadCommand</name></super></extends> <implements>implements <super><name>SinglePartitionReadQuery</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>SelectionDeserializer</name></type> <name>selectionDeserializer</name> <init>= <expr><operator>new</operator> <call><name>Deserializer</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>DecoratedKey</name></type> <name>partitionKey</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ClusteringIndexFilter</name></type> <name>clusteringIndexFilter</name></decl>;</decl_stmt>
+
+    <constructor><annotation>@<name>VisibleForTesting</name></annotation>
+    <specifier>protected</specifier> <name>SinglePartitionReadCommand</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>isDigest</name></decl></parameter>,
+                                         <parameter><decl><type><name>int</name></type> <name>digestVersion</name></decl></parameter>,
+                                         <parameter><decl><type><name>boolean</name></type> <name>acceptsTransient</name></decl></parameter>,
+                                         <parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>,
+                                         <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                         <parameter><decl><type><name>ColumnFilter</name></type> <name>columnFilter</name></decl></parameter>,
+                                         <parameter><decl><type><name>RowFilter</name></type> <name>rowFilter</name></decl></parameter>,
+                                         <parameter><decl><type><name>DataLimits</name></type> <name>limits</name></decl></parameter>,
+                                         <parameter><decl><type><name>DecoratedKey</name></type> <name>partitionKey</name></decl></parameter>,
+                                         <parameter><decl><type><name>ClusteringIndexFilter</name></type> <name>clusteringIndexFilter</name></decl></parameter>,
+                                         <parameter><decl><type><name>IndexMetadata</name></type> <name>index</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name><name>Kind</name><operator>.</operator><name>SINGLE_PARTITION</name></name></expr></argument>, <argument><expr><name>isDigest</name></expr></argument>, <argument><expr><name>digestVersion</name></expr></argument>, <argument><expr><name>acceptsTransient</name></expr></argument>, <argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>columnFilter</name></expr></argument>, <argument><expr><name>rowFilter</name></expr></argument>, <argument><expr><name>limits</name></expr></argument>, <argument><expr><name>index</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <assert>assert <expr><call><name><name>partitionKey</name><operator>.</operator><name>getPartitioner</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>metadata</name><operator>.</operator><name>partitioner</name></name></expr>;</assert>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>partitionKey</name></name> <operator>=</operator> <name>partitionKey</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>clusteringIndexFilter</name></name> <operator>=</operator> <name>clusteringIndexFilter</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new read command on a single partition.
+     *
+     * @param metadata the table to query.
+     * @param nowInSec the time in seconds to use are "now" for this query.
+     * @param columnFilter the column filter to use for the query.
+     * @param rowFilter the row filter to use for the query.
+     * @param limits the limits to use for the query.
+     * @param partitionKey the partition key for the partition to query.
+     * @param clusteringIndexFilter the clustering index filter to use for the query.
+     * @param indexMetadata explicitly specified index to use for the query
+     *
+     * @return a newly created read command.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SinglePartitionReadCommand</name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>,
+                                                    <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                                    <parameter><decl><type><name>ColumnFilter</name></type> <name>columnFilter</name></decl></parameter>,
+                                                    <parameter><decl><type><name>RowFilter</name></type> <name>rowFilter</name></decl></parameter>,
+                                                    <parameter><decl><type><name>DataLimits</name></type> <name>limits</name></decl></parameter>,
+                                                    <parameter><decl><type><name>DecoratedKey</name></type> <name>partitionKey</name></decl></parameter>,
+                                                    <parameter><decl><type><name>ClusteringIndexFilter</name></type> <name>clusteringIndexFilter</name></decl></parameter>,
+                                                    <parameter><decl><type><name>IndexMetadata</name></type> <name>indexMetadata</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>SinglePartitionReadCommand</name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>,
+                                              <argument><expr><literal type="number">0</literal></expr></argument>,
+                                              <argument><expr><literal type="boolean">false</literal></expr></argument>,
+                                              <argument><expr><name>metadata</name></expr></argument>,
+                                              <argument><expr><name>nowInSec</name></expr></argument>,
+                                              <argument><expr><name>columnFilter</name></expr></argument>,
+                                              <argument><expr><name>rowFilter</name></expr></argument>,
+                                              <argument><expr><name>limits</name></expr></argument>,
+                                              <argument><expr><name>partitionKey</name></expr></argument>,
+                                              <argument><expr><name>clusteringIndexFilter</name></expr></argument>,
+                                              <argument><expr><name>indexMetadata</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new read command on a single partition.
+     *
+     * @param metadata the table to query.
+     * @param nowInSec the time in seconds to use are "now" for this query.
+     * @param columnFilter the column filter to use for the query.
+     * @param rowFilter the row filter to use for the query.
+     * @param limits the limits to use for the query.
+     * @param partitionKey the partition key for the partition to query.
+     * @param clusteringIndexFilter the clustering index filter to use for the query.
+     *
+     * @return a newly created read command.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SinglePartitionReadCommand</name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>,
+                                                    <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                                    <parameter><decl><type><name>ColumnFilter</name></type> <name>columnFilter</name></decl></parameter>,
+                                                    <parameter><decl><type><name>RowFilter</name></type> <name>rowFilter</name></decl></parameter>,
+                                                    <parameter><decl><type><name>DataLimits</name></type> <name>limits</name></decl></parameter>,
+                                                    <parameter><decl><type><name>DecoratedKey</name></type> <name>partitionKey</name></decl></parameter>,
+                                                    <parameter><decl><type><name>ClusteringIndexFilter</name></type> <name>clusteringIndexFilter</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>create</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>,
+                      <argument><expr><name>nowInSec</name></expr></argument>,
+                      <argument><expr><name>columnFilter</name></expr></argument>,
+                      <argument><expr><name>rowFilter</name></expr></argument>,
+                      <argument><expr><name>limits</name></expr></argument>,
+                      <argument><expr><name>partitionKey</name></expr></argument>,
+                      <argument><expr><name>clusteringIndexFilter</name></expr></argument>,
+                      <argument><expr><call><name>findIndex</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>rowFilter</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new read command on a single partition.
+     *
+     * @param metadata the table to query.
+     * @param nowInSec the time in seconds to use are "now" for this query.
+     * @param key the partition key for the partition to query.
+     * @param columnFilter the column filter to use for the query.
+     * @param filter the clustering index filter to use for the query.
+     *
+     * @return a newly created read command. The returned command will use no row filter and have no limits.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SinglePartitionReadCommand</name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>,
+                                                    <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                                    <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>,
+                                                    <parameter><decl><type><name>ColumnFilter</name></type> <name>columnFilter</name></decl></parameter>,
+                                                    <parameter><decl><type><name>ClusteringIndexFilter</name></type> <name>filter</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>create</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>columnFilter</name></expr></argument>, <argument><expr><name><name>RowFilter</name><operator>.</operator><name>NONE</name></name></expr></argument>, <argument><expr><name><name>DataLimits</name><operator>.</operator><name>NONE</name></name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>filter</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new read command that queries a single partition in its entirety.
+     *
+     * @param metadata the table to query.
+     * @param nowInSec the time in seconds to use are "now" for this query.
+     * @param key the partition key for the partition to query.
+     *
+     * @return a newly created read command that queries all the rows of {@code key}.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SinglePartitionReadCommand</name></type> <name>fullPartitionRead</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>create</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name><name>Slices</name><operator>.</operator><name>ALL</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new read command that queries a single partition in its entirety.
+     *
+     * @param metadata the table to query.
+     * @param nowInSec the time in seconds to use are "now" for this query.
+     * @param key the partition key for the partition to query.
+     *
+     * @return a newly created read command that queries all the rows of {@code key}.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SinglePartitionReadCommand</name></type> <name>fullPartitionRead</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>key</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>create</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><call><name><name>metadata</name><operator>.</operator><name>partitioner</name><operator>.</operator><name>decorateKey</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>Slices</name><operator>.</operator><name>ALL</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new single partition slice command for the provided single slice.
+     *
+     * @param metadata the table to query.
+     * @param nowInSec the time in seconds to use are "now" for this query.
+     * @param key the partition key for the partition to query.
+     * @param slice the slice of rows to query.
+     *
+     * @return a newly created read command that queries {@code slice} in {@code key}. The returned query will
+     * query every columns for the table (without limit or row filtering) and be in forward order.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SinglePartitionReadCommand</name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>Slice</name></type> <name>slice</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>create</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><call><name><name>Slices</name><operator>.</operator><name>with</name></name><argument_list>(<argument><expr><name><name>metadata</name><operator>.</operator><name>comparator</name></name></expr></argument>, <argument><expr><name>slice</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new single partition slice command for the provided slices.
+     *
+     * @param metadata the table to query.
+     * @param nowInSec the time in seconds to use are "now" for this query.
+     * @param key the partition key for the partition to query.
+     * @param slices the slices of rows to query.
+     *
+     * @return a newly created read command that queries the {@code slices} in {@code key}. The returned query will
+     * query every columns for the table (without limit or row filtering) and be in forward order.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SinglePartitionReadCommand</name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>Slices</name></type> <name>slices</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ClusteringIndexSliceFilter</name></type> <name>filter</name> <init>= <expr><operator>new</operator> <call><name>ClusteringIndexSliceFilter</name><argument_list>(<argument><expr><name>slices</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name>create</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><call><name><name>ColumnFilter</name><operator>.</operator><name>all</name></name><argument_list>(<argument><expr><name>metadata</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>RowFilter</name><operator>.</operator><name>NONE</name></name></expr></argument>, <argument><expr><name><name>DataLimits</name><operator>.</operator><name>NONE</name></name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>filter</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new single partition slice command for the provided slices.
+     *
+     * @param metadata the table to query.
+     * @param nowInSec the time in seconds to use are "now" for this query.
+     * @param key the partition key for the partition to query.
+     * @param slices the slices of rows to query.
+     *
+     * @return a newly created read command that queries the {@code slices} in {@code key}. The returned query will
+     * query every columns for the table (without limit or row filtering) and be in forward order.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SinglePartitionReadCommand</name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>ByteBuffer</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>Slices</name></type> <name>slices</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>create</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><call><name><name>metadata</name><operator>.</operator><name>partitioner</name><operator>.</operator><name>decorateKey</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>slices</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new single partition name command for the provided rows.
+     *
+     * @param metadata the table to query.
+     * @param nowInSec the time in seconds to use are "now" for this query.
+     * @param key the partition key for the partition to query.
+     * @param names the clustering for the rows to query.
+     *
+     * @return a newly created read command that queries the {@code names} in {@code key}. The returned query will
+     * query every columns (without limit or row filtering) and be in forward order.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SinglePartitionReadCommand</name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name><name>NavigableSet</name><argument_list type="generic">&lt;<argument><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>names</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ClusteringIndexNamesFilter</name></type> <name>filter</name> <init>= <expr><operator>new</operator> <call><name>ClusteringIndexNamesFilter</name><argument_list>(<argument><expr><name>names</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name>create</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><call><name><name>ColumnFilter</name><operator>.</operator><name>all</name></name><argument_list>(<argument><expr><name>metadata</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>RowFilter</name><operator>.</operator><name>NONE</name></name></expr></argument>, <argument><expr><name><name>DataLimits</name><operator>.</operator><name>NONE</name></name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>filter</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Creates a new single partition name command for the provided row.
+     *
+     * @param metadata the table to query.
+     * @param nowInSec the time in seconds to use are "now" for this query.
+     * @param key the partition key for the partition to query.
+     * @param name the clustering for the row to query.
+     *
+     * @return a newly created read command that queries {@code name} in {@code key}. The returned query will
+     * query every columns (without limit or row filtering).
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SinglePartitionReadCommand</name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>name</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>create</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>singleton</name></name><argument_list>(<argument><expr><name>name</name></expr></argument>, <argument><expr><name><name>metadata</name><operator>.</operator><name>comparator</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>SinglePartitionReadCommand</name></type> <name>copy</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>SinglePartitionReadCommand</name><argument_list>(<argument><expr><call><name>isDigestQuery</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>digestVersion</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>acceptsTransient</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>nowInSec</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>rowFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>limits</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>indexMetadata</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>protected</specifier> <name>SinglePartitionReadCommand</name></type> <name>copyAsDigestQuery</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>SinglePartitionReadCommand</name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>,
+                                              <argument><expr><call><name>digestVersion</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>acceptsTransient</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>nowInSec</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>rowFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>limits</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>indexMetadata</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>protected</specifier> <name>SinglePartitionReadCommand</name></type> <name>copyAsTransientQuery</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>SinglePartitionReadCommand</name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>,
+                                              <argument><expr><literal type="number">0</literal></expr></argument>,
+                                              <argument><expr><literal type="boolean">true</literal></expr></argument>,
+                                              <argument><expr><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>nowInSec</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>rowFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>limits</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>indexMetadata</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>SinglePartitionReadCommand</name></type> <name>withUpdatedLimit</name><parameter_list>(<parameter><decl><type><name>DataLimits</name></type> <name>newLimits</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>SinglePartitionReadCommand</name><argument_list>(<argument><expr><call><name>isDigestQuery</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>digestVersion</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>acceptsTransient</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>nowInSec</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>rowFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><name>newLimits</name></expr></argument>,
+                                              <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                              <argument><expr><call><name>indexMetadata</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>DecoratedKey</name></type> <name>partitionKey</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>partitionKey</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>ClusteringIndexFilter</name></type> <name>clusteringIndexFilter</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>clusteringIndexFilter</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ClusteringIndexFilter</name></type> <name>clusteringIndexFilter</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>clusteringIndexFilter</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getTimeout</name><parameter_list>(<parameter><decl><type><name>TimeUnit</name></type> <name>unit</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getReadRpcTimeout</name></name><argument_list>(<argument><expr><name>unit</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isReversed</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>clusteringIndexFilter</name><operator>.</operator><name>isReversed</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>SinglePartitionReadCommand</name></type> <name>forPaging</name><parameter_list>(<parameter><decl><type><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>lastReturned</name></decl></parameter>, <parameter><decl><type><name>DataLimits</name></type> <name>limits</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// We shouldn't have set digest yet when reaching that point</comment>
+        <assert>assert <expr><operator>!</operator><call><name>isDigestQuery</name><argument_list>()</argument_list></call></expr>;</assert>
+        <return>return <expr><call><name>create</name><argument_list>(<argument><expr><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>,
+                      <argument><expr><call><name>nowInSec</name><argument_list>()</argument_list></call></expr></argument>,
+                      <argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                      <argument><expr><call><name>rowFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                      <argument><expr><name>limits</name></expr></argument>,
+                      <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>,
+                      <argument><expr><ternary><condition><expr><name>lastReturned</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call></expr> </then><else>: <expr><call><name><name>clusteringIndexFilter</name><operator>.</operator><name>forPaging</name></name><argument_list>(<argument><expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><name>comparator</name></expr></argument>, <argument><expr><name>lastReturned</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>PartitionIterator</name></type> <name>execute</name><parameter_list>(<parameter><decl><type><name>ConsistencyLevel</name></type> <name>consistency</name></decl></parameter>, <parameter><decl><type><name>ClientState</name></type> <name>clientState</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>clusteringIndexFilter</name><operator>.</operator><name>isEmpty</name></name><argument_list>(<argument><expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><name>comparator</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>EmptyIterators</name><operator>.</operator><name>partition</name></name><argument_list>()</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name><name>StorageProxy</name><operator>.</operator><name>read</name></name><argument_list>(<argument><expr><call><name><name>Group</name><operator>.</operator><name>one</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>consistency</name></expr></argument>, <argument><expr><name>clientState</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>void</name></type> <name>recordLatency</name><parameter_list>(<parameter><decl><type><name>TableMetrics</name></type> <name>metric</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>latencyNanos</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>metric</name><operator>.</operator><name>readLatency</name><operator>.</operator><name>addNano</name></name><argument_list>(<argument><expr><name>latencyNanos</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation> <comment type="line">// we close the created iterator through closing the result of this method (and SingletonUnfilteredPartitionIterator ctor cannot fail)</comment>
+    <type><specifier>protected</specifier> <name>UnfilteredPartitionIterator</name></type> <name>queryStorage</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>, <parameter><decl><type><name>ReadExecutionController</name></type> <name>executionController</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// skip the row cache and go directly to sstables/memtable if repaired status of</comment>
+        <comment type="line">// data is being tracked. This is only requested after an initial digest mismatch</comment>
+        <decl_stmt><decl><type><name>UnfilteredRowIterator</name></type> <name>partition</name> <init>= <expr><ternary><condition><expr><call><name><name>cfs</name><operator>.</operator><name>isRowCacheEnabled</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>executionController</name><operator>.</operator><name>isTrackingRepairedStatus</name></name><argument_list>()</argument_list></call></expr>
+                                        ?</condition><then> <expr><call><name>getThroughCache</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><name>executionController</name></expr></argument>)</argument_list></call></expr>
+                                        </then><else>: <expr><call><name>queryMemtableAndDisk</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><name>executionController</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <call><name>SingletonUnfilteredPartitionIterator</name><argument_list>(<argument><expr><name>partition</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Fetch the rows requested if in cache; if not, read it from disk and cache it.
+     * &lt;p&gt;
+     * If the partition is cached, and the filter given is within its bounds, we return
+     * from cache, otherwise from disk.
+     * &lt;p&gt;
+     * If the partition is is not cached, we figure out what filter is "biggest", read
+     * that from disk, then filter the result and either cache that or return it.
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>private</specifier> <name>UnfilteredRowIterator</name></type> <name>getThroughCache</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>, <parameter><decl><type><name>ReadExecutionController</name></type> <name>executionController</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><operator>!</operator><call><name><name>cfs</name><operator>.</operator><name>isIndex</name></name><argument_list>()</argument_list></call></expr>;</assert> <comment type="line">// CASSANDRA-5732</comment>
+        <assert>assert <expr><call><name><name>cfs</name><operator>.</operator><name>isRowCacheEnabled</name></name><argument_list>()</argument_list></call> <operator>:</operator> <call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Row cache is not enabled on table [%s]"</literal></expr></argument>, <argument><expr><name><name>cfs</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr>;</assert>
+
+        <decl_stmt><decl><type><name>RowCacheKey</name></type> <name>key</name> <init>= <expr><operator>new</operator> <call><name>RowCacheKey</name><argument_list>(<argument><expr><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// Attempt a sentinel-read-cache sequence.  if a write invalidates our sentinel, we'll return our</comment>
+        <comment type="line">// (now potentially obsolete) data, but won't cache it. see CASSANDRA-3862</comment>
+        <comment type="line">// TODO: don't evict entire partitions on writes (#2864)</comment>
+        <decl_stmt><decl><type><name>IRowCacheEntry</name></type> <name>cached</name> <init>= <expr><call><name><name>CacheService</name><operator>.</operator><name>instance</name><operator>.</operator><name>rowCache</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>cached</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>cached</name> <operator>instanceof</operator> <name>RowCacheSentinel</name></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// Some other read is trying to cache the value, just do a normal non-caching read</comment>
+                <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Row cache miss (race)"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>rowCacheMiss</name><operator>.</operator><name>inc</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><call><name>queryMemtableAndDisk</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><name>executionController</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>CachedPartition</name></type> <name>cachedPartition</name> <init>= <expr><operator>(</operator><name>CachedPartition</name><operator>)</operator><name>cached</name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>cfs</name><operator>.</operator><name>isFilterFullyCoveredBy</name></name><argument_list>(<argument><expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>limits</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>cachedPartition</name></expr></argument>, <argument><expr><call><name>nowInSec</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name>enforceStrictLiveness</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>rowCacheHit</name><operator>.</operator><name>inc</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Row cache hit"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <decl_stmt><decl><type><name>UnfilteredRowIterator</name></type> <name>unfilteredRowIterator</name> <init>= <expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getUnfilteredRowIterator</name><argument_list>(<argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>cachedPartition</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>updateSSTableIterated</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><name>unfilteredRowIterator</name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>rowCacheHitOutOfRange</name><operator>.</operator><name>inc</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Ignoring row cache as cached value could not satisfy query"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><call><name>queryMemtableAndDisk</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><name>executionController</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>rowCacheMiss</name><operator>.</operator><name>inc</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Row cache miss"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// Note that on tables with no clustering keys, any positive value of</comment>
+        <comment type="line">// rowsToCache implies caching the full partition</comment>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>cacheFullPartitions</name> <init>= <expr><ternary><condition><expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name>clusteringColumns</name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr> ?</condition><then>
+                                      <expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>params</name><operator>.</operator><name>caching</name><operator>.</operator><name>cacheAllRows</name></name><argument_list>()</argument_list></call></expr> </then><else>:
+                                      <expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>params</name><operator>.</operator><name>caching</name><operator>.</operator><name>cacheRows</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// To be able to cache what we read, what we read must at least covers what the cache holds, that</comment>
+        <comment type="line">// is the 'rowsToCache' first rows of the partition. We could read those 'rowsToCache' first rows</comment>
+        <comment type="line">// systematically, but we'd have to "extend" that to whatever is needed for the user query that the</comment>
+        <comment type="line">// 'rowsToCache' first rows don't cover and it's not trivial with our existing filters. So currently</comment>
+        <comment type="line">// we settle for caching what we read only if the user query does query the head of the partition since</comment>
+        <comment type="line">// that's the common case of when we'll be able to use the cache anyway. One exception is if we cache</comment>
+        <comment type="line">// full partitions, in which case we just always read it all and cache.</comment>
+        <if_stmt><if>if <condition>(<expr><name>cacheFullPartitions</name> <operator>||</operator> <call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call><operator>.</operator><call><name>isHeadFilter</name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>RowCacheSentinel</name></type> <name>sentinel</name> <init>= <expr><operator>new</operator> <call><name>RowCacheSentinel</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>sentinelSuccess</name> <init>= <expr><call><name><name>CacheService</name><operator>.</operator><name>instance</name><operator>.</operator><name>rowCache</name><operator>.</operator><name>putIfAbsent</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><name>sentinel</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>sentinelReplaced</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+            <try>try
+            <block>{<block_content>
+                <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>rowsToCache</name> <init>= <expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>params</name><operator>.</operator><name>caching</name><operator>.</operator><name>rowsPerPartitionToCache</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><specifier>final</specifier> <name>boolean</name></type> <name>enforceStrictLiveness</name> <init>= <expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name>enforceStrictLiveness</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                <decl_stmt><decl><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation> <comment type="line">// we close on exception or upon closing the result of this method</comment>
+                <type><name>UnfilteredRowIterator</name></type> <name>iter</name> <init>= <expr><call><name>fullPartitionRead</name><argument_list>(<argument><expr><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>nowInSec</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>queryMemtableAndDisk</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><name>executionController</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <try>try
+                <block>{<block_content>
+                    <comment type="line">// Use a custom iterator instead of DataLimits to avoid stopping the original iterator</comment>
+                    <decl_stmt><decl><type><name>UnfilteredRowIterator</name></type> <name>toCacheIterator</name> <init>= <expr><operator>new</operator> <class><super><name>WrappingUnfilteredRowIterator</name></super><argument_list>(<argument><expr><name>iter</name></expr></argument>)</argument_list>
+                    <block>{
+                        <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>rowsCounted</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+                        <function><annotation>@<name>Override</name></annotation>
+                        <type><specifier>public</specifier> <name>boolean</name></type> <name>hasNext</name><parameter_list>()</parameter_list>
+                        <block>{<block_content>
+                            <return>return <expr><name>rowsCounted</name> <operator>&lt;</operator> <name>rowsToCache</name> <operator>&amp;&amp;</operator> <call><name><name>super</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>;</return>
+                        </block_content>}</block></function>
+
+                        <function><annotation>@<name>Override</name></annotation>
+                        <type><specifier>public</specifier> <name>Unfiltered</name></type> <name>next</name><parameter_list>()</parameter_list>
+                        <block>{<block_content>
+                            <decl_stmt><decl><type><name>Unfiltered</name></type> <name>unfiltered</name> <init>= <expr><call><name><name>super</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                            <if_stmt><if>if <condition>(<expr><call><name><name>unfiltered</name><operator>.</operator><name>isRow</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                            <block>{<block_content>
+                                <decl_stmt><decl><type><name>Row</name></type> <name>row</name> <init>= <expr><operator>(</operator><name>Row</name><operator>)</operator> <name>unfiltered</name></expr></init></decl>;</decl_stmt>
+                                <if_stmt><if>if <condition>(<expr><call><name><name>row</name><operator>.</operator><name>hasLiveData</name></name><argument_list>(<argument><expr><call><name>nowInSec</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>enforceStrictLiveness</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                                    <expr_stmt><expr><name>rowsCounted</name><operator>++</operator></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                            </block_content>}</block></if></if_stmt>
+                            <return>return <expr><name>unfiltered</name></expr>;</return>
+                        </block_content>}</block></function>
+                    }</block></class></expr></init></decl>;</decl_stmt>
+
+                    <comment type="line">// We want to cache only rowsToCache rows</comment>
+                    <decl_stmt><decl><type><name>CachedPartition</name></type> <name>toCache</name> <init>= <expr><call><name><name>CachedBTreePartition</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>toCacheIterator</name></expr></argument>, <argument><expr><call><name>nowInSec</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>sentinelSuccess</name> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>toCache</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Caching {} rows"</literal></expr></argument>, <argument><expr><call><name><name>toCache</name><operator>.</operator><name>rowCount</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <expr_stmt><expr><call><name><name>CacheService</name><operator>.</operator><name>instance</name><operator>.</operator><name>rowCache</name><operator>.</operator><name>replace</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><name>sentinel</name></expr></argument>, <argument><expr><name>toCache</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <comment type="line">// Whether or not the previous replace has worked, our sentinel is not in the cache anymore</comment>
+                        <expr_stmt><expr><name>sentinelReplaced</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+
+                    <comment type="line">// We then re-filter out what this query wants.</comment>
+                    <comment type="line">// Note that in the case where we don't cache full partitions, it's possible that the current query is interested in more</comment>
+                    <comment type="line">// than what we've cached, so we can't just use toCache.</comment>
+                    <decl_stmt><decl><type><name>UnfilteredRowIterator</name></type> <name>cacheIterator</name> <init>= <expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getUnfilteredRowIterator</name><argument_list>(<argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>toCache</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>cacheFullPartitions</name></expr>)</condition>
+                    <block>{<block_content>
+                        <comment type="line">// Everything is guaranteed to be in 'toCache', we're done with 'iter'</comment>
+                        <assert>assert <expr><operator>!</operator><call><name><name>iter</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>;</assert>
+                        <expr_stmt><expr><call><name><name>iter</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                        <return>return <expr><name>cacheIterator</name></expr>;</return>
+                    </block_content>}</block></if></if_stmt>
+                    <return>return <expr><call><name><name>UnfilteredRowIterators</name><operator>.</operator><name>concat</name></name><argument_list>(<argument><expr><name>cacheIterator</name></expr></argument>, <argument><expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call><operator>.</operator><call><name>filterNotIndexed</name><argument_list>(<argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>iter</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+                </block_content>}</block>
+                <catch>catch <parameter_list>(<parameter><decl><type><name>RuntimeException</name></type> | <type><name>Error</name></type> <name>e</name></decl></parameter>)</parameter_list>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>iter</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <throw>throw <expr><name>e</name></expr>;</throw>
+                </block_content>}</block></catch></try>
+            </block_content>}</block>
+            <finally>finally
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>sentinelSuccess</name> <operator>&amp;&amp;</operator> <operator>!</operator><name>sentinelReplaced</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>invalidateCachedPartition</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></finally></try>
+        </block_content>}</block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Fetching data but not populating cache as query does not query from the start of the partition"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name>queryMemtableAndDisk</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><name>executionController</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Queries both memtable and sstables to fetch the result of this query.
+     * &lt;p&gt;
+     * Please note that this method:
+     *   1) does not check the row cache.
+     *   2) does not apply the query limit, nor the row filter (and so ignore 2ndary indexes).
+     *      Those are applied in {@link ReadCommand#executeLocally}.
+     *   3) does not record some of the read metrics (latency, scanned cells histograms) nor
+     *      throws TombstoneOverwhelmingException.
+     * It is publicly exposed because there is a few places where that is exactly what we want,
+     * but it should be used only where you know you don't need thoses things.
+     * &lt;p&gt;
+     * Also note that one must have created a {@code ReadExecutionController} on the queried table and we require it as
+     * a parameter to enforce that fact, even though it's not explicitlly used by the method.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>UnfilteredRowIterator</name></type> <name>queryMemtableAndDisk</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>, <parameter><decl><type><name>ReadExecutionController</name></type> <name>executionController</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><name>executionController</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>executionController</name><operator>.</operator><name>validForReadOn</name></name><argument_list>(<argument><expr><name>cfs</name></expr></argument>)</argument_list></call></expr>;</assert>
+        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Executing single-partition query on {}"</literal></expr></argument>, <argument><expr><name><name>cfs</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <return>return <expr><call><name>queryMemtableAndDiskInternal</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><name>executionController</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>UnfilteredRowIterator</name></type> <name>queryMemtableAndDiskInternal</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>, <parameter><decl><type><name>ReadExecutionController</name></type> <name>controller</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="block">/*
+         * We have 2 main strategies:
+         *   1) We query memtables and sstables simulateneously. This is our most generic strategy and the one we use
+         *      unless we have a names filter that we know we can optimize futher.
+         *   2) If we have a name filter (so we query specific rows), we can make a bet: that all column for all queried row
+         *      will have data in the most recent sstable(s), thus saving us from reading older ones. This does imply we
+         *      have a way to guarantee we have all the data for what is queried, which is only possible for name queries
+         *      and if we have neither non-frozen collections/UDTs nor counters.
+         *      If a non-frozen collection or UDT is queried we can't guarantee that an older sstable won't have some
+         *      elements that weren't in the most recent sstables.
+         *      Counters are intrinsically a collection of shards and so have the same problem.
+         *      Counter tables are also special in the sense that their rows do not have primary key liveness
+         *      as INSERT statements are not supported on counter tables. Due to that even if only the primary key
+         *      columns where queried, querying SSTables in timestamp order will always be less efficient for counter tables.
+         *      Also, if tracking repaired data then we skip this optimization so we can collate the repaired sstables
+         *      and generate a digest over their merge, which procludes an early return.
+         */</comment>
+        <if_stmt><if>if <condition>(<expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call> <operator>instanceof</operator> <name>ClusteringIndexNamesFilter</name>
+            <operator>&amp;&amp;</operator> <operator>!</operator><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name>isCounter</name><argument_list>()</argument_list></call>
+            <operator>&amp;&amp;</operator> <operator>!</operator><call><name>queriesMulticellType</name><argument_list>()</argument_list></call>
+            <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>controller</name><operator>.</operator><name>isTrackingRepairedStatus</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <return>return <expr><call><name>queryMemtableAndSSTablesInTimestampOrder</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><operator>(</operator><name>ClusteringIndexNamesFilter</name><operator>)</operator><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>controller</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Acquiring sstable references"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name><name>ColumnFamilyStore</name><operator>.</operator><name>ViewFragment</name></name></type> <name>view</name> <init>= <expr><call><name><name>cfs</name><operator>.</operator><name>select</name></name><argument_list>(<argument><expr><call><name><name>View</name><operator>.</operator><name>select</name></name><argument_list>(<argument><expr><name><name>SSTableSet</name><operator>.</operator><name>LIVE</name></name></expr></argument>, <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>view</name><operator>.</operator><name>sstables</name><operator>.</operator><name>sort</name></name><argument_list>(<argument><expr><name><name>SSTableReader</name><operator>.</operator><name>maxTimestampDescending</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>ClusteringIndexFilter</name></type> <name>filter</name> <init>= <expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>minTimestamp</name> <init>= <expr><name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>mostRecentPartitionTombstone</name> <init>= <expr><name><name>Long</name><operator>.</operator><name>MIN_VALUE</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>InputCollector</name><argument_list type="generic">&lt;<argument><name>UnfilteredRowIterator</name></argument>&gt;</argument_list></name></type> <name>inputCollector</name> <init>= <expr><call><name>iteratorsForPartition</name><argument_list>(<argument><expr><name>view</name></expr></argument>, <argument><expr><name>controller</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>Memtable</name></type> <name>memtable</name> <range>: <expr><name><name>view</name><operator>.</operator><name>memtables</name></name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>Partition</name></type> <name>partition</name> <init>= <expr><call><name><name>memtable</name><operator>.</operator><name>getPartition</name></name><argument_list>(<argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>partition</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <expr_stmt><expr><name>minTimestamp</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>minTimestamp</name></expr></argument>, <argument><expr><call><name><name>memtable</name><operator>.</operator><name>getMinTimestamp</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <decl_stmt><decl><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation> <comment type="line">// 'iter' is added to iterators which is closed on exception, or through the closing of the final merged iterator</comment>
+                <type><name>UnfilteredRowIterator</name></type> <name>iter</name> <init>= <expr><call><name><name>filter</name><operator>.</operator><name>getUnfilteredRowIterator</name></name><argument_list>(<argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>partition</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                <comment type="line">// Memtable data is always considered unrepaired</comment>
+                <expr_stmt><expr><call><name><name>controller</name><operator>.</operator><name>updateMinOldestUnrepairedTombstone</name></name><argument_list>(<argument><expr><call><name><name>partition</name><operator>.</operator><name>stats</name></name><argument_list>()</argument_list></call><operator>.</operator><name>minLocalDeletionTime</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>inputCollector</name><operator>.</operator><name>addMemtableIterator</name></name><argument_list>(<argument><expr><call><name><name>RTBoundValidator</name><operator>.</operator><name>validate</name></name><argument_list>(<argument><expr><name>iter</name></expr></argument>, <argument><expr><name><name>RTBoundValidator</name><operator>.</operator><name>Stage</name><operator>.</operator><name>MEMTABLE</name></name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <expr_stmt><expr><name>mostRecentPartitionTombstone</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>mostRecentPartitionTombstone</name></expr></argument>,
+                                                        <argument><expr><call><name><name>iter</name><operator>.</operator><name>partitionLevelDeletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>markedForDeleteAt</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+
+            <comment type="block">/*
+             * We can't eliminate full sstables based on the timestamp of what we've already read like
+             * in collectTimeOrderedData, but we still want to eliminate sstable whose maxTimestamp &lt; mostRecentTombstone
+             * we've read. We still rely on the sstable ordering by maxTimestamp since if
+             *   maxTimestamp_s1 &lt; maxTimestamp_s0,
+             * we're guaranteed that s1 cannot have a row tombstone such that
+             *   timestamp(tombstone) &gt; maxTimestamp_s0
+             * since we necessarily have
+             *   timestamp(tombstone) &lt;= maxTimestamp_s1
+             * In other words, iterating in descending maxTimestamp order allow to do our mostRecentPartitionTombstone
+             * elimination in one pass, and minimize the number of sstables for which we read a partition tombstone.
+            */</comment>
+            <expr_stmt><expr><call><name><name>view</name><operator>.</operator><name>sstables</name><operator>.</operator><name>sort</name></name><argument_list>(<argument><expr><name><name>SSTableReader</name><operator>.</operator><name>maxTimestampDescending</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>nonIntersectingSSTables</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>includedDueToTombstones</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>SSTableReadMetricsCollector</name></type> <name>metricsCollector</name> <init>= <expr><operator>new</operator> <call><name>SSTableReadMetricsCollector</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>controller</name><operator>.</operator><name>isTrackingRepairedStatus</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Collecting data from sstables and tracking repaired status"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>sstable</name> <range>: <expr><name><name>view</name><operator>.</operator><name>sstables</name></name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <comment type="line">// if we've already seen a partition tombstone with a timestamp greater</comment>
+                <comment type="line">// than the most recent update to this sstable, we can skip it</comment>
+                <comment type="line">// if we're tracking repaired status, we mark the repaired digest inconclusive</comment>
+                <comment type="line">// as other replicas may not have seen this partition delete and so could include</comment>
+                <comment type="line">// data from this sstable (or others) in their digests</comment>
+                <if_stmt><if>if <condition>(<expr><call><name><name>sstable</name><operator>.</operator><name>getMaxTimestamp</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <name>mostRecentPartitionTombstone</name></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>inputCollector</name><operator>.</operator><name>markInconclusive</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <break>break;</break>
+                </block_content>}</block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><call><name>shouldInclude</name><argument_list>(<argument><expr><name>sstable</name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>sstable</name><operator>.</operator><name>isRepaired</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name><name>controller</name><operator>.</operator><name>updateMinOldestUnrepairedTombstone</name></name><argument_list>(<argument><expr><call><name><name>sstable</name><operator>.</operator><name>getMinLocalDeletionTime</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                    <comment type="line">// 'iter' is added to iterators which is closed on exception, or through the closing of the final merged iterator</comment>
+                    <decl_stmt><decl><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation>
+                    <type><name>UnfilteredRowIteratorWithLowerBound</name></type> <name>iter</name> <init>= <expr><call><name>makeIterator</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><name>sstable</name></expr></argument>, <argument><expr><name>metricsCollector</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>inputCollector</name><operator>.</operator><name>addSSTableIterator</name></name><argument_list>(<argument><expr><name>sstable</name></expr></argument>, <argument><expr><name>iter</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>mostRecentPartitionTombstone</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>mostRecentPartitionTombstone</name></expr></argument>,
+                                                            <argument><expr><call><name><name>iter</name><operator>.</operator><name>partitionLevelDeletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>markedForDeleteAt</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <expr_stmt><expr><name>nonIntersectingSSTables</name><operator>++</operator></expr>;</expr_stmt>
+                    <comment type="line">// sstable contains no tombstone if maxLocalDeletionTime == Integer.MAX_VALUE, so we can safely skip those entirely</comment>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>sstable</name><operator>.</operator><name>mayHaveTombstones</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                    <block>{<block_content>
+                        <comment type="line">// 'iter' is added to iterators which is closed on exception, or through the closing of the final merged iterator</comment>
+                        <decl_stmt><decl><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation>
+                        <type><name>UnfilteredRowIteratorWithLowerBound</name></type> <name>iter</name> <init>= <expr><call><name>makeIterator</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><name>sstable</name></expr></argument>, <argument><expr><name>metricsCollector</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                        <comment type="line">// if the sstable contains a partition delete, then we must include it regardless of whether it</comment>
+                        <comment type="line">// shadows any other data seen locally as we can't guarantee that other replicas have seen it</comment>
+                        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>iter</name><operator>.</operator><name>partitionLevelDeletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isLive</name><argument_list>()</argument_list></call></expr>)</condition>
+                        <block>{<block_content>
+                            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>sstable</name><operator>.</operator><name>isRepaired</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                                <expr_stmt><expr><call><name><name>controller</name><operator>.</operator><name>updateMinOldestUnrepairedTombstone</name></name><argument_list>(<argument><expr><call><name><name>sstable</name><operator>.</operator><name>getMinLocalDeletionTime</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                            <expr_stmt><expr><call><name><name>inputCollector</name><operator>.</operator><name>addSSTableIterator</name></name><argument_list>(<argument><expr><name>sstable</name></expr></argument>, <argument><expr><name>iter</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>includedDueToTombstones</name><operator>++</operator></expr>;</expr_stmt>
+                            <expr_stmt><expr><name>mostRecentPartitionTombstone</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>mostRecentPartitionTombstone</name></expr></argument>,
+                                                                    <argument><expr><call><name><name>iter</name><operator>.</operator><name>partitionLevelDeletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>markedForDeleteAt</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        </block_content>}</block></if>
+                        <else>else
+                        <block>{<block_content>
+                            <expr_stmt><expr><call><name><name>iter</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                        </block_content>}</block></else></if_stmt>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block></for>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>Tracing</name><operator>.</operator><name>isTracing</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Skipped {}/{} non-slice-intersecting sstables, included {} due to tombstones"</literal></expr></argument>,
+                               <argument><expr><name>nonIntersectingSSTables</name></expr></argument>, <argument><expr><call><name><name>view</name><operator>.</operator><name>sstables</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>includedDueToTombstones</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>inputCollector</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><call><name><name>EmptyIterators</name><operator>.</operator><name>unfilteredRow</name></name><argument_list>(<argument><expr><call><name><name>cfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>filter</name><operator>.</operator><name>isReversed</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>StorageHook</name><operator>.</operator><name>instance</name><operator>.</operator><name>reportRead</name></name><argument_list>(<argument><expr><call><name><name>cfs</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>id</name></expr></argument>, <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>UnfilteredRowIterator</name></argument>&gt;</argument_list></name></type> <name>iterators</name> <init>= <expr><call><name><name>inputCollector</name><operator>.</operator><name>finalizeIterators</name></name><argument_list>(<argument><expr><name>cfs</name></expr></argument>, <argument><expr><call><name>nowInSec</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>controller</name><operator>.</operator><name>oldestUnrepairedTombstone</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <return>return <expr><call><name>withSSTablesIterated</name><argument_list>(<argument><expr><name>iterators</name></expr></argument>, <argument><expr><name><name>cfs</name><operator>.</operator><name>metric</name></name></expr></argument>, <argument><expr><name>metricsCollector</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>RuntimeException</name></type> | <type><name>Error</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>inputCollector</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e1</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>e</name><operator>.</operator><name>addSuppressed</name></name><argument_list>(<argument><expr><name>e1</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch></try>
+            <throw>throw <expr><name>e</name></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>shouldInclude</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>sstable</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// If some static columns are queried, we should always include the sstable: the clustering values stats of the sstable</comment>
+        <comment type="line">// don't tell us if the sstable contains static values in particular.</comment>
+        <comment type="line">// TODO: we could record if a sstable contains any static value at all.</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>columnFilter</name><argument_list>()</argument_list></call><operator>.</operator><call><name>fetchedColumns</name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>statics</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call><operator>.</operator><call><name>shouldInclude</name><argument_list>(<argument><expr><name>sstable</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>UnfilteredRowIteratorWithLowerBound</name></type> <name>makeIterator</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>,
+                                                             <parameter><decl><type><name>SSTableReader</name></type> <name>sstable</name></decl></parameter>,
+                                                             <parameter><decl><type><name>SSTableReadsListener</name></type> <name>listener</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>StorageHook</name><operator>.</operator><name>instance</name><operator>.</operator><name>makeRowIteratorWithLowerBound</name></name><argument_list>(<argument><expr><name>cfs</name></expr></argument>,
+                                                                  <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>,
+                                                                  <argument><expr><name>sstable</name></expr></argument>,
+                                                                  <argument><expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                                                  <argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                                                  <argument><expr><name>listener</name></expr></argument>)</argument_list></call></expr>;</return>
+
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Return a wrapped iterator that when closed will update the sstables iterated and READ sample metrics.
+     * Note that we cannot use the Transformations framework because they greedily get the static row, which
+     * would cause all iterators to be initialized and hence all sstables to be accessed.
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>private</specifier> <name>UnfilteredRowIterator</name></type> <name>withSSTablesIterated</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>UnfilteredRowIterator</name></argument>&gt;</argument_list></name></type> <name>iterators</name></decl></parameter>,
+                                                       <parameter><decl><type><name>TableMetrics</name></type> <name>metrics</name></decl></parameter>,
+                                                       <parameter><decl><type><name>SSTableReadMetricsCollector</name></type> <name>metricsCollector</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation> <comment type="line">//  Closed through the closing of the result of the caller method.</comment>
+        <type><name>UnfilteredRowIterator</name></type> <name>merged</name> <init>= <expr><call><name><name>UnfilteredRowIterators</name><operator>.</operator><name>merge</name></name><argument_list>(<argument><expr><name>iterators</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>merged</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>DecoratedKey</name></type> <name>key</name> <init>= <expr><call><name><name>merged</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>topReadPartitionFrequency</name><operator>.</operator><name>addSample</name></name><argument_list>(<argument><expr><call><name><name>key</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <class>class <name>UpdateSstablesIterated</name> <super_list><extends>extends <super><name><name>Transformation</name><argument_list type="generic">&lt;<argument><name>UnfilteredRowIterator</name></argument>&gt;</argument_list></name></super></extends></super_list>
+        <block>{
+           <function><type><specifier>public</specifier> <name>void</name></type> <name>onPartitionClose</name><parameter_list>()</parameter_list>
+           <block>{<block_content>
+               <decl_stmt><decl><type><name>int</name></type> <name>mergedSSTablesIterated</name> <init>= <expr><call><name><name>metricsCollector</name><operator>.</operator><name>getMergedSSTables</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+               <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>updateSSTableIterated</name></name><argument_list>(<argument><expr><name>mergedSSTablesIterated</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+               <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Merged data from memtables and {} sstables"</literal></expr></argument>, <argument><expr><name>mergedSSTablesIterated</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+           </block_content>}</block></function>
+        }</block></class>
+        <return>return <expr><call><name><name>Transformation</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><name>merged</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>UpdateSstablesIterated</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>queriesMulticellType</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>ColumnMetadata</name></type> <name>column</name> <range>: <expr><call><name>columnFilter</name><argument_list>()</argument_list></call><operator>.</operator><call><name>queriedColumns</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>column</name><operator>.</operator><name>type</name><operator>.</operator><name>isMultiCell</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Do a read by querying the memtable(s) first, and then each relevant sstables sequentially by order of the sstable
+     * max timestamp.
+     *
+     * This is used for names query in the hope of only having to query the 1 or 2 most recent query and then knowing nothing
+     * more recent could be in the older sstables (which we can only guarantee if we know exactly which row we queries, and if
+     * no collection or counters are included).
+     * This method assumes the filter is a {@code ClusteringIndexNamesFilter}.
+     */</comment>
+    <function><type><specifier>private</specifier> <name>UnfilteredRowIterator</name></type> <name>queryMemtableAndSSTablesInTimestampOrder</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>, <parameter><decl><type><name>ClusteringIndexNamesFilter</name></type> <name>filter</name></decl></parameter>, <parameter><decl><type><name>ReadExecutionController</name></type> <name>controller</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Acquiring sstable references"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name><name>ColumnFamilyStore</name><operator>.</operator><name>ViewFragment</name></name></type> <name>view</name> <init>= <expr><call><name><name>cfs</name><operator>.</operator><name>select</name></name><argument_list>(<argument><expr><call><name><name>View</name><operator>.</operator><name>select</name></name><argument_list>(<argument><expr><name><name>SSTableSet</name><operator>.</operator><name>LIVE</name></name></expr></argument>, <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>ImmutableBTreePartition</name></type> <name>result</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+
+        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Merging memtable contents"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <for>for <control>(<init><decl><type><name>Memtable</name></type> <name>memtable</name> <range>: <expr><name><name>view</name><operator>.</operator><name>memtables</name></name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Partition</name></type> <name>partition</name> <init>= <expr><call><name><name>memtable</name><operator>.</operator><name>getPartition</name></name><argument_list>(<argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>partition</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <continue>continue;</continue></block_content></block></if></if_stmt>
+
+            <try>try <init>(<decl><type><name>UnfilteredRowIterator</name></type> <name>iter</name> <init>= <expr><call><name><name>filter</name><operator>.</operator><name>getUnfilteredRowIterator</name></name><argument_list>(<argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>partition</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>iter</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <expr_stmt><expr><name>result</name> <operator>=</operator> <call><name>add</name><argument_list>(<argument><expr><call><name><name>RTBoundValidator</name><operator>.</operator><name>validate</name></name><argument_list>(<argument><expr><name>iter</name></expr></argument>, <argument><expr><name><name>RTBoundValidator</name><operator>.</operator><name>Stage</name><operator>.</operator><name>MEMTABLE</name></name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></argument>,
+                             <argument><expr><name>result</name></expr></argument>,
+                             <argument><expr><name>filter</name></expr></argument>,
+                             <argument><expr><literal type="boolean">false</literal></expr></argument>,
+                             <argument><expr><name>controller</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></try>
+        </block_content>}</block></for>
+
+        <comment type="block">/* add the SSTables on disk */</comment>
+        <expr_stmt><expr><call><name><name>view</name><operator>.</operator><name>sstables</name><operator>.</operator><name>sort</name></name><argument_list>(<argument><expr><name><name>SSTableReader</name><operator>.</operator><name>maxTimestampDescending</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// read sorted sstables</comment>
+        <decl_stmt><decl><type><name>SSTableReadMetricsCollector</name></type> <name>metricsCollector</name> <init>= <expr><operator>new</operator> <call><name>SSTableReadMetricsCollector</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>sstable</name> <range>: <expr><name><name>view</name><operator>.</operator><name>sstables</name></name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <comment type="line">// if we've already seen a partition tombstone with a timestamp greater</comment>
+            <comment type="line">// than the most recent update to this sstable, we're done, since the rest of the sstables</comment>
+            <comment type="line">// will also be older</comment>
+            <if_stmt><if>if <condition>(<expr><name>result</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>sstable</name><operator>.</operator><name>getMaxTimestamp</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <call><name><name>result</name><operator>.</operator><name>partitionLevelDeletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>markedForDeleteAt</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <break>break;</break></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>long</name></type> <name>currentMaxTs</name> <init>= <expr><call><name><name>sstable</name><operator>.</operator><name>getMaxTimestamp</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>filter</name> <operator>=</operator> <call><name>reduceFilter</name><argument_list>(<argument><expr><name>filter</name></expr></argument>, <argument><expr><name>result</name></expr></argument>, <argument><expr><name>currentMaxTs</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>filter</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <break>break;</break></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>shouldInclude</name><argument_list>(<argument><expr><name>sstable</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// This mean that nothing queried by the filter can be in the sstable. One exception is the top-level partition deletion</comment>
+                <comment type="line">// however: if it is set, it impacts everything and must be included. Getting that top-level partition deletion costs us</comment>
+                <comment type="line">// some seek in general however (unless the partition is indexed and is in the key cache), so we first check if the sstable</comment>
+                <comment type="line">// has any tombstone at all as a shortcut.</comment>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>sstable</name><operator>.</operator><name>mayHaveTombstones</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt> <comment type="line">// no tombstone at all, we can skip that sstable</comment>
+
+                <comment type="line">// We need to get the partition deletion and include it if it's live. In any case though, we're done with that sstable.</comment>
+                <try>try <init>(<decl><type><name>UnfilteredRowIterator</name></type> <name>iter</name> <init>= <expr><call><name><name>StorageHook</name><operator>.</operator><name>instance</name><operator>.</operator><name>makeRowIterator</name></name><argument_list>(<argument><expr><name>cfs</name></expr></argument>,
+                                                                                       <argument><expr><name>sstable</name></expr></argument>,
+                                                                                       <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>,
+                                                                                       <argument><expr><call><name><name>filter</name><operator>.</operator><name>getSlices</name></name><argument_list>(<argument><expr><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                                                       <argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                                                                       <argument><expr><call><name><name>filter</name><operator>.</operator><name>isReversed</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                                                       <argument><expr><name>metricsCollector</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>iter</name><operator>.</operator><name>partitionLevelDeletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isLive</name><argument_list>()</argument_list></call></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><name>result</name> <operator>=</operator> <call><name>add</name><argument_list>(<argument><expr><call><name><name>UnfilteredRowIterators</name><operator>.</operator><name>noRowsIterator</name></name><argument_list>(<argument><expr><call><name><name>iter</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                                           <argument><expr><call><name><name>iter</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                                           <argument><expr><name><name>Rows</name><operator>.</operator><name>EMPTY_STATIC_ROW</name></name></expr></argument>,
+                                                                           <argument><expr><call><name><name>iter</name><operator>.</operator><name>partitionLevelDeletion</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                                           <argument><expr><call><name><name>filter</name><operator>.</operator><name>isReversed</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                     <argument><expr><name>result</name></expr></argument>,
+                                     <argument><expr><name>filter</name></expr></argument>,
+                                     <argument><expr><call><name><name>sstable</name><operator>.</operator><name>isRepaired</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                     <argument><expr><name>controller</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if>
+                    <else>else
+                    <block>{<block_content>
+                        <expr_stmt><expr><name>result</name> <operator>=</operator> <call><name>add</name><argument_list>(<argument><expr><call><name><name>RTBoundValidator</name><operator>.</operator><name>validate</name></name><argument_list>(<argument><expr><name>iter</name></expr></argument>, <argument><expr><name><name>RTBoundValidator</name><operator>.</operator><name>Stage</name><operator>.</operator><name>SSTABLE</name></name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></argument>,
+                                     <argument><expr><name>result</name></expr></argument>,
+                                     <argument><expr><name>filter</name></expr></argument>,
+                                     <argument><expr><call><name><name>sstable</name><operator>.</operator><name>isRepaired</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                     <argument><expr><name>controller</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></else></if_stmt>
+                </block_content>}</block></try>
+
+                <continue>continue;</continue>
+            </block_content>}</block></if></if_stmt>
+
+            <try>try <init>(<decl><type><name>UnfilteredRowIterator</name></type> <name>iter</name> <init>= <expr><call><name><name>StorageHook</name><operator>.</operator><name>instance</name><operator>.</operator><name>makeRowIterator</name></name><argument_list>(<argument><expr><name>cfs</name></expr></argument>,
+                                                                                   <argument><expr><name>sstable</name></expr></argument>,
+                                                                                   <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>,
+                                                                                   <argument><expr><call><name><name>filter</name><operator>.</operator><name>getSlices</name></name><argument_list>(<argument><expr><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                                                   <argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                                                                                   <argument><expr><call><name><name>filter</name><operator>.</operator><name>isReversed</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                                                   <argument><expr><name>metricsCollector</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>iter</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <expr_stmt><expr><name>result</name> <operator>=</operator> <call><name>add</name><argument_list>(<argument><expr><call><name><name>RTBoundValidator</name><operator>.</operator><name>validate</name></name><argument_list>(<argument><expr><name>iter</name></expr></argument>, <argument><expr><name><name>RTBoundValidator</name><operator>.</operator><name>Stage</name><operator>.</operator><name>SSTABLE</name></name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></argument>,
+                             <argument><expr><name>result</name></expr></argument>,
+                             <argument><expr><name>filter</name></expr></argument>,
+                             <argument><expr><call><name><name>sstable</name><operator>.</operator><name>isRepaired</name></name><argument_list>()</argument_list></call></expr></argument>,
+                             <argument><expr><name>controller</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></try>
+        </block_content>}</block></for>
+
+        <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>updateSSTableIterated</name></name><argument_list>(<argument><expr><call><name><name>metricsCollector</name><operator>.</operator><name>getMergedSSTables</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>result</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>result</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>EmptyIterators</name><operator>.</operator><name>unfilteredRow</name></name><argument_list>(<argument><expr><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>DecoratedKey</name></type> <name>key</name> <init>= <expr><call><name><name>result</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>cfs</name><operator>.</operator><name>metric</name><operator>.</operator><name>topReadPartitionFrequency</name><operator>.</operator><name>addSample</name></name><argument_list>(<argument><expr><call><name><name>key</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>StorageHook</name><operator>.</operator><name>instance</name><operator>.</operator><name>reportRead</name></name><argument_list>(<argument><expr><name><name>cfs</name><operator>.</operator><name>metadata</name><operator>.</operator><name>id</name></name></expr></argument>, <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <return>return <expr><call><name><name>result</name><operator>.</operator><name>unfilteredIterator</name></name><argument_list>(<argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>Slices</name><operator>.</operator><name>ALL</name></name></expr></argument>, <argument><expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call><operator>.</operator><call><name>isReversed</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>ImmutableBTreePartition</name></type> <name>add</name><parameter_list>(<parameter><decl><type><name>UnfilteredRowIterator</name></type> <name>iter</name></decl></parameter>, <parameter><decl><type><name>ImmutableBTreePartition</name></type> <name>result</name></decl></parameter>, <parameter><decl><type><name>ClusteringIndexNamesFilter</name></type> <name>filter</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isRepaired</name></decl></parameter>, <parameter><decl><type><name>ReadExecutionController</name></type> <name>controller</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>isRepaired</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>controller</name><operator>.</operator><name>updateMinOldestUnrepairedTombstone</name></name><argument_list>(<argument><expr><call><name><name>iter</name><operator>.</operator><name>stats</name></name><argument_list>()</argument_list></call><operator>.</operator><name>minLocalDeletionTime</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>int</name></type> <name>maxRows</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><call><name><name>filter</name><operator>.</operator><name>requestedRows</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>result</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>ImmutableBTreePartition</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>iter</name></expr></argument>, <argument><expr><name>maxRows</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <try>try <init>(<decl><type><name>UnfilteredRowIterator</name></type> <name>merged</name> <init>= <expr><call><name><name>UnfilteredRowIterators</name><operator>.</operator><name>merge</name></name><argument_list>(<argument><expr><call><name><name>Arrays</name><operator>.</operator><name>asList</name></name><argument_list>(<argument><expr><name>iter</name></expr></argument>, <argument><expr><call><name><name>result</name><operator>.</operator><name>unfilteredIterator</name></name><argument_list>(<argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>Slices</name><operator>.</operator><name>ALL</name></name></expr></argument>, <argument><expr><call><name><name>filter</name><operator>.</operator><name>isReversed</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>ImmutableBTreePartition</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>merged</name></expr></argument>, <argument><expr><name>maxRows</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>ClusteringIndexNamesFilter</name></type> <name>reduceFilter</name><parameter_list>(<parameter><decl><type><name>ClusteringIndexNamesFilter</name></type> <name>filter</name></decl></parameter>, <parameter><decl><type><name>ImmutableBTreePartition</name></type> <name>result</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>sstableTimestamp</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>result</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>filter</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// According to the CQL semantics a row exists if at least one of its columns is not null (including the primary key columns).</comment>
+        <comment type="line">// Having the queried columns not null is unfortunately not enough to prove that a row exists as some column deletion</comment>
+        <comment type="line">// for the queried columns can exist on another node.</comment>
+        <comment type="line">// For CQL tables it is enough to have the primary key liveness and the queried columns as the primary key liveness prove that</comment>
+        <comment type="line">// the row exists even if all the other columns are deleted.</comment>
+        <comment type="line">// COMPACT tables do not have primary key liveness and by consequence we are forced to get  all the fetched columns to ensure that</comment>
+        <comment type="line">// we can return the correct result if the queried columns are deleted on another node but one of the non-queried columns is not.</comment>
+        <decl_stmt><decl><type><name>RegularAndStaticColumns</name></type> <name>columns</name> <init>= <expr><ternary><condition><expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name>isCompactTable</name><argument_list>()</argument_list></call></expr> ?</condition><then> <expr><call><name>columnFilter</name><argument_list>()</argument_list></call><operator>.</operator><call><name>fetchedColumns</name><argument_list>()</argument_list></call></expr> </then><else>: <expr><call><name>columnFilter</name><argument_list>()</argument_list></call><operator>.</operator><call><name>queriedColumns</name><argument_list>()</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name><name>NavigableSet</name><argument_list type="generic">&lt;<argument><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>clusterings</name> <init>= <expr><call><name><name>filter</name><operator>.</operator><name>requestedRows</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// We want to remove rows for which we have values for all requested columns. We have to deal with both static and regular rows.</comment>
+
+        <decl_stmt><decl><type><name>boolean</name></type> <name>removeStatic</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>columns</name><operator>.</operator><name>statics</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Row</name></type> <name>staticRow</name> <init>= <expr><call><name><name>result</name><operator>.</operator><name>getRow</name></name><argument_list>(<argument><expr><name><name>Clustering</name><operator>.</operator><name>STATIC_CLUSTERING</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>removeStatic</name> <operator>=</operator> <name>staticRow</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name>isRowComplete</name><argument_list>(<argument><expr><name>staticRow</name></expr></argument>, <argument><expr><name><name>columns</name><operator>.</operator><name>statics</name></name></expr></argument>, <argument><expr><name>sstableTimestamp</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>NavigableSet</name><argument_list type="generic">&lt;<argument><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>toRemove</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>DeletionInfo</name></type> <name>deletionInfo</name> <init>= <expr><call><name><name>result</name><operator>.</operator><name>deletionInfo</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>deletionInfo</name><operator>.</operator><name>hasRanges</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>clustering</name> <range>: <expr><name>clusterings</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>RangeTombstone</name></type> <name>rt</name> <init>= <expr><call><name><name>deletionInfo</name><operator>.</operator><name>rangeCovering</name></name><argument_list>(<argument><expr><name>clustering</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>rt</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>rt</name><operator>.</operator><name>deletionTime</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>deletes</name><argument_list>(<argument><expr><name>sstableTimestamp</name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><name>toRemove</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><name>toRemove</name> <operator>=</operator> <operator>new</operator> <call><name><name>TreeSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>result</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>comparator</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                    <expr_stmt><expr><call><name><name>toRemove</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>clustering</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></for> 
+        </block_content>}</block></if></if_stmt>
+
+        <try>try <init>(<decl><type><name>UnfilteredRowIterator</name></type> <name>iterator</name> <init>= <expr><call><name><name>result</name><operator>.</operator><name>unfilteredIterator</name></name><argument_list>(<argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>clusterings</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <while>while <condition>(<expr><call><name><name>iterator</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>Unfiltered</name></type> <name>unfiltered</name> <init>= <expr><call><name><name>iterator</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>unfiltered</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <operator>!</operator><call><name><name>unfiltered</name><operator>.</operator><name>isRow</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <decl_stmt><decl><type><name>Row</name></type> <name>row</name> <init>= <expr><operator>(</operator><name>Row</name><operator>)</operator> <name>unfiltered</name></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>isRowComplete</name><argument_list>(<argument><expr><name>row</name></expr></argument>, <argument><expr><name><name>columns</name><operator>.</operator><name>regulars</name></name></expr></argument>, <argument><expr><name>sstableTimestamp</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>toRemove</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>toRemove</name> <operator>=</operator> <operator>new</operator> <call><name><name>TreeSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>result</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>comparator</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>toRemove</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></try>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>removeStatic</name> <operator>&amp;&amp;</operator> <name>toRemove</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>filter</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// Check if we have everything we need</comment>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>hasNoMoreStatic</name> <init>= <expr><call><name><name>columns</name><operator>.</operator><name>statics</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call> <operator>||</operator> <name>removeStatic</name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>hasNoMoreClusterings</name> <init>= <expr><call><name><name>clusterings</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call> <operator>||</operator> <operator>(</operator><name>toRemove</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>toRemove</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>==</operator> <call><name><name>clusterings</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call><operator>)</operator></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>hasNoMoreStatic</name> <operator>&amp;&amp;</operator> <name>hasNoMoreClusterings</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>toRemove</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>BTreeSet</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></name></type> <name>newClusterings</name> <init>= <expr><call><name><name>BTreeSet</name><operator>.</operator><name>builder</name></name><argument_list>(<argument><expr><call><name><name>result</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>comparator</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>newClusterings</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><call><name><name>Sets</name><operator>.</operator><name>difference</name></name><argument_list>(<argument><expr><name>clusterings</name></expr></argument>, <argument><expr><name>toRemove</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>clusterings</name> <operator>=</operator> <call><name><name>newClusterings</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><operator>new</operator> <call><name>ClusteringIndexNamesFilter</name><argument_list>(<argument><expr><name>clusterings</name></expr></argument>, <argument><expr><call><name><name>filter</name><operator>.</operator><name>isReversed</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * We can stop reading row data from disk if what we've already read is more recent than the max timestamp
+     * of the next newest SSTable that might have data for the query. We care about 1.) the row timestamp (since
+     * every query cares if the row exists or not), 2.) the timestamps of the requested cells, and 3.) whether or
+     * not any of the cells we've read have actual data.
+     *
+     * @param row a potentially incomplete {@link Row}
+     * @param requestedColumns the columns requested by the query
+     * @param sstableTimestamp the max timestamp of the next newest SSTable to read
+     *
+     * @return true if the supplied {@link Row} is complete and its data more recent than the supplied timestamp
+     */</comment>
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>isRowComplete</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>, <parameter><decl><type><name>Columns</name></type> <name>requestedColumns</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>sstableTimestamp</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// Static rows do not have row deletion or primary key liveness info</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>row</name><operator>.</operator><name>isStatic</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// If the row has been deleted or is part of a range deletion we know that we have enough information and can</comment>
+            <comment type="line">// stop at this point.</comment>
+            <comment type="line">// Note that deleted rows in compact tables (non static) do not have a row deletion. Single column</comment>
+            <comment type="line">// cells are deleted instead. By consequence this check will not work for those, but the row will appear as complete later on</comment>
+            <comment type="line">// in the method.</comment>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>row</name><operator>.</operator><name>deletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isLive</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>row</name><operator>.</operator><name>deletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>time</name><argument_list>()</argument_list></call><operator>.</operator><call><name>deletes</name><argument_list>(<argument><expr><name>sstableTimestamp</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <comment type="line">// Note that compact tables will always have an empty primary key liveness info.</comment>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name>isCompactTable</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <operator>(</operator><call><name><name>row</name><operator>.</operator><name>primaryKeyLivenessInfo</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isEmpty</name><argument_list>()</argument_list></call> <operator>||</operator> <call><name><name>row</name><operator>.</operator><name>primaryKeyLivenessInfo</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>timestamp</name><argument_list>()</argument_list></call> <operator>&lt;=</operator> <name>sstableTimestamp</name><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <for>for <control>(<init><decl><type><name>ColumnMetadata</name></type> <name>column</name> <range>: <expr><name>requestedColumns</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>cell</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>getCell</name></name><argument_list>(<argument><expr><name>column</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>cell</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>cell</name><operator>.</operator><name>timestamp</name></name><argument_list>()</argument_list></call> <operator>&lt;=</operator> <name>sstableTimestamp</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>selectsFullPartition</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name>isStaticCompactTable</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name><name>clusteringIndexFilter</name><operator>.</operator><name>selectsAllPartition</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator><call><name>rowFilter</name><argument_list>()</argument_list></call><operator>.</operator><call><name>hasExpressionOnClusteringOrRegularColumns</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Read(%s columns=%s rowFilter=%s limits=%s key=%s filter=%s, nowInSec=%d)"</literal></expr></argument>,
+                             <argument><expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>()</argument_list></call></expr></argument>,
+                             <argument><expr><call><name>columnFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                             <argument><expr><call><name>rowFilter</name><argument_list>()</argument_list></call></expr></argument>,
+                             <argument><expr><call><name>limits</name><argument_list>()</argument_list></call></expr></argument>,
+                             <argument><expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>partitionKeyType</name><operator>.</operator><name>getString</name></name><argument_list>(<argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getKey</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                             <argument><expr><call><name><name>clusteringIndexFilter</name><operator>.</operator><name>toString</name></name><argument_list>(<argument><expr><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                             <argument><expr><call><name>nowInSec</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Verb</name></type> <name>verb</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name><name>Verb</name><operator>.</operator><name>READ_REQ</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>void</name></type> <name>appendCQLWhereClause</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>sb</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" WHERE "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><call><name><name>ColumnMetadata</name><operator>.</operator><name>toCQLString</name></name><argument_list>(<argument><expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name>partitionKeyColumns</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">" = "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>DataRange</name><operator>.</operator><name>appendKeyString</name></name><argument_list>(<argument><expr><name>sb</name></expr></argument>, <argument><expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><name>partitionKeyType</name></expr></argument>, <argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getKey</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// We put the row filter first because the clustering index filter can end by "ORDER BY"</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>rowFilter</name><argument_list>()</argument_list></call><operator>.</operator><call><name>isEmpty</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" AND "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><call><name>rowFilter</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>String</name></type> <name>filterString</name> <init>= <expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call><operator>.</operator><call><name>toCQLString</name><argument_list>(<argument><expr><call><name>metadata</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>filterString</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" AND "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>filterString</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>void</name></type> <name>serializeSelection</name><parameter_list>(<parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>partitionKeyType</name><operator>.</operator><name>writeValue</name></name><argument_list>(<argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getKey</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>ClusteringIndexFilter</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>long</name></type> <name>selectionSerializedSize</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>metadata</name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>partitionKeyType</name><operator>.</operator><name>writtenLength</name></name><argument_list>(<argument><expr><call><name>partitionKey</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getKey</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call>
+             <operator>+</operator> <call><name><name>ClusteringIndexFilter</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><call><name>clusteringIndexFilter</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isLimitedToOnePartition</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isRangeRequest</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Groups multiple single partition read commands.
+     */</comment>
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>Group</name> <super_list><extends>extends <super><name><name>SinglePartitionReadQuery</name><operator>.</operator><name><name>Group</name><argument_list type="generic">&lt;<argument><name>SinglePartitionReadCommand</name></argument>&gt;</argument_list></name></name></super></extends></super_list>
+    <block>{
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>Group</name></type> <name>create</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>,
+                                   <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                   <parameter><decl><type><name>ColumnFilter</name></type> <name>columnFilter</name></decl></parameter>,
+                                   <parameter><decl><type><name>RowFilter</name></type> <name>rowFilter</name></decl></parameter>,
+                                   <parameter><decl><type><name>DataLimits</name></type> <name>limits</name></decl></parameter>,
+                                   <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>DecoratedKey</name></argument>&gt;</argument_list></name></type> <name>partitionKeys</name></decl></parameter>,
+                                   <parameter><decl><type><name>ClusteringIndexFilter</name></type> <name>clusteringIndexFilter</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>SinglePartitionReadCommand</name></argument>&gt;</argument_list></name></type> <name>commands</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>partitionKeys</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>DecoratedKey</name></type> <name>partitionKey</name> <range>: <expr><name>partitionKeys</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>commands</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>SinglePartitionReadCommand</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>metadata</name></expr></argument>,
+                                                               <argument><expr><name>nowInSec</name></expr></argument>,
+                                                               <argument><expr><name>columnFilter</name></expr></argument>,
+                                                               <argument><expr><name>rowFilter</name></expr></argument>,
+                                                               <argument><expr><name>limits</name></expr></argument>,
+                                                               <argument><expr><name>partitionKey</name></expr></argument>,
+                                                               <argument><expr><name>clusteringIndexFilter</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+
+            <return>return <expr><operator>new</operator> <call><name>Group</name><argument_list>(<argument><expr><name>commands</name></expr></argument>, <argument><expr><name>limits</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <constructor><specifier>public</specifier> <name>Group</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>SinglePartitionReadCommand</name></argument>&gt;</argument_list></name></type> <name>commands</name></decl></parameter>, <parameter><decl><type><name>DataLimits</name></type> <name>limits</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>commands</name></expr></argument>, <argument><expr><name>limits</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>Group</name></type> <name>one</name><parameter_list>(<parameter><decl><type><name>SinglePartitionReadCommand</name></type> <name>command</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>Group</name><argument_list>(<argument><expr><call><name><name>Collections</name><operator>.</operator><name>singletonList</name></name><argument_list>(<argument><expr><name>command</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>command</name><operator>.</operator><name>limits</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>PartitionIterator</name></type> <name>execute</name><parameter_list>(<parameter><decl><type><name>ConsistencyLevel</name></type> <name>consistency</name></decl></parameter>, <parameter><decl><type><name>ClientState</name></type> <name>clientState</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>StorageProxy</name><operator>.</operator><name>read</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>consistency</name></expr></argument>, <argument><expr><name>clientState</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>Deserializer</name> <super_list><extends>extends <super><name>SelectionDeserializer</name></super></extends></super_list>
+    <block>{
+        <function><type><specifier>public</specifier> <name>ReadCommand</name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>,
+                                       <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>,
+                                       <parameter><decl><type><name>boolean</name></type> <name>isDigest</name></decl></parameter>,
+                                       <parameter><decl><type><name>int</name></type> <name>digestVersion</name></decl></parameter>,
+                                       <parameter><decl><type><name>boolean</name></type> <name>acceptsTransient</name></decl></parameter>,
+                                       <parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>,
+                                       <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                       <parameter><decl><type><name>ColumnFilter</name></type> <name>columnFilter</name></decl></parameter>,
+                                       <parameter><decl><type><name>RowFilter</name></type> <name>rowFilter</name></decl></parameter>,
+                                       <parameter><decl><type><name>DataLimits</name></type> <name>limits</name></decl></parameter>,
+                                       <parameter><decl><type><name>IndexMetadata</name></type> <name>index</name></decl></parameter>)</parameter_list>
+        <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>DecoratedKey</name></type> <name>key</name> <init>= <expr><call><name><name>metadata</name><operator>.</operator><name>partitioner</name><operator>.</operator><name>decorateKey</name></name><argument_list>(<argument><expr><call><name><name>metadata</name><operator>.</operator><name>partitionKeyType</name><operator>.</operator><name>readBuffer</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getMaxValueSize</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>ClusteringIndexFilter</name></type> <name>filter</name> <init>= <expr><call><name><name>ClusteringIndexFilter</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>metadata</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <return>return <expr><operator>new</operator> <call><name>SinglePartitionReadCommand</name><argument_list>(<argument><expr><name>isDigest</name></expr></argument>, <argument><expr><name>digestVersion</name></expr></argument>, <argument><expr><name>acceptsTransient</name></expr></argument>, <argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>columnFilter</name></expr></argument>, <argument><expr><name>rowFilter</name></expr></argument>, <argument><expr><name>limits</name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>filter</name></expr></argument>, <argument><expr><name>index</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * {@code SSTableReaderListener} used to collect metrics about SSTable read access.
+     */</comment>
+    <class><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>SSTableReadMetricsCollector</name> <super_list><implements>implements <super><name>SSTableReadsListener</name></super></implements></super_list>
+    <block>{
+        <comment type="block" format="javadoc">/**
+         * The number of SSTables that need to be merged. This counter is only updated for single partition queries
+         * since this has been the behavior so far.
+         */</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>mergedSSTables</name></decl>;</decl_stmt>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>onSSTableSelected</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>sstable</name></decl></parameter>, <parameter><decl><type><name><name>RowIndexEntry</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>indexEntry</name></decl></parameter>, <parameter><decl><type><name>SelectionReason</name></type> <name>reason</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>sstable</name><operator>.</operator><name>incrementReadCount</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>mergedSSTables</name><operator>++</operator></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Returns the number of SSTables that need to be merged.
+         * @return the number of SSTables that need to be merged.
+         */</comment>
+        <function><type><specifier>public</specifier> <name>int</name></type> <name>getMergedSSTables</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>mergedSSTables</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

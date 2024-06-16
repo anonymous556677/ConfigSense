@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/rows/DeserializationHelper.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>marshal</name><operator>.</operator><name>ValueAccessor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>ColumnMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>context</name><operator>.</operator><name>CounterContext</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name><operator>.</operator><name>ColumnFilter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>DroppedColumn</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>DeserializationHelper</name>
+<block>{
+    <comment type="block" format="javadoc">/**
+     * Flag affecting deserialization behavior (this only affect counters in practice).
+     *  - LOCAL: for deserialization of local data (Expired columns are
+     *      converted to tombstones (to gain disk space)).
+     *  - FROM_REMOTE: for deserialization of data received from remote hosts
+     *      (Expired columns are converted to tombstone and counters have
+     *      their delta cleared)
+     *  - PRESERVE_SIZE: used when no transformation must be performed, i.e,
+     *      when we must ensure that deserializing and reserializing the
+     *      result yield the exact same bytes. Streaming uses this.
+     */</comment>
+    <enum><specifier>public</specifier> enum <name>Flag</name>
+    <block>{
+        <decl><name>LOCAL</name></decl>, <decl><name>FROM_REMOTE</name></decl>, <decl><name>PRESERVE_SIZE</name></decl>
+    }</block></enum>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Flag</name></type> <name>flag</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>int</name></type> <name>version</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ColumnFilter</name></type> <name>columnsToFetch</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>ColumnFilter</name><operator>.</operator><name>Tester</name></name></type> <name>tester</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>hasDroppedColumns</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>ByteBuffer</name></argument>, <argument><name>DroppedColumn</name></argument>&gt;</argument_list></name></type> <name>droppedColumns</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>DroppedColumn</name></type> <name>currentDroppedComplex</name></decl>;</decl_stmt>
+
+
+    <constructor><specifier>public</specifier> <name>DeserializationHelper</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name>Flag</name></type> <name>flag</name></decl></parameter>, <parameter><decl><type><name>ColumnFilter</name></type> <name>columnsToFetch</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>flag</name></name> <operator>=</operator> <name>flag</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>version</name></name> <operator>=</operator> <name>version</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columnsToFetch</name></name> <operator>=</operator> <name>columnsToFetch</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>droppedColumns</name></name> <operator>=</operator> <name><name>metadata</name><operator>.</operator><name>droppedColumns</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>hasDroppedColumns</name></name> <operator>=</operator> <call><name><name>droppedColumns</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>public</specifier> <name>DeserializationHelper</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name>Flag</name></type> <name>flag</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>flag</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>includes</name><parameter_list>(<parameter><decl><type><name>ColumnMetadata</name></type> <name>column</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>columnsToFetch</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>columnsToFetch</name><operator>.</operator><name>fetches</name></name><argument_list>(<argument><expr><name>column</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>includes</name><parameter_list>(<parameter><decl><type><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>cell</name></decl></parameter>, <parameter><decl><type><name>LivenessInfo</name></type> <name>rowLiveness</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>columnsToFetch</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// During queries, some columns are included even though they are not queried by the user because</comment>
+        <comment type="line">// we always need to distinguish between having a row (with potentially only null values) and not</comment>
+        <comment type="line">// having a row at all (see #CASSANDRA-7085 for background). In the case where the column is not</comment>
+        <comment type="line">// actually requested by the user however (canSkipValue), we can skip the full cell if the cell</comment>
+        <comment type="line">// timestamp is lower than the row one, because in that case, the row timestamp is enough proof</comment>
+        <comment type="line">// of the liveness of the row. Otherwise, we'll only be able to skip the values of those cells.</comment>
+        <decl_stmt><decl><type><name>ColumnMetadata</name></type> <name>column</name> <init>= <expr><call><name><name>cell</name><operator>.</operator><name>column</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>column</name><operator>.</operator><name>isComplex</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>includes</name><argument_list>(<argument><expr><call><name><name>cell</name><operator>.</operator><name>path</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <return>return <expr><operator>!</operator><call><name>canSkipValue</name><argument_list>(<argument><expr><call><name><name>cell</name><operator>.</operator><name>path</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call> <operator>||</operator> <call><name><name>cell</name><operator>.</operator><name>timestamp</name></name><argument_list>()</argument_list></call> <operator>&gt;=</operator> <call><name><name>rowLiveness</name><operator>.</operator><name>timestamp</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <return>return <expr><call><name><name>columnsToFetch</name><operator>.</operator><name>fetchedColumnIsQueried</name></name><argument_list>(<argument><expr><name>column</name></expr></argument>)</argument_list></call> <operator>||</operator> <call><name><name>cell</name><operator>.</operator><name>timestamp</name></name><argument_list>()</argument_list></call> <operator>&gt;=</operator> <call><name><name>rowLiveness</name><operator>.</operator><name>timestamp</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>includes</name><parameter_list>(<parameter><decl><type><name>CellPath</name></type> <name>path</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>path</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <name>tester</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>tester</name><operator>.</operator><name>fetches</name></name><argument_list>(<argument><expr><name>path</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>canSkipValue</name><parameter_list>(<parameter><decl><type><name>ColumnMetadata</name></type> <name>column</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>columnsToFetch</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>columnsToFetch</name><operator>.</operator><name>fetchedColumnIsQueried</name></name><argument_list>(<argument><expr><name>column</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>canSkipValue</name><parameter_list>(<parameter><decl><type><name>CellPath</name></type> <name>path</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>path</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>tester</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>tester</name><operator>.</operator><name>fetchedCellIsQueried</name></name><argument_list>(<argument><expr><name>path</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>startOfComplexColumn</name><parameter_list>(<parameter><decl><type><name>ColumnMetadata</name></type> <name>column</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>tester</name></name> <operator>=</operator> <ternary><condition><expr><name>columnsToFetch</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>columnsToFetch</name><operator>.</operator><name>newTester</name></name><argument_list>(<argument><expr><name>column</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>currentDroppedComplex</name></name> <operator>=</operator> <call><name><name>droppedColumns</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>column</name><operator>.</operator><name>name</name><operator>.</operator><name>bytes</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>endOfComplexColumn</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>tester</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isDropped</name><parameter_list>(<parameter><decl><type><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>cell</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isComplex</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>hasDroppedColumns</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>DroppedColumn</name></type> <name>dropped</name> <init>= <expr><ternary><condition><expr><name>isComplex</name></expr> ?</condition><then> <expr><name>currentDroppedComplex</name></expr> </then><else>: <expr><call><name><name>droppedColumns</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>cell</name><operator>.</operator><name>column</name></name><argument_list>()</argument_list></call><operator>.</operator><name><name>name</name><operator>.</operator><name>bytes</name></name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <return>return <expr><name>dropped</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>cell</name><operator>.</operator><name>timestamp</name></name><argument_list>()</argument_list></call> <operator>&lt;=</operator> <name><name>dropped</name><operator>.</operator><name>droppedTime</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isDroppedComplexDeletion</name><parameter_list>(<parameter><decl><type><name>DeletionTime</name></type> <name>complexDeletion</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>currentDroppedComplex</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>complexDeletion</name><operator>.</operator><name>markedForDeleteAt</name></name><argument_list>()</argument_list></call> <operator>&lt;=</operator> <name><name>currentDroppedComplex</name><operator>.</operator><name>droppedTime</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <parameter_list type="generic">&lt;<parameter><name>V</name></parameter>&gt;</parameter_list> <name>V</name></type> <name>maybeClearCounterValue</name><parameter_list>(<parameter><decl><type><name>V</name></type> <name>value</name></decl></parameter>, <parameter><decl><type><name><name>ValueAccessor</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>accessor</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>flag</name> <operator>==</operator> <name><name>Flag</name><operator>.</operator><name>FROM_REMOTE</name></name> <operator>||</operator> <operator>(</operator><name>flag</name> <operator>==</operator> <name><name>Flag</name><operator>.</operator><name>LOCAL</name></name> <operator>&amp;&amp;</operator> <call><name><name>CounterContext</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>shouldClearLocal</name><argument_list>(<argument><expr><name>value</name></expr></argument>, <argument><expr><name>accessor</name></expr></argument>)</argument_list></call><operator>)</operator></expr>
+               ?</condition><then> <expr><call><name><name>CounterContext</name><operator>.</operator><name>instance</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>clearAllLocal</name><argument_list>(<argument><expr><name>value</name></expr></argument>, <argument><expr><name>accessor</name></expr></argument>)</argument_list></call></expr>
+               </then><else>: <expr><name>value</name></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

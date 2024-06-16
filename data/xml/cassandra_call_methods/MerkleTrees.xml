@@ -1,0 +1,456 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/utils/MerkleTrees.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>ByteArrayOutputStream</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>AbstractIterator</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>PeekingIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>TypeSizes</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>IPartitioner</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>Range</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>Token</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>IVersionedSerializer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataInputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputPlus</name></name>;</import>
+
+
+<comment type="block" format="javadoc">/**
+ * Wrapper class for handling of multiple MerkleTrees at once.
+ *
+ * The MerkleTree's are divided in Ranges of non-overlapping tokens.
+ */</comment>
+<class><specifier>public</specifier> class <name>MerkleTrees</name> <super_list><implements>implements <super><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>, <argument><name>MerkleTree</name></argument>&gt;</argument_list></name></name></argument>&gt;</argument_list></name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>MerkleTreesSerializer</name></type> <name>serializer</name> <init>= <expr><operator>new</operator> <call><name>MerkleTreesSerializer</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>, <argument><name>MerkleTree</name></argument>&gt;</argument_list></name></type> <name>merkleTrees</name> <init>= <expr><operator>new</operator> <call><name><name>TreeMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><operator>new</operator> <call><name>TokenRangeComparator</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>IPartitioner</name></type> <name>partitioner</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Creates empty MerkleTrees object.
+     *
+     * @param partitioner The partitioner to use
+     */</comment>
+    <constructor><specifier>public</specifier> <name>MerkleTrees</name><parameter_list>(<parameter><decl><type><name>IPartitioner</name></type> <name>partitioner</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>partitioner</name></expr></argument>, <argument><expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>private</specifier> <name>MerkleTrees</name><parameter_list>(<parameter><decl><type><name>IPartitioner</name></type> <name>partitioner</name></decl></parameter>, <parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>MerkleTree</name></argument>&gt;</argument_list></name></type> <name>merkleTrees</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>partitioner</name></name> <operator>=</operator> <name>partitioner</name></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>addTrees</name><argument_list>(<argument><expr><name>merkleTrees</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Get the ranges that these merkle trees covers.
+     *
+     * @return
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>ranges</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>merkleTrees</name><operator>.</operator><name>keySet</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the partitioner in use.
+     *
+     * @return
+     */</comment>
+    <function><type><specifier>public</specifier> <name>IPartitioner</name></type> <name>partitioner</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>partitioner</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Add merkle tree's with the defined maxsize and ranges.
+     *
+     * @param maxsize
+     * @param ranges
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>addMerkleTrees</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>maxsize</name></decl></parameter>, <parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>ranges</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>range</name> <range>: <expr><name>ranges</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>addMerkleTree</name><argument_list>(<argument><expr><name>maxsize</name></expr></argument>, <argument><expr><name>range</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Add a MerkleTree with the defined size and range.
+     *
+     * @param maxsize
+     * @param range
+     * @return The created merkle tree.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>MerkleTree</name></type> <name>addMerkleTree</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>maxsize</name></decl></parameter>, <parameter><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>range</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>addMerkleTree</name><argument_list>(<argument><expr><name>maxsize</name></expr></argument>, <argument><expr><name><name>MerkleTree</name><operator>.</operator><name>RECOMMENDED_DEPTH</name></name></expr></argument>, <argument><expr><name>range</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>MerkleTree</name></type> <name>addMerkleTree</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>maxsize</name></decl></parameter>, <parameter><decl><type><name>byte</name></type> <name>hashdepth</name></decl></parameter>, <parameter><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>range</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>MerkleTree</name></type> <name>tree</name> <init>= <expr><operator>new</operator> <call><name>MerkleTree</name><argument_list>(<argument><expr><name>partitioner</name></expr></argument>, <argument><expr><name>range</name></expr></argument>, <argument><expr><name>hashdepth</name></expr></argument>, <argument><expr><name>maxsize</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>addTree</name><argument_list>(<argument><expr><name>tree</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <return>return <expr><name>tree</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the MerkleTree.Range responsible for the given token.
+     *
+     * @param t
+     * @return
+     */</comment>
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name><name>MerkleTree</name><operator>.</operator><name>TreeRange</name></name></type> <name>get</name><parameter_list>(<parameter><decl><type><name>Token</name></type> <name>t</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>getMerkleTree</name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Init all MerkleTree's with an even tree distribution.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>init</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>range</name> <range>: <expr><call><name><name>merkleTrees</name><operator>.</operator><name>keySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>init</name><argument_list>(<argument><expr><name>range</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Dereference all merkle trees and release direct memory for all off-heap trees.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>release</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>merkleTrees</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>forEach</name><argument_list>(<argument><expr><name>MerkleTree</name><operator>::</operator><name>release</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>merkleTrees</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Init a selected MerkleTree with an even tree distribution.
+     *
+     * @param range
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>init</name><parameter_list>(<parameter><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>range</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>merkleTrees</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>range</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>init</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Split the MerkleTree responsible for the given token.
+     *
+     * @param t
+     * @return
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>split</name><parameter_list>(<parameter><decl><type><name>Token</name></type> <name>t</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>getMerkleTree</name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>split</name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Invalidate the MerkleTree responsible for the given token.
+     *
+     * @param t
+     */</comment>
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>invalidate</name><parameter_list>(<parameter><decl><type><name>Token</name></type> <name>t</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>getMerkleTree</name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>unsafeInvalidate</name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the MerkleTree responsible for the given token range.
+     *
+     * @param range
+     * @return
+     */</comment>
+    <function><type><specifier>public</specifier> <name>MerkleTree</name></type> <name>getMerkleTree</name><parameter_list>(<parameter><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>range</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>merkleTrees</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>range</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>size</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>size</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>MerkleTree</name></type> <name>tree</name> <range>: <expr><call><name><name>merkleTrees</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>tree</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+
+        <return>return <expr><name>size</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>maxsize</name><parameter_list>(<parameter><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>range</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>maxsize</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>getMerkleTree</name><argument_list>(<argument><expr><name>range</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>maxsize</name><argument_list>(<argument><expr><name>maxsize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the MerkleTree responsible for the given token.
+     *
+     * @param t
+     * @return The given MerkleTree or null if none exist.
+     */</comment>
+    <function><type><specifier>private</specifier> <name>MerkleTree</name></type> <name>getMerkleTree</name><parameter_list>(<parameter><decl><type><name>Token</name></type> <name>t</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>range</name> <range>: <expr><call><name><name>merkleTrees</name><operator>.</operator><name>keySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>range</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><call><name><name>merkleTrees</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>range</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+
+        <throw>throw <expr><operator>new</operator> <call><name>AssertionError</name><argument_list>(<argument><expr><literal type="string">"Expected tree for token "</literal> <operator>+</operator> <name>t</name></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>addTrees</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>MerkleTree</name></argument>&gt;</argument_list></name></type> <name>trees</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>MerkleTree</name></type> <name>tree</name> <range>: <expr><name>trees</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>addTree</name><argument_list>(<argument><expr><name>tree</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>addTree</name><parameter_list>(<parameter><decl><type><name>MerkleTree</name></type> <name>tree</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><call><name>validateNonOverlapping</name><argument_list>(<argument><expr><name>tree</name></expr></argument>)</argument_list></call> <operator>:</operator> <literal type="string">"Range ["</literal> <operator>+</operator> <name><name>tree</name><operator>.</operator><name>fullRange</name></name> <operator>+</operator> <literal type="string">"] is intersecting an existing range"</literal></expr>;</assert>
+
+        <expr_stmt><expr><call><name><name>merkleTrees</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name><name>tree</name><operator>.</operator><name>fullRange</name></name></expr></argument>, <argument><expr><name>tree</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>validateNonOverlapping</name><parameter_list>(<parameter><decl><type><name>MerkleTree</name></type> <name>tree</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>range</name> <range>: <expr><call><name><name>merkleTrees</name><operator>.</operator><name>keySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>tree</name><operator>.</operator><name>fullRange</name><operator>.</operator><name>intersects</name></name><argument_list>(<argument><expr><name>range</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get an iterator for all the iterator generated by the MerkleTrees.
+     *
+     * @return
+     */</comment>
+    <function><type><specifier>public</specifier> <name>TreeRangeIterator</name></type> <name>rangeIterator</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>TreeRangeIterator</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Log the row count per leaf for all MerkleTrees.
+     *
+     * @param logger
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>logRowCountPerLeaf</name><parameter_list>(<parameter><decl><type><name>Logger</name></type> <name>logger</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>MerkleTree</name></type> <name>tree</name> <range>: <expr><call><name><name>merkleTrees</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>tree</name><operator>.</operator><name>histogramOfRowCountPerLeaf</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>log</name><argument_list>(<argument><expr><name>logger</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Log the row size per leaf for all MerkleTrees.
+     *
+     * @param logger
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>logRowSizePerLeaf</name><parameter_list>(<parameter><decl><type><name>Logger</name></type> <name>logger</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>MerkleTree</name></type> <name>tree</name> <range>: <expr><call><name><name>merkleTrees</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>tree</name><operator>.</operator><name>histogramOfRowSizePerLeaf</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>log</name><argument_list>(<argument><expr><name>logger</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name><name>byte</name><index>[]</index></name></type> <name>hash</name><parameter_list>(<parameter><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>range</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <try>try <init>(<decl><type><name>ByteArrayOutputStream</name></type> <name>baos</name> <init>= <expr><operator>new</operator> <call><name>ByteArrayOutputStream</name><argument_list>()</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>hashed</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+            <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>, <argument><name>MerkleTree</name></argument>&gt;</argument_list></name></name></type> <name>entry</name> <range>: <expr><call><name><name>merkleTrees</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>entry</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>intersects</name><argument_list>(<argument><expr><name>range</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>hashed</name> <operator>|=</operator> <call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>ifHashesRange</name><argument_list>(<argument><expr><name>range</name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>n</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>baos</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><call><name><name>n</name><operator>.</operator><name>hash</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt></block_content></block></for>
+
+            <return>return <expr><ternary><condition><expr><name>hashed</name></expr> ?</condition><then> <expr><call><name><name>baos</name><operator>.</operator><name>toByteArray</name></name><argument_list>()</argument_list></call></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><literal type="string">"Unable to append merkle tree hash to result"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get an iterator of all ranges and their MerkleTrees.
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>Iterator</name><argument_list type="generic">&lt;<argument><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>, <argument><name>MerkleTree</name></argument>&gt;</argument_list></name></name></argument>&gt;</argument_list></name></type> <name>iterator</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>merkleTrees</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>iterator</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>rowCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>totalCount</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>MerkleTree</name></type> <name>tree</name> <range>: <expr><call><name><name>merkleTrees</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><name>totalCount</name> <operator>+=</operator> <call><name><name>tree</name><operator>.</operator><name>rowCount</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><name>totalCount</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>public</specifier> class <name>TreeRangeIterator</name> <super_list><extends>extends <super><name><name>AbstractIterator</name><argument_list type="generic">&lt;<argument><name><name>MerkleTree</name><operator>.</operator><name>TreeRange</name></name></argument>&gt;</argument_list></name></super></extends> <implements>implements
+            <super><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name><name>MerkleTree</name><operator>.</operator><name>TreeRange</name></name></argument>&gt;</argument_list></name></super>,
+            <super><name><name>PeekingIterator</name><argument_list type="generic">&lt;<argument><name><name>MerkleTree</name><operator>.</operator><name>TreeRange</name></name></argument>&gt;</argument_list></name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>MerkleTree</name></argument>&gt;</argument_list></name></type> <name>it</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <name><name>MerkleTree</name><operator>.</operator><name>TreeRangeIterator</name></name></type> <name>current</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>TreeRangeIterator</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name>it</name> <operator>=</operator> <call><name><name>merkleTrees</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>iterator</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name><name>MerkleTree</name><operator>.</operator><name>TreeRange</name></name></type> <name>computeNext</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>current</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <operator>!</operator><call><name><name>current</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><call><name>nextIterator</name><argument_list>()</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+            <return>return <expr><call><name><name>current</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name><name>MerkleTree</name><operator>.</operator><name>TreeRange</name></name></type> <name>nextIterator</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>it</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>current</name> <operator>=</operator> <call><name><name>it</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>rangeIterator</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+                <return>return <expr><call><name><name>current</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <return>return <expr><call><name>endOfData</name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>Iterator</name><argument_list type="generic">&lt;<argument><name><name>MerkleTree</name><operator>.</operator><name>TreeRange</name></name></argument>&gt;</argument_list></name></type> <name>iterator</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * @return a new {@link MerkleTrees} instance with all trees moved off heap.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>MerkleTrees</name></type> <name>tryMoveOffHeap</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>, <argument><name>MerkleTree</name></argument>&gt;</argument_list></name></type> <name>movedTrees</name> <init>= <expr><operator>new</operator> <call><name><name>TreeMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><operator>new</operator> <call><name>TokenRangeComparator</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>, <argument><name>MerkleTree</name></argument>&gt;</argument_list></name></name></type> <name>entry</name> <range>: <expr><call><name><name>merkleTrees</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>movedTrees</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>entry</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>tryMoveOffHeap</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <return>return <expr><operator>new</operator> <call><name>MerkleTrees</name><argument_list>(<argument><expr><name>partitioner</name></expr></argument>, <argument><expr><call><name><name>movedTrees</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the differences between the two sets of MerkleTrees.
+     *
+     * @param ltree
+     * @param rtree
+     * @return
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>difference</name><parameter_list>(<parameter><decl><type><name>MerkleTrees</name></type> <name>ltree</name></decl></parameter>, <parameter><decl><type><name>MerkleTrees</name></type> <name>rtree</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>differences</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>MerkleTree</name></type> <name>tree</name> <range>: <expr><call><name><name>ltree</name><operator>.</operator><name>merkleTrees</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>differences</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><call><name><name>MerkleTree</name><operator>.</operator><name>difference</name></name><argument_list>(<argument><expr><name>tree</name></expr></argument>, <argument><expr><call><name><name>rtree</name><operator>.</operator><name>getMerkleTree</name></name><argument_list>(<argument><expr><name><name>tree</name><operator>.</operator><name>fullRange</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <return>return <expr><name>differences</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>MerkleTreesSerializer</name> <super_list><implements>implements <super><name><name>IVersionedSerializer</name><argument_list type="generic">&lt;<argument><name>MerkleTrees</name></argument>&gt;</argument_list></name></super></implements></super_list>
+    <block>{
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>MerkleTrees</name></type> <name>trees</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><call><name><name>trees</name><operator>.</operator><name>merkleTrees</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>MerkleTree</name></type> <name>tree</name> <range>: <expr><call><name><name>trees</name><operator>.</operator><name>merkleTrees</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>tree</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>out</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>MerkleTrees</name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>IPartitioner</name></type> <name>partitioner</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>nTrees</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>MerkleTree</name></argument>&gt;</argument_list></name></type> <name>trees</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>nTrees</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>nTrees</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>nTrees</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>MerkleTree</name></type> <name>tree</name> <init>= <expr><call><name><name>MerkleTree</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>trees</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>tree</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <if_stmt><if>if <condition>(<expr><name>partitioner</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><name>partitioner</name> <operator>=</operator> <call><name><name>tree</name><operator>.</operator><name>partitioner</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+                    <else>else<block type="pseudo"><block_content>
+                        <assert>assert <expr><call><name><name>tree</name><operator>.</operator><name>partitioner</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name>partitioner</name></expr>;</assert></block_content></block></else></if_stmt>
+                </block_content>}</block></for>
+            </block_content>}</block></if></if_stmt>
+
+            <return>return <expr><operator>new</operator> <call><name>MerkleTrees</name><argument_list>(<argument><expr><name>partitioner</name></expr></argument>, <argument><expr><name>trees</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>serializedSize</name><parameter_list>(<parameter><decl><type><name>MerkleTrees</name></type> <name>trees</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><name>trees</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</assert>
+
+            <decl_stmt><decl><type><name>long</name></type> <name>size</name> <init>= <expr><call><name><name>TypeSizes</name><operator>.</operator><name>sizeof</name></name><argument_list>(<argument><expr><call><name><name>trees</name><operator>.</operator><name>merkleTrees</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>MerkleTree</name></type> <name>tree</name> <range>: <expr><call><name><name>trees</name><operator>.</operator><name>merkleTrees</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <expr_stmt><expr><name>size</name> <operator>+=</operator> <call><name><name>tree</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <return>return <expr><name>size</name></expr>;</return>
+        </block_content>}</block></function>
+
+    }</block></class>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>TokenRangeComparator</name> <super_list><implements>implements <super><name><name>Comparator</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></super></implements></super_list>
+    <block>{
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>int</name></type> <name>compare</name><parameter_list>(<parameter><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>rt1</name></decl></parameter>, <parameter><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>rt2</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>rt1</name><operator>.</operator><name>left</name><operator>.</operator><name>compareTo</name></name><argument_list>(<argument><expr><name><name>rt2</name><operator>.</operator><name>left</name></name></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="number">0</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <return>return <expr><call><name><name>rt1</name><operator>.</operator><name>compareTo</name></name><argument_list>(<argument><expr><name>rt2</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

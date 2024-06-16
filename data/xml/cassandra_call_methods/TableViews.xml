@@ -1,0 +1,579 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/view/TableViews.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>view</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>CopyOnWriteArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicLong</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>stream</name><operator>.</operator><name>Collectors</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterables</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterators</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>PeekingIterator</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name><operator>.</operator><name>CommitLogPosition</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>Token</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>Schema</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableId</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadataRef</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>StorageProxy</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>btree</name><operator>.</operator><name>BTree</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>btree</name><operator>.</operator><name>BTreeSet</name></name>;</import>
+
+
+<comment type="block" format="javadoc">/**
+ * Groups all the views for a given table.
+ */</comment>
+<class><specifier>public</specifier> class <name>TableViews</name> <super_list><extends>extends <super><name><name>AbstractCollection</name><argument_list type="generic">&lt;<argument><name>View</name></argument>&gt;</argument_list></name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>TableMetadataRef</name></type> <name>baseTableMetadata</name></decl>;</decl_stmt>
+
+    <comment type="line">// We need this to be thread-safe, but the number of times this is changed (when a view is created in the keyspace)</comment>
+    <comment type="line">// is massively exceeded by the number of times it's read (for every mutation on the keyspace), so a copy-on-write</comment>
+    <comment type="line">// list is the best option.</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>View</name></argument>&gt;</argument_list></name></type> <name>views</name> <init>= <expr><operator>new</operator> <call><name>CopyOnWriteArrayList</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>TableViews</name><parameter_list>(<parameter><decl><type><name>TableId</name></type> <name>id</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>baseTableMetadata</name> <operator>=</operator> <call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getTableMetadataRef</name></name><argument_list>(<argument><expr><name>id</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>hasViews</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>!</operator><call><name><name>views</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>size</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>views</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>View</name></argument>&gt;</argument_list></name></type> <name>iterator</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>views</name><operator>.</operator><name>iterator</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>contains</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>viewName</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>Iterables</name><operator>.</operator><name>any</name></name><argument_list>(<argument><expr><name>views</name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>view</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>view</name><operator>.</operator><name>name</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>viewName</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>add</name><parameter_list>(<parameter><decl><type><name>View</name></type> <name>view</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// We should have validated that there is no existing view with this name at this point</comment>
+        <assert>assert <expr><operator>!</operator><call><name>contains</name><argument_list>(<argument><expr><name><name>view</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr>;</assert>
+        <return>return <expr><call><name><name>views</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>view</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>ColumnFamilyStore</name></argument>&gt;</argument_list></name></type> <name>allViewsCfs</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Keyspace</name></type> <name>keyspace</name> <init>= <expr><call><name><name>Keyspace</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><name><name>baseTableMetadata</name><operator>.</operator><name>keyspace</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>Iterables</name><operator>.</operator><name>transform</name></name><argument_list>(<argument><expr><name>views</name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>view</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>keyspace</name><operator>.</operator><name>getColumnFamilyStore</name></name><argument_list>(<argument><expr><call><name><name>view</name><operator>.</operator><name>getDefinition</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>name</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>build</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>views</name><operator>.</operator><name>forEach</name></name><argument_list>(<argument><expr><name>View</name><operator>::</operator><name>build</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>stopBuild</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>views</name><operator>.</operator><name>forEach</name></name><argument_list>(<argument><expr><name>View</name><operator>::</operator><name>stopBuild</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>forceBlockingFlush</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>ColumnFamilyStore</name></type> <name>viewCfs</name> <range>: <expr><call><name>allViewsCfs</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>viewCfs</name><operator>.</operator><name>forceBlockingFlush</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>dumpMemtables</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>ColumnFamilyStore</name></type> <name>viewCfs</name> <range>: <expr><call><name>allViewsCfs</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>viewCfs</name><operator>.</operator><name>dumpMemtable</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>truncateBlocking</name><parameter_list>(<parameter><decl><type><name>CommitLogPosition</name></type> <name>replayAfter</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>truncatedAt</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>ColumnFamilyStore</name></type> <name>viewCfs</name> <range>: <expr><call><name>allViewsCfs</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>viewCfs</name><operator>.</operator><name>discardSSTables</name></name><argument_list>(<argument><expr><name>truncatedAt</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>saveTruncationRecord</name></name><argument_list>(<argument><expr><name>viewCfs</name></expr></argument>, <argument><expr><name>truncatedAt</name></expr></argument>, <argument><expr><name>replayAfter</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>removeByName</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>viewName</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>views</name><operator>.</operator><name>removeIf</name></name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>v</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>v</name><operator>.</operator><name>name</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>viewName</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Calculates and pushes updates to the views replicas. The replicas are determined by
+     * {@link ViewUtils#getViewNaturalEndpoint(String, Token, Token)}.
+     *
+     * @param update an update on the base table represented by this object.
+     * @param writeCommitLog whether we should write the commit log for the view updates.
+     * @param baseComplete time from epoch in ms that the local base mutation was (or will be) completed
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>pushViewReplicaUpdates</name><parameter_list>(<parameter><decl><type><name>PartitionUpdate</name></type> <name>update</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>writeCommitLog</name></decl></parameter>, <parameter><decl><type><name>AtomicLong</name></type> <name>baseComplete</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><call><name><name>update</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>id</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>baseTableMetadata</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr>;</assert>
+
+        <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>View</name></argument>&gt;</argument_list></name></type> <name>views</name> <init>= <expr><call><name>updatedViews</name><argument_list>(<argument><expr><name>update</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>views</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// Read modified rows</comment>
+        <decl_stmt><decl><type><name>int</name></type> <name>nowInSec</name> <init>= <expr><call><name><name>FBUtilities</name><operator>.</operator><name>nowInSeconds</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>queryStartNanoTime</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>SinglePartitionReadCommand</name></type> <name>command</name> <init>= <expr><call><name>readExistingRowsCommand</name><argument_list>(<argument><expr><name>update</name></expr></argument>, <argument><expr><name>views</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>command</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <init>= <expr><call><name><name>Keyspace</name><operator>.</operator><name>openAndGetStore</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>start</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>mutations</name></decl>;</decl_stmt>
+        <try>try <init>(<decl><type><name>ReadExecutionController</name></type> <name>orderGroup</name> <init>= <expr><call><name><name>command</name><operator>.</operator><name>executionController</name></name><argument_list>()</argument_list></call></expr></init></decl>;
+             <decl><type><name>UnfilteredRowIterator</name></type> <name>existings</name> <init>= <expr><call><name><name>UnfilteredPartitionIterators</name><operator>.</operator><name>getOnlyElement</name></name><argument_list>(<argument><expr><call><name><name>command</name><operator>.</operator><name>executeLocally</name></name><argument_list>(<argument><expr><name>orderGroup</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>command</name></expr></argument>)</argument_list></call></expr></init></decl>;
+             <decl><type><name>UnfilteredRowIterator</name></type> <name>updates</name> <init>= <expr><call><name><name>update</name><operator>.</operator><name>unfilteredIterator</name></name><argument_list>()</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <expr_stmt><expr><name>mutations</name> <operator>=</operator> <call><name><name>Iterators</name><operator>.</operator><name>getOnlyElement</name></name><argument_list>(<argument><expr><call><name>generateViewUpdates</name><argument_list>(<argument><expr><name>views</name></expr></argument>, <argument><expr><name>updates</name></expr></argument>, <argument><expr><name>existings</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></try>
+        <expr_stmt><expr><call><name><name>Keyspace</name><operator>.</operator><name>openAndGetStore</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name><name>metric</name><operator>.</operator><name>viewReadTime</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>start</name></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>mutations</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>StorageProxy</name><operator>.</operator><name>mutateMV</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getKey</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>mutations</name></expr></argument>, <argument><expr><name>writeCommitLog</name></expr></argument>, <argument><expr><name>baseComplete</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+
+    <comment type="block" format="javadoc">/**
+     * Given some updates on the base table of this object and the existing values for the rows affected by that update, generates the
+     * mutation to be applied to the provided views.
+     *
+     * @param views the views potentially affected by {@code updates}.
+     * @param updates the base table updates being applied.
+     * @param existings the existing values for the rows affected by {@code updates}. This is used to decide if a view is
+     * obsoleted by the update and should be removed, gather the values for columns that may not be part of the update if
+     * a new view entry needs to be created, and compute the minimal updates to be applied if the view entry isn't changed
+     * but has simply some updated values. This will be empty for view building as we want to assume anything we'll pass
+     * to {@code updates} is new.
+     * @param nowInSec the current time in seconds.
+     * @param separateUpdates, if false, mutation is per partition.
+     * @return the mutations to apply to the {@code views}. This can be empty.
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>Iterator</name><argument_list type="generic">&lt;<argument><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>generateViewUpdates</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>View</name></argument>&gt;</argument_list></name></type> <name>views</name></decl></parameter>,
+                                                              <parameter><decl><type><name>UnfilteredRowIterator</name></type> <name>updates</name></decl></parameter>,
+                                                              <parameter><decl><type><name>UnfilteredRowIterator</name></type> <name>existings</name></decl></parameter>,
+                                                              <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>,
+                                                              <parameter><decl><type><name>boolean</name></type> <name>separateUpdates</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><call><name><name>updates</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>id</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>baseTableMetadata</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr>;</assert>
+
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>ViewUpdateGenerator</name></argument>&gt;</argument_list></name></type> <name>generators</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>views</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>View</name></type> <name>view</name> <range>: <expr><name>views</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>generators</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>ViewUpdateGenerator</name><argument_list>(<argument><expr><name>view</name></expr></argument>, <argument><expr><call><name><name>updates</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+        <decl_stmt><decl><type><name>DeletionTracker</name></type> <name>existingsDeletion</name> <init>= <expr><operator>new</operator> <call><name>DeletionTracker</name><argument_list>(<argument><expr><call><name><name>existings</name><operator>.</operator><name>partitionLevelDeletion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>DeletionTracker</name></type> <name>updatesDeletion</name> <init>= <expr><operator>new</operator> <call><name>DeletionTracker</name><argument_list>(<argument><expr><call><name><name>updates</name><operator>.</operator><name>partitionLevelDeletion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="block">/*
+         * We iterate through the updates and the existing rows in parallel. This allows us to know the consequence
+         * on the view of each update.
+         */</comment>
+        <decl_stmt><decl><type><name><name>PeekingIterator</name><argument_list type="generic">&lt;<argument><name>Unfiltered</name></argument>&gt;</argument_list></name></type> <name>existingsIter</name> <init>= <expr><call><name><name>Iterators</name><operator>.</operator><name>peekingIterator</name></name><argument_list>(<argument><expr><name>existings</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>PeekingIterator</name><argument_list type="generic">&lt;<argument><name>Unfiltered</name></argument>&gt;</argument_list></name></type> <name>updatesIter</name> <init>= <expr><call><name><name>Iterators</name><operator>.</operator><name>peekingIterator</name></name><argument_list>(<argument><expr><name>updates</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <while>while <condition>(<expr><call><name><name>existingsIter</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>updatesIter</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Unfiltered</name></type> <name>existing</name> <init>= <expr><call><name><name>existingsIter</name><operator>.</operator><name>peek</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Unfiltered</name></type> <name>update</name> <init>= <expr><call><name><name>updatesIter</name><operator>.</operator><name>peek</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>Row</name></type> <name>existingRow</name></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Row</name></type> <name>updateRow</name></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>cmp</name> <init>= <expr><call><name><name>baseTableMetadata</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>comparator</name><operator>.</operator><name>compare</name></name><argument_list>(<argument><expr><name>update</name></expr></argument>, <argument><expr><name>existing</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>cmp</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// We have an update where there was nothing before</comment>
+                <if_stmt><if>if <condition>(<expr><call><name><name>update</name><operator>.</operator><name>isRangeTombstoneMarker</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>updatesDeletion</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><call><name><name>updatesIter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <continue>continue;</continue>
+                </block_content>}</block></if></if_stmt>
+
+                <expr_stmt><expr><name>updateRow</name> <operator>=</operator> <operator>(</operator><operator>(</operator><name>Row</name><operator>)</operator><call><name><name>updatesIter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call><operator>)</operator><operator>.</operator><call><name>withRowDeletion</name><argument_list>(<argument><expr><call><name><name>updatesDeletion</name><operator>.</operator><name>currentDeletion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>existingRow</name> <operator>=</operator> <call><name>emptyRow</name><argument_list>(<argument><expr><call><name><name>updateRow</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>existingsDeletion</name><operator>.</operator><name>currentDeletion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><name>cmp</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// We have something existing but no update (which will happen either because it's a range tombstone marker in</comment>
+                <comment type="line">// existing, or because we've fetched the existing row due to some partition/range deletion in the updates)</comment>
+                <if_stmt><if>if <condition>(<expr><call><name><name>existing</name><operator>.</operator><name>isRangeTombstoneMarker</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>existingsDeletion</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><call><name><name>existingsIter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <continue>continue;</continue>
+                </block_content>}</block></if></if_stmt>
+
+                <expr_stmt><expr><name>existingRow</name> <operator>=</operator> <operator>(</operator><operator>(</operator><name>Row</name><operator>)</operator><call><name><name>existingsIter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call><operator>)</operator><operator>.</operator><call><name>withRowDeletion</name><argument_list>(<argument><expr><call><name><name>existingsDeletion</name><operator>.</operator><name>currentDeletion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>updateRow</name> <operator>=</operator> <call><name>emptyRow</name><argument_list>(<argument><expr><call><name><name>existingRow</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>updatesDeletion</name><operator>.</operator><name>currentDeletion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <comment type="line">// The way we build the read command used for existing rows, we should always have updatesDeletion.currentDeletion()</comment>
+                <comment type="line">// that is not live, since we wouldn't have read the existing row otherwise. And we could assert that, but if we ever</comment>
+                <comment type="line">// change the read method so that it can slightly over-read in some case, that would be an easily avoiding bug lurking,</comment>
+                <comment type="line">// so we just handle the case.</comment>
+                <if_stmt><if>if <condition>(<expr><name>updateRow</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <comment type="line">// We're updating a row that had pre-existing data</comment>
+                <if_stmt><if>if <condition>(<expr><call><name><name>update</name><operator>.</operator><name>isRangeTombstoneMarker</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <assert>assert <expr><call><name><name>existing</name><operator>.</operator><name>isRangeTombstoneMarker</name></name><argument_list>()</argument_list></call></expr>;</assert>
+                    <expr_stmt><expr><call><name><name>updatesDeletion</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><call><name><name>updatesIter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>existingsDeletion</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><call><name><name>existingsIter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <continue>continue;</continue>
+                </block_content>}</block></if></if_stmt>
+
+                <assert>assert <expr><operator>!</operator><call><name><name>existing</name><operator>.</operator><name>isRangeTombstoneMarker</name></name><argument_list>()</argument_list></call></expr>;</assert>
+                <expr_stmt><expr><name>existingRow</name> <operator>=</operator> <operator>(</operator><operator>(</operator><name>Row</name><operator>)</operator><call><name><name>existingsIter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call><operator>)</operator><operator>.</operator><call><name>withRowDeletion</name><argument_list>(<argument><expr><call><name><name>existingsDeletion</name><operator>.</operator><name>currentDeletion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>updateRow</name> <operator>=</operator> <operator>(</operator><operator>(</operator><name>Row</name><operator>)</operator><call><name><name>updatesIter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call><operator>)</operator><operator>.</operator><call><name>withRowDeletion</name><argument_list>(<argument><expr><call><name><name>updatesDeletion</name><operator>.</operator><name>currentDeletion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+
+            <expr_stmt><expr><call><name>addToViewUpdateGenerators</name><argument_list>(<argument><expr><name>existingRow</name></expr></argument>, <argument><expr><name>updateRow</name></expr></argument>, <argument><expr><name>generators</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></while>
+
+        <comment type="line">// We only care about more existing rows if the update deletion isn't live, i.e. if we had a partition deletion</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>updatesDeletion</name><operator>.</operator><name>currentDeletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isLive</name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <while>while <condition>(<expr><call><name><name>existingsIter</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>Unfiltered</name></type> <name>existing</name> <init>= <expr><call><name><name>existingsIter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <comment type="line">// If it's a range tombstone, we don't care, we're only looking for existing entry that gets deleted by</comment>
+                <comment type="line">// the new partition deletion</comment>
+                <if_stmt><if>if <condition>(<expr><call><name><name>existing</name><operator>.</operator><name>isRangeTombstoneMarker</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <decl_stmt><decl><type><name>Row</name></type> <name>existingRow</name> <init>= <expr><operator>(</operator><name>Row</name><operator>)</operator><name>existing</name></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name>addToViewUpdateGenerators</name><argument_list>(<argument><expr><name>existingRow</name></expr></argument>, <argument><expr><call><name>emptyRow</name><argument_list>(<argument><expr><call><name><name>existingRow</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>updatesDeletion</name><operator>.</operator><name>currentDeletion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>generators</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>separateUpdates</name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><specifier>final</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>firstBuild</name> <init>= <expr><call><name>buildMutations</name><argument_list>(<argument><expr><call><name><name>baseTableMetadata</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>generators</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <return>return <expr><operator>new</operator> <class><super><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></super><argument_list>()</argument_list>
+            <block>{
+                <comment type="line">// If the previous values are already empty, this update must be either empty or exclusively appending.</comment>
+                <comment type="line">// In the case we are exclusively appending, we need to drop the build that was passed in and try to build a</comment>
+                <comment type="line">// new first update instead.</comment>
+                <comment type="line">// If there are no other updates, next will be null and the iterator will be empty.</comment>
+                <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>next</name> <init>= <expr><ternary><condition><expr><call><name><name>firstBuild</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>
+                                            ?</condition><then> <expr><call><name>buildNext</name><argument_list>()</argument_list></call></expr>
+                                            </then><else>: <expr><name>firstBuild</name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+                <function><type><specifier>private</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>buildNext</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <while>while <condition>(<expr><call><name><name>updatesIter</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                    <block>{<block_content>
+                        <decl_stmt><decl><type><name>Unfiltered</name></type> <name>update</name> <init>= <expr><call><name><name>updatesIter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                        <comment type="line">// If it's a range tombstone, it removes nothing pre-exisiting, so we can ignore it for view updates</comment>
+                        <if_stmt><if>if <condition>(<expr><call><name><name>update</name><operator>.</operator><name>isRangeTombstoneMarker</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                            <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                        <decl_stmt><decl><type><name>Row</name></type> <name>updateRow</name> <init>= <expr><operator>(</operator><name>Row</name><operator>)</operator> <name>update</name></expr></init></decl>;</decl_stmt>
+                        <expr_stmt><expr><call><name>addToViewUpdateGenerators</name><argument_list>(<argument><expr><call><name>emptyRow</name><argument_list>(<argument><expr><call><name><name>updateRow</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>existingsDeletion</name><operator>.</operator><name>currentDeletion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                  <argument><expr><name>updateRow</name></expr></argument>,
+                                                  <argument><expr><name>generators</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                        <comment type="line">// If the updates have been filtered, then we won't have any mutations; we need to make sure that we</comment>
+                        <comment type="line">// only return if the mutations are empty. Otherwise, we continue to search for an update which is</comment>
+                        <comment type="line">// not filtered</comment>
+                        <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>mutations</name> <init>= <expr><call><name>buildMutations</name><argument_list>(<argument><expr><call><name><name>baseTableMetadata</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>generators</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>mutations</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                            <return>return <expr><name>mutations</name></expr>;</return></block_content></block></if></if_stmt>
+                    </block_content>}</block></while>
+
+                    <return>return <expr><literal type="null">null</literal></expr>;</return>
+                </block_content>}</block></function>
+
+                <function><type><specifier>public</specifier> <name>boolean</name></type> <name>hasNext</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <return>return <expr><name>next</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</return>
+                </block_content>}</block></function>
+
+                <function><type><specifier>public</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>next</name><parameter_list>()</parameter_list>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>mutations</name> <init>= <expr><name>next</name></expr></init></decl>;</decl_stmt>
+
+                    <expr_stmt><expr><name>next</name> <operator>=</operator> <call><name>buildNext</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+                    <assert>assert <expr><operator>!</operator><call><name><name>mutations</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call> <operator>:</operator> <literal type="string">"Expected mutations to be non-empty"</literal></expr>;</assert>
+                    <return>return <expr><name>mutations</name></expr>;</return>
+                </block_content>}</block></function>
+            }</block></class></expr>;</return>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <while>while <condition>(<expr><call><name><name>updatesIter</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>Unfiltered</name></type> <name>update</name> <init>= <expr><call><name><name>updatesIter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <comment type="line">// If it's a range tombstone, it removes nothing pre-exisiting, so we can ignore it for view updates</comment>
+                <if_stmt><if>if <condition>(<expr><call><name><name>update</name><operator>.</operator><name>isRangeTombstoneMarker</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <decl_stmt><decl><type><name>Row</name></type> <name>updateRow</name> <init>= <expr><operator>(</operator><name>Row</name><operator>)</operator> <name>update</name></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name>addToViewUpdateGenerators</name><argument_list>(<argument><expr><call><name>emptyRow</name><argument_list>(<argument><expr><call><name><name>updateRow</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>existingsDeletion</name><operator>.</operator><name>currentDeletion</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                          <argument><expr><name>updateRow</name></expr></argument>,
+                                          <argument><expr><name>generators</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></while>
+
+            <return>return <expr><call><name><name>Iterators</name><operator>.</operator><name>singletonIterator</name></name><argument_list>(<argument><expr><call><name>buildMutations</name><argument_list>(<argument><expr><call><name><name>baseTableMetadata</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>generators</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Return the views that are potentially updated by the provided updates.
+     *
+     * @param updates the updates applied to the base table.
+     * @return the views affected by {@code updates}.
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>View</name></argument>&gt;</argument_list></name></type> <name>updatedViews</name><parameter_list>(<parameter><decl><type><name>PartitionUpdate</name></type> <name>updates</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>View</name></argument>&gt;</argument_list></name></type> <name>matchingViews</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>views</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>View</name></type> <name>view</name> <range>: <expr><name>views</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ReadQuery</name></type> <name>selectQuery</name> <init>= <expr><call><name><name>view</name><operator>.</operator><name>getReadQuery</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>selectQuery</name><operator>.</operator><name>selectsKey</name></name><argument_list>(<argument><expr><call><name><name>updates</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <continue>continue;</continue></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>matchingViews</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>view</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><name>matchingViews</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns the command to use to read the existing rows required to generate view updates for the provided base
+     * base updates.
+     *
+     * @param updates the base table updates being applied.
+     * @param views the views potentially affected by {@code updates}.
+     * @param nowInSec the current time in seconds.
+     * @return the command to use to read the base table rows required to generate view updates for {@code updates}.
+     */</comment>
+    <function><type><specifier>private</specifier> <name>SinglePartitionReadCommand</name></type> <name>readExistingRowsCommand</name><parameter_list>(<parameter><decl><type><name>PartitionUpdate</name></type> <name>updates</name></decl></parameter>, <parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>View</name></argument>&gt;</argument_list></name></type> <name>views</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Slices</name><operator>.</operator><name>Builder</name></name></type> <name>sliceBuilder</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>DeletionInfo</name></type> <name>deletionInfo</name> <init>= <expr><call><name><name>updates</name><operator>.</operator><name>deletionInfo</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>TableMetadata</name></type> <name>metadata</name> <init>= <expr><call><name><name>updates</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>DecoratedKey</name></type> <name>key</name> <init>= <expr><call><name><name>updates</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// TODO: This is subtle: we need to gather all the slices that we have to fetch between partition del, range tombstones and rows.</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>deletionInfo</name><operator>.</operator><name>isLive</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>sliceBuilder</name> <operator>=</operator> <operator>new</operator> <call><name><name>Slices</name><operator>.</operator><name>Builder</name></name><argument_list>(<argument><expr><name><name>metadata</name><operator>.</operator><name>comparator</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <comment type="line">// Everything covered by a deletion might invalidate an existing view entry, which means we must read it to know. In practice</comment>
+            <comment type="line">// though, the views involved might filter some base table clustering columns, in which case we can restrict what we read</comment>
+            <comment type="line">// using those restrictions.</comment>
+            <comment type="line">// If there is a partition deletion, then we can simply take each slices from each view select filter. They may overlap but</comment>
+            <comment type="line">// the Slices.Builder handles that for us. Note that in many case this will just involve reading everything (as soon as any</comment>
+            <comment type="line">// view involved has no clustering restrictions for instance).</comment>
+            <comment type="line">// For range tombstone, we should theoretically take the difference between the range tombstoned and the slices selected</comment>
+            <comment type="line">// by every views, but as we don't an easy way to compute that right now, we keep it simple and just use the tombstoned</comment>
+            <comment type="line">// range.</comment>
+            <comment type="line">// TODO: we should improve that latter part.</comment>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>deletionInfo</name><operator>.</operator><name>getPartitionDeletion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isLive</name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <for>for <control>(<init><decl><type><name>View</name></type> <name>view</name> <range>: <expr><name>views</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>sliceBuilder</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><call><name><name>view</name><operator>.</operator><name>getSelectStatement</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>clusteringIndexFilterAsSlices</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <assert>assert <expr><call><name><name>deletionInfo</name><operator>.</operator><name>hasRanges</name></name><argument_list>()</argument_list></call></expr>;</assert>
+                <decl_stmt><decl><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>RangeTombstone</name></argument>&gt;</argument_list></name></type> <name>iter</name> <init>= <expr><call><name><name>deletionInfo</name><operator>.</operator><name>rangeIterator</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <while>while <condition>(<expr><call><name><name>iter</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>sliceBuilder</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>iter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>deletedSlice</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></while>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <comment type="line">// We need to read every row that is updated, unless we can prove that it has no impact on any view entries.</comment>
+
+        <comment type="line">// If we had some slices from the deletions above, we'll continue using that. Otherwise, it's more efficient to build</comment>
+        <comment type="line">// a names query.</comment>
+        <decl_stmt><decl><type><name><name>NavigableSet</name><argument_list type="generic">&lt;<argument><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>names</name></decl>;</decl_stmt>
+        <try>try <init>(<decl><type><name><name>BTree</name><operator>.</operator><name><name>FastBuilder</name><argument_list type="generic">&lt;<argument><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></name></type> <name>namesBuilder</name> <init>= <expr><ternary><condition><expr><name>sliceBuilder</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name><name>BTree</name><operator>.</operator><name>fastBuilder</name></name><argument_list>()</argument_list></call></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr></init></decl>)</init>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>Row</name></type> <name>row</name> <range>: <expr><name>updates</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <comment type="line">// Don't read the existing state if we can prove the update won't affect any views</comment>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>affectsAnyViews</name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><name>row</name></expr></argument>, <argument><expr><name>views</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>namesBuilder</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>sliceBuilder</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>Slice</name><operator>.</operator><name>make</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+                <else>else<block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>namesBuilder</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>clustering</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+            </block_content>}</block></for>
+            <expr_stmt><expr><name>names</name> <operator>=</operator> <ternary><condition><expr><name>namesBuilder</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>BTreeSet</name><operator>.</operator><name>wrap</name></name><argument_list>(<argument><expr><call><name><name>namesBuilder</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>metadata</name><operator>.</operator><name>comparator</name></name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</expr_stmt>
+        </block_content>}</block></try>
+
+        <comment type="line">// If we have a slice builder, it means we had some deletions and we have to read. But if we had</comment>
+        <comment type="line">// only row updates, it's possible none of them affected the views, in which case we have nothing</comment>
+        <comment type="line">// to do.</comment>
+        <if_stmt><if>if <condition>(<expr><name>names</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>names</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>ClusteringIndexFilter</name></type> <name>clusteringFilter</name> <init>= <expr><ternary><condition><expr><name>names</name> <operator>==</operator> <literal type="null">null</literal></expr>
+                                               ?</condition><then> <expr><operator>new</operator> <call><name>ClusteringIndexSliceFilter</name><argument_list>(<argument><expr><call><name><name>sliceBuilder</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>
+                                               </then><else>: <expr><operator>new</operator> <call><name>ClusteringIndexNamesFilter</name><argument_list>(<argument><expr><name>names</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <comment type="line">// since unselected columns also affect view liveness, we need to query all base columns if base and view have same key columns.</comment>
+        <comment type="line">// If we have more than one view, we should merge the queried columns by each views but to keep it simple we just</comment>
+        <comment type="line">// include everything. We could change that in the future.</comment>
+        <decl_stmt><decl><type><name>ColumnFilter</name></type> <name>queriedColumns</name> <init>= <expr><ternary><condition><expr><call><name><name>views</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">1</literal> <operator>&amp;&amp;</operator> <call><name><name>metadata</name><operator>.</operator><name>enforceStrictLiveness</name></name><argument_list>()</argument_list></call></expr>
+                                    ?</condition><then> <expr><call><name><name>Iterables</name><operator>.</operator><name>getOnlyElement</name></name><argument_list>(<argument><expr><name>views</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>getSelectStatement</name><argument_list>()</argument_list></call><operator>.</operator><call><name>queriedColumns</name><argument_list>()</argument_list></call></expr>
+                                    </then><else>: <expr><call><name><name>ColumnFilter</name><operator>.</operator><name>all</name></name><argument_list>(<argument><expr><name>metadata</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <comment type="line">// Note that the views could have restrictions on regular columns, but even if that's the case we shouldn't apply those</comment>
+        <comment type="line">// when we read, because even if an existing row doesn't match the view filter, the update can change that in which</comment>
+        <comment type="line">// case we'll need to know the existing content. There is also no easy way to merge those RowFilter when we have multiple views.</comment>
+        <comment type="line">// TODO: we could still make sense to special case for when there is a single view and a small number of updates (and</comment>
+        <comment type="line">// no deletions). Indeed, in that case we could check whether any of the update modify any of the restricted regular</comment>
+        <comment type="line">// column, and if that's not the case we could use view filter. We keep it simple for now though.</comment>
+        <decl_stmt><decl><type><name>RowFilter</name></type> <name>rowFilter</name> <init>= <expr><name><name>RowFilter</name><operator>.</operator><name>NONE</name></name></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>SinglePartitionReadCommand</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>metadata</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>queriedColumns</name></expr></argument>, <argument><expr><name>rowFilter</name></expr></argument>, <argument><expr><name><name>DataLimits</name><operator>.</operator><name>NONE</name></name></expr></argument>, <argument><expr><name>key</name></expr></argument>, <argument><expr><name>clusteringFilter</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>affectsAnyViews</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>partitionKey</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>update</name></decl></parameter>, <parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>View</name></argument>&gt;</argument_list></name></type> <name>views</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>View</name></type> <name>view</name> <range>: <expr><name>views</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>view</name><operator>.</operator><name>mayBeAffectedBy</name></name><argument_list>(<argument><expr><name>partitionKey</name></expr></argument>, <argument><expr><name>update</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Given an existing base row and the update that we're going to apply to this row, generate the modifications
+     * to apply to MVs using the provided {@code ViewUpdateGenerator}s.
+     *
+     * @param existingBaseRow the base table row as it is before an update.
+     * @param updateBaseRow the newly updates made to {@code existingBaseRow}.
+     * @param generators the view update generators to add the new changes to.
+     */</comment>
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>addToViewUpdateGenerators</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>existingBaseRow</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>updateBaseRow</name></decl></parameter>, <parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>ViewUpdateGenerator</name></argument>&gt;</argument_list></name></type> <name>generators</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// Having existing empty is useful, it just means we'll insert a brand new entry for updateBaseRow,</comment>
+        <comment type="line">// but if we have no update at all, we shouldn't get there.</comment>
+        <assert>assert <expr><operator>!</operator><call><name><name>updateBaseRow</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</assert>
+
+        <comment type="line">// We allow existingBaseRow to be null, which we treat the same as being empty as an small optimization</comment>
+        <comment type="line">// to avoid allocating empty row objects when we know there was nothing existing.</comment>
+        <decl_stmt><decl><type><name>Row</name></type> <name>mergedBaseRow</name> <init>= <expr><ternary><condition><expr><name>existingBaseRow</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>updateBaseRow</name></expr> </then><else>: <expr><call><name><name>Rows</name><operator>.</operator><name>merge</name></name><argument_list>(<argument><expr><name>existingBaseRow</name></expr></argument>, <argument><expr><name>updateBaseRow</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>ViewUpdateGenerator</name></type> <name>generator</name> <range>: <expr><name>generators</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>generator</name><operator>.</operator><name>addBaseTableUpdate</name></name><argument_list>(<argument><expr><name>existingBaseRow</name></expr></argument>, <argument><expr><name>mergedBaseRow</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>Row</name></type> <name>emptyRow</name><parameter_list>(<parameter><decl><type><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>clustering</name></decl></parameter>, <parameter><decl><type><name>DeletionTime</name></type> <name>deletion</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// Returning null for an empty row is slightly ugly, but the case where there is no pre-existing row is fairly common</comment>
+        <comment type="line">// (especially when building the view), so we want to avoid a dummy allocation of an empty row every time.</comment>
+        <comment type="line">// And MultiViewUpdateBuilder knows how to deal with that.</comment>
+        <return>return <expr><ternary><condition><expr><call><name><name>deletion</name><operator>.</operator><name>isLive</name></name><argument_list>()</argument_list></call></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>BTreeRow</name><operator>.</operator><name>emptyDeletedRow</name></name><argument_list>(<argument><expr><name>clustering</name></expr></argument>, <argument><expr><call><name><name>Row</name><operator>.</operator><name>Deletion</name><operator>.</operator><name>regular</name></name><argument_list>(<argument><expr><name>deletion</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Extracts (and potentially groups) the mutations generated by the provided view update generator.
+     * Returns the mutation that needs to be done to the views given the base table updates
+     * passed to {@link #addBaseTableUpdate}.
+     *
+     * @param baseTableMetadata the metadata for the base table being updated.
+     * @param generators the generators from which to extract the view mutations from.
+     * @return the mutations created by all the generators in {@code generators}.
+     */</comment>
+    <function><type><specifier>private</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>buildMutations</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>baseTableMetadata</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>ViewUpdateGenerator</name></argument>&gt;</argument_list></name></type> <name>generators</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// One view is probably common enough and we can optimize a bit easily</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>generators</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">1</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ViewUpdateGenerator</name></type> <name>generator</name> <init>= <expr><call><name><name>generators</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>PartitionUpdate</name></argument>&gt;</argument_list></name></type> <name>updates</name> <init>= <expr><call><name><name>generator</name><operator>.</operator><name>generateViewUpdates</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>mutations</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>updates</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>PartitionUpdate</name></type> <name>update</name> <range>: <expr><name>updates</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>mutations</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>Mutation</name><argument_list>(<argument><expr><name>update</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+            <expr_stmt><expr><call><name><name>generator</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>mutations</name></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>DecoratedKey</name></argument>, <argument><name><name>Mutation</name><operator>.</operator><name>PartitionUpdateCollector</name></name></argument>&gt;</argument_list></name></type> <name>mutations</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>ViewUpdateGenerator</name></type> <name>generator</name> <range>: <expr><name>generators</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>PartitionUpdate</name></type> <name>update</name> <range>: <expr><call><name><name>generator</name><operator>.</operator><name>generateViewUpdates</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>DecoratedKey</name></type> <name>key</name> <init>= <expr><call><name><name>update</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name><name>Mutation</name><operator>.</operator><name>PartitionUpdateCollector</name></name></type> <name>collector</name> <init>= <expr><call><name><name>mutations</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>collector</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>collector</name> <operator>=</operator> <operator>new</operator> <call><name><name>Mutation</name><operator>.</operator><name>PartitionUpdateCollector</name></name><argument_list>(<argument><expr><name><name>baseTableMetadata</name><operator>.</operator><name>keyspace</name></name></expr></argument>, <argument><expr><name>key</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>mutations</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><name>collector</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>collector</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>update</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <expr_stmt><expr><call><name><name>generator</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><call><name><name>mutations</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>stream</name><argument_list>()</argument_list></call><operator>.</operator><call><name>map</name><argument_list>(<argument><expr><name><name>Mutation</name><operator>.</operator><name>PartitionUpdateCollector</name></name><operator>::</operator><name>build</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>collect</name><argument_list>(<argument><expr><call><name><name>Collectors</name><operator>.</operator><name>toList</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * A simple helper that tracks for a given {@code UnfilteredRowIterator} what is the current deletion at any time of the
+     * iteration. It will be the currently open range tombstone deletion if there is one and the partition deletion otherwise.
+     */</comment>
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>DeletionTracker</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>DeletionTime</name></type> <name>partitionDeletion</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>DeletionTime</name></type> <name>deletion</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>DeletionTracker</name><parameter_list>(<parameter><decl><type><name>DeletionTime</name></type> <name>partitionDeletion</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>partitionDeletion</name></name> <operator>=</operator> <name>partitionDeletion</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>update</name><parameter_list>(<parameter><decl><type><name>Unfiltered</name></type> <name>marker</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><name>marker</name> <operator>instanceof</operator> <name>RangeTombstoneMarker</name></expr>;</assert>
+            <decl_stmt><decl><type><name>RangeTombstoneMarker</name></type> <name>rtm</name> <init>= <expr><operator>(</operator><name>RangeTombstoneMarker</name><operator>)</operator><name>marker</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>deletion</name></name> <operator>=</operator> <ternary><condition><expr><call><name><name>rtm</name><operator>.</operator><name>isOpen</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>
+                          ?</condition><then> <expr><call><name><name>rtm</name><operator>.</operator><name>openDeletionTime</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>
+                          </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>DeletionTime</name></type> <name>currentDeletion</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><ternary><condition><expr><name>deletion</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>partitionDeletion</name></expr> </then><else>: <expr><name>deletion</name></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

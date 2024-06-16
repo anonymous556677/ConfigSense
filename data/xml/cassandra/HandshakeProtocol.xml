@@ -1,0 +1,416 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/net/HandshakeProtocol.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>EOFException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Objects</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>buffer</name><operator>.</operator><name>ByteBuf</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>buffer</name><operator>.</operator><name>ByteBufAllocator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>compress</name><operator>.</operator><name>BufferType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataInputBuffer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataInputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputBufferFixed</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>BufferPools</name></name>;</import>
+
+<import>import static <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name><operator>.</operator><name>Serializer</name><operator>.</operator><name>inetAddressAndPortSerializer</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>MessagingService</name><operator>.</operator><name>VERSION_30</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>MessagingService</name><operator>.</operator><name>VERSION_40</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>Message</name><operator>.</operator><name>validateLegacyProtocolMagic</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>Crc</name><operator>.</operator><name>*</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>Crc</name><operator>.</operator><name>computeCrc32</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>OutboundConnectionSettings</name><operator>.</operator><name>*</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Messages for the handshake phase of the internode protocol.
+ *
+ * The modern handshake is composed of 2 messages: Initiate and Accept
+ * &lt;p&gt;
+ * The legacy handshake is composed of 3 messages, the first being sent by the initiator of the connection. The other
+ * side then answer with the 2nd message. At that point, if a version mismatch is detected by the connection initiator,
+ * it will simply disconnect and reconnect with a more appropriate version. But if the version is acceptable, the connection
+ * initiator sends the third message of the protocol, after which it considers the connection ready.
+ */</comment>
+<class>class <name>HandshakeProtocol</name>
+<block>{
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>TIMEOUT_MILLIS</name> <init>= <expr><literal type="number">3</literal> <operator>*</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getRpcTimeout</name></name><argument_list>(<argument><expr><name>MILLISECONDS</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The initial message sent when a node creates a new connection to a remote peer. This message contains:
+     *   1) the {@link Message#PROTOCOL_MAGIC} number (4 bytes).
+     *   2) the connection flags (4 bytes), which encodes:
+     *      - the version the initiator thinks should be used for the connection (in practice, either the initiator
+     *        version if it's the first time we connect to that remote since startup, or the last version known for that
+     *        peer otherwise).
+     *      - the "mode" of the connection: whether it is for streaming or for messaging.
+     *      - whether compression should be used or not (if it is, compression is enabled _after_ the last message of the
+     *        handshake has been sent).
+     *   3) the connection initiator's broadcast address
+     *   4) a CRC protecting the message from corruption
+     * &lt;p&gt;
+     * More precisely, connection flags:
+     * &lt;pre&gt;
+     * {@code
+     *                      1 1 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 2 2 3 3
+     *  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+     * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     * |C C C M C      |    REQUEST    |      MIN      |      MAX      |
+     * |A A M O R      |    VERSION    |   SUPPORTED   |   SUPPORTED   |
+     * |T T P D C      |  (DEPRECATED) |    VERSION    |    VERSION    |
+     * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+     * }
+     * &lt;/pre&gt;
+     * CAT - QOS category, 2 bits: SMALL, LARGE, URGENT, or LEGACY (unset)
+     * CMP - compression enabled bit
+     * MOD - connection mode; if the bit is on, the connection is for streaming; if the bit is off, it is for inter-node messaging.
+     * CRC - crc enabled bit
+     * VERSION - {@link org.apache.cassandra.net.MessagingService#current_version}
+     */</comment>
+    <class><specifier>static</specifier> class <name>Initiate</name>
+    <block>{
+        <comment type="block" format="javadoc">/** Contains the PROTOCOL_MAGIC (int) and the flags (int). */</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MIN_LENGTH</name> <init>= <expr><literal type="number">8</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MAX_LENGTH</name> <init>= <expr><literal type="number">12</literal> <operator>+</operator> <name><name>InetAddressAndPort</name><operator>.</operator><name>Serializer</name><operator>.</operator><name>MAXIMUM_SIZE</name></name></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><annotation>@<name>Deprecated</name></annotation> <comment type="line">// this is ignored by post40 nodes, i.e. if maxMessagingVersion is set</comment>
+        <type><specifier>final</specifier> <name>int</name></type> <name>requestMessagingVersion</name></decl>;</decl_stmt>
+        <comment type="line">// the messagingVersion bounds the sender will accept to initiate a connection;</comment>
+        <comment type="line">// if the remote peer supports any, the newest supported version will be selected; otherwise the nearest supported version</comment>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>AcceptVersions</name></type> <name>acceptVersions</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>ConnectionType</name></type> <name>type</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>Framing</name></type> <name>framing</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>from</name></decl>;</decl_stmt>
+
+        <constructor><name>Initiate</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>requestMessagingVersion</name></decl></parameter>, <parameter><decl><type><name>AcceptVersions</name></type> <name>acceptVersions</name></decl></parameter>, <parameter><decl><type><name>ConnectionType</name></type> <name>type</name></decl></parameter>, <parameter><decl><type><name>Framing</name></type> <name>framing</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>from</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>requestMessagingVersion</name></name> <operator>=</operator> <name>requestMessagingVersion</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>acceptVersions</name></name> <operator>=</operator> <name>acceptVersions</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>type</name></name> <operator>=</operator> <name>type</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>framing</name></name> <operator>=</operator> <name>framing</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>from</name></name> <operator>=</operator> <name>from</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <type><name>int</name></type> <name>encodeFlags</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>flags</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>type</name><operator>.</operator><name>isMessaging</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>flags</name> <operator>|=</operator> <call><name><name>type</name><operator>.</operator><name>twoBitID</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>type</name><operator>.</operator><name>isStreaming</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>flags</name> <operator>|=</operator> <literal type="number">1</literal> <operator>&lt;&lt;</operator> <literal type="number">3</literal></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <comment type="line">// framing id is split over 2nd and 4th bits, for backwards compatibility</comment>
+            <expr_stmt><expr><name>flags</name> <operator>|=</operator> <operator>(</operator><operator>(</operator><name><name>framing</name><operator>.</operator><name>id</name></name> <operator>&amp;</operator> <literal type="number">1</literal><operator>)</operator> <operator>&lt;&lt;</operator> <literal type="number">2</literal><operator>)</operator> <operator>|</operator> <operator>(</operator><operator>(</operator><name><name>framing</name><operator>.</operator><name>id</name></name> <operator>&amp;</operator> <literal type="number">2</literal><operator>)</operator> <operator>&lt;&lt;</operator> <literal type="number">3</literal><operator>)</operator></expr>;</expr_stmt>
+            <expr_stmt><expr><name>flags</name> <operator>|=</operator> <operator>(</operator><name>requestMessagingVersion</name> <operator>&lt;&lt;</operator> <literal type="number">8</literal><operator>)</operator></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>requestMessagingVersion</name> <operator>&lt;</operator> <name>VERSION_40</name> <operator>||</operator> <name><name>acceptVersions</name><operator>.</operator><name>max</name></name> <operator>&lt;</operator> <name>VERSION_40</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name>flags</name></expr>;</return></block_content></block></if></if_stmt> <comment type="line">// for testing, permit serializing as though we are pre40</comment>
+
+            <expr_stmt><expr><name>flags</name> <operator>|=</operator> <operator>(</operator><name><name>acceptVersions</name><operator>.</operator><name>min</name></name> <operator>&lt;&lt;</operator> <literal type="number">16</literal><operator>)</operator></expr>;</expr_stmt>
+            <expr_stmt><expr><name>flags</name> <operator>|=</operator> <operator>(</operator><name><name>acceptVersions</name><operator>.</operator><name>max</name></name> <operator>&lt;&lt;</operator> <literal type="number">24</literal><operator>)</operator></expr>;</expr_stmt>
+            <return>return <expr><name>flags</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>ByteBuf</name></type> <name>encode</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>buffer</name> <init>= <expr><call><name><name>BufferPools</name><operator>.</operator><name>forNetworking</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><name>MAX_LENGTH</name></expr></argument>, <argument><expr><name><name>BufferType</name><operator>.</operator><name>OFF_HEAP</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <try>try <init>(<decl><type><name>DataOutputBufferFixed</name></type> <name>out</name> <init>= <expr><operator>new</operator> <call><name>DataOutputBufferFixed</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><name><name>Message</name><operator>.</operator><name>PROTOCOL_MAGIC</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><call><name>encodeFlags</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>requestMessagingVersion</name> <operator>&gt;=</operator> <name>VERSION_40</name> <operator>&amp;&amp;</operator> <name><name>acceptVersions</name><operator>.</operator><name>max</name></name> <operator>&gt;=</operator> <name>VERSION_40</name></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>inetAddressAndPortSerializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>from</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>requestMessagingVersion</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><call><name>computeCrc32</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><call><name><name>buffer</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>flip</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><call><name><name>GlobalBufferPoolAllocator</name><operator>.</operator><name>wrap</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></function>
+
+        <function><type><specifier>static</specifier> <name>Initiate</name></type> <name>maybeDecode</name><parameter_list>(<parameter><decl><type><name>ByteBuf</name></type> <name>buf</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>buf</name><operator>.</operator><name>readableBytes</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <name>MIN_LENGTH</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>nio</name> <init>= <expr><call><name><name>buf</name><operator>.</operator><name>nioBuffer</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>start</name> <init>= <expr><call><name><name>nio</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <try>try <init>(<decl><type><name>DataInputBuffer</name></type> <name>in</name> <init>= <expr><operator>new</operator> <call><name>DataInputBuffer</name><argument_list>(<argument><expr><name>nio</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name>validateLegacyProtocolMagic</name><argument_list>(<argument><expr><call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <decl_stmt><decl><type><name>int</name></type> <name>flags</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                <decl_stmt><decl><type><name>int</name></type> <name>requestedMessagingVersion</name> <init>= <expr><call><name>getBits</name><argument_list>(<argument><expr><name>flags</name></expr></argument>, <argument><expr><literal type="number">8</literal></expr></argument>, <argument><expr><literal type="number">8</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>int</name></type> <name>minMessagingVersion</name> <init>= <expr><call><name>getBits</name><argument_list>(<argument><expr><name>flags</name></expr></argument>, <argument><expr><literal type="number">16</literal></expr></argument>, <argument><expr><literal type="number">8</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>int</name></type> <name>maxMessagingVersion</name> <init>= <expr><call><name>getBits</name><argument_list>(<argument><expr><name>flags</name></expr></argument>, <argument><expr><literal type="number">24</literal></expr></argument>, <argument><expr><literal type="number">8</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>int</name></type> <name>framingBits</name> <init>= <expr><call><name>getBits</name><argument_list>(<argument><expr><name>flags</name></expr></argument>, <argument><expr><literal type="number">2</literal></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call> <operator>|</operator> <operator>(</operator><call><name>getBits</name><argument_list>(<argument><expr><name>flags</name></expr></argument>, <argument><expr><literal type="number">4</literal></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call> <operator>&lt;&lt;</operator> <literal type="number">1</literal><operator>)</operator></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>Framing</name></type> <name>framing</name> <init>= <expr><call><name><name>Framing</name><operator>.</operator><name>forId</name></name><argument_list>(<argument><expr><name>framingBits</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                <decl_stmt><decl><type><name>boolean</name></type> <name>isStream</name> <init>= <expr><call><name>getBits</name><argument_list>(<argument><expr><name>flags</name></expr></argument>, <argument><expr><literal type="number">3</literal></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+
+                <decl_stmt><decl><type><name>ConnectionType</name></type> <name>type</name> <init>= <expr><ternary><condition><expr><name>isStream</name></expr>
+                                    ?</condition><then> <expr><name><name>ConnectionType</name><operator>.</operator><name>STREAMING</name></name></expr>
+                                    </then><else>: <expr><call><name><name>ConnectionType</name><operator>.</operator><name>fromId</name></name><argument_list>(<argument><expr><call><name>getBits</name><argument_list>(<argument><expr><name>flags</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="number">2</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+                <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>from</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>requestedMessagingVersion</name> <operator>&gt;=</operator> <name>VERSION_40</name> <operator>&amp;&amp;</operator> <name>maxMessagingVersion</name> <operator>&gt;=</operator> <name><name>MessagingService</name><operator>.</operator><name>VERSION_40</name></name></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>from</name> <operator>=</operator> <call><name><name>inetAddressAndPortSerializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>requestedMessagingVersion</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <decl_stmt><decl><type><name>int</name></type> <name>computed</name> <init>= <expr><call><name>computeCrc32</name><argument_list>(<argument><expr><name>nio</name></expr></argument>, <argument><expr><name>start</name></expr></argument>, <argument><expr><call><name><name>nio</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>int</name></type> <name>read</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>read</name> <operator>!=</operator> <name>computed</name></expr>)</condition><block type="pseudo"><block_content>
+                        <throw>throw <expr><operator>new</operator> <call><name>InvalidCrc</name><argument_list>(<argument><expr><name>read</name></expr></argument>, <argument><expr><name>computed</name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+                </block_content>}</block></if></if_stmt>
+
+                <expr_stmt><expr><call><name><name>buf</name><operator>.</operator><name>skipBytes</name></name><argument_list>(<argument><expr><call><name><name>nio</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>start</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><operator>new</operator> <call><name>Initiate</name><argument_list>(<argument><expr><name>requestedMessagingVersion</name></expr></argument>,
+                                    <argument><expr><ternary><condition><expr><name>minMessagingVersion</name> <operator>==</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>maxMessagingVersion</name> <operator>==</operator> <literal type="number">0</literal></expr>
+                                        ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><operator>new</operator> <call><name>AcceptVersions</name><argument_list>(<argument><expr><name>minMessagingVersion</name></expr></argument>, <argument><expr><name>maxMessagingVersion</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></argument>,
+                                    <argument><expr><name>type</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>, <argument><expr><name>from</name></expr></argument>)</argument_list></call></expr>;</return>
+
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>EOFException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><literal type="null">null</literal></expr>;</return>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>other</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><operator>(</operator><name>other</name> <operator>instanceof</operator> <name>Initiate</name><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>Initiate</name></type> <name>that</name> <init>= <expr><operator>(</operator><name>Initiate</name><operator>)</operator><name>other</name></expr></init></decl>;</decl_stmt>
+            <return>return    <expr><name><name>this</name><operator>.</operator><name>type</name></name> <operator>==</operator> <name><name>that</name><operator>.</operator><name>type</name></name>
+                   <operator>&amp;&amp;</operator> <name><name>this</name><operator>.</operator><name>framing</name></name> <operator>==</operator> <name><name>that</name><operator>.</operator><name>framing</name></name>
+                   <operator>&amp;&amp;</operator> <name><name>this</name><operator>.</operator><name>requestMessagingVersion</name></name> <operator>==</operator> <name><name>that</name><operator>.</operator><name>requestMessagingVersion</name></name>
+                   <operator>&amp;&amp;</operator> <call><name><name>Objects</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>this</name><operator>.</operator><name>acceptVersions</name></name></expr></argument>, <argument><expr><name><name>that</name><operator>.</operator><name>acceptVersions</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Initiate(request: %d, min: %d, max: %d, type: %s, framing: %b, from: %s)"</literal></expr></argument>,
+                                 <argument><expr><name>requestMessagingVersion</name></expr></argument>,
+                                 <argument><expr><ternary><condition><expr><name>acceptVersions</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>requestMessagingVersion</name></expr> </then><else>: <expr><name><name>acceptVersions</name><operator>.</operator><name>min</name></name></expr></else></ternary></expr></argument>,
+                                 <argument><expr><ternary><condition><expr><name>acceptVersions</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>requestMessagingVersion</name></expr> </then><else>: <expr><name><name>acceptVersions</name><operator>.</operator><name>max</name></name></expr></else></ternary></expr></argument>,
+                                 <argument><expr><name>type</name></expr></argument>, <argument><expr><name>framing</name></expr></argument>, <argument><expr><name>from</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+
+    <comment type="block" format="javadoc">/**
+     * The second message of the handshake, sent by the node receiving the {@link Initiate} back to the
+     * connection initiator.
+     *
+     * This message contains
+     *   1) the messaging version of the peer sending this message
+     *   2) the negotiated messaging version if one could be accepted by both peers,
+     *      or if not the closest version that this peer could support to the ones requested
+     *   3) a CRC protectingn the integrity of the message
+     *
+     * Note that the pre40 equivalent of this message contains ONLY the messaging version of the peer.
+     */</comment>
+    <class><specifier>static</specifier> class <name>Accept</name>
+    <block>{
+        <comment type="block" format="javadoc">/** The messaging version sent by the receiving peer (int). */</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MAX_LENGTH</name> <init>= <expr><literal type="number">12</literal></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>useMessagingVersion</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>maxMessagingVersion</name></decl>;</decl_stmt>
+
+        <constructor><name>Accept</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>useMessagingVersion</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>maxMessagingVersion</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>useMessagingVersion</name></name> <operator>=</operator> <name>useMessagingVersion</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>maxMessagingVersion</name></name> <operator>=</operator> <name>maxMessagingVersion</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><name>ByteBuf</name></type> <name>encode</name><parameter_list>(<parameter><decl><type><name>ByteBufAllocator</name></type> <name>allocator</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ByteBuf</name></type> <name>buffer</name> <init>= <expr><call><name><name>allocator</name><operator>.</operator><name>directBuffer</name></name><argument_list>(<argument><expr><name>MAX_LENGTH</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><name>maxMessagingVersion</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><name>useMessagingVersion</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><call><name>computeCrc32</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="number">8</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>buffer</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Respond to pre40 nodes only with our current messagingVersion
+         */</comment>
+        <function><type><specifier>static</specifier> <name>ByteBuf</name></type> <name>respondPre40</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>messagingVersion</name></decl></parameter>, <parameter><decl><type><name>ByteBufAllocator</name></type> <name>allocator</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ByteBuf</name></type> <name>buffer</name> <init>= <expr><call><name><name>allocator</name><operator>.</operator><name>directBuffer</name></name><argument_list>(<argument><expr><literal type="number">4</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><name>messagingVersion</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>buffer</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>static</specifier> <name>Accept</name></type> <name>maybeDecode</name><parameter_list>(<parameter><decl><type><name>ByteBuf</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>handshakeMessagingVersion</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>InvalidCrc</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>readerIndex</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readerIndex</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>in</name><operator>.</operator><name>readableBytes</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <literal type="number">4</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>maxMessagingVersion</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>useMessagingVersion</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+            <comment type="line">// if the other node is pre-4.0, it will respond only with its maxMessagingVersion</comment>
+            <if_stmt><if>if <condition>(<expr><name>maxMessagingVersion</name> <operator>&lt;</operator> <name>VERSION_40</name> <operator>||</operator> <name>handshakeMessagingVersion</name> <operator>&lt;</operator> <name>VERSION_40</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><operator>new</operator> <call><name>Accept</name><argument_list>(<argument><expr><name>useMessagingVersion</name></expr></argument>, <argument><expr><name>maxMessagingVersion</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>in</name><operator>.</operator><name>readableBytes</name></name><argument_list>()</argument_list></call> <operator>&lt;</operator> <literal type="number">8</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readerIndex</name></name><argument_list>(<argument><expr><name>readerIndex</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><literal type="null">null</literal></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>useMessagingVersion</name> <operator>=</operator> <call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <comment type="line">// verify crc</comment>
+            <decl_stmt><decl><type><name>int</name></type> <name>computed</name> <init>= <expr><call><name>computeCrc32</name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>readerIndex</name></expr></argument>, <argument><expr><name>readerIndex</name> <operator>+</operator> <literal type="number">8</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>read</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>read</name> <operator>!=</operator> <name>computed</name></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>InvalidCrc</name><argument_list>(<argument><expr><name>read</name></expr></argument>, <argument><expr><name>computed</name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <return>return <expr><operator>new</operator> <call><name>Accept</name><argument_list>(<argument><expr><name>useMessagingVersion</name></expr></argument>, <argument><expr><name>maxMessagingVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>other</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>other</name> <operator>instanceof</operator> <name>Accept</name>
+                   <operator>&amp;&amp;</operator> <name><name>this</name><operator>.</operator><name>useMessagingVersion</name></name> <operator>==</operator> <operator>(</operator><operator>(</operator><name>Accept</name><operator>)</operator> <name>other</name><operator>)</operator><operator>.</operator><name>useMessagingVersion</name>
+                   <operator>&amp;&amp;</operator> <name><name>this</name><operator>.</operator><name>maxMessagingVersion</name></name> <operator>==</operator> <operator>(</operator><operator>(</operator><name>Accept</name><operator>)</operator> <name>other</name><operator>)</operator><operator>.</operator><name>maxMessagingVersion</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Accept(use: %d, max: %d)"</literal></expr></argument>, <argument><expr><name>useMessagingVersion</name></expr></argument>, <argument><expr><name>maxMessagingVersion</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * The third message of the handshake, sent by pre40 nodes on reception of {@link Accept}.
+     * This message contains:
+     *   1) The connection initiator's {@link org.apache.cassandra.net.MessagingService#current_version} (4 bytes).
+     *      This indicates the max messaging version supported by this node.
+     *   2) The connection initiator's broadcast address as encoded by {@link InetAddressAndPort.Serializer}.
+     *      This can be either 7 bytes for an IPv4 address, or 19 bytes for an IPv6 one, post40.
+     *      This can be either 5 bytes for an IPv4 address, or 17 bytes for an IPv6 one, pre40.
+     * &lt;p&gt;
+     * This message concludes the legacy handshake protocol.
+     */</comment>
+    <class><specifier>static</specifier> class <name>ConfirmOutboundPre40</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MAX_LENGTH</name> <init>= <expr><literal type="number">4</literal> <operator>+</operator> <name><name>InetAddressAndPort</name><operator>.</operator><name>Serializer</name><operator>.</operator><name>MAXIMUM_SIZE</name></name></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>maxMessagingVersion</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>from</name></decl>;</decl_stmt>
+
+        <constructor><name>ConfirmOutboundPre40</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>maxMessagingVersion</name></decl></parameter>, <parameter><decl><type><name>InetAddressAndPort</name></type> <name>from</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>maxMessagingVersion</name></name> <operator>=</operator> <name>maxMessagingVersion</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>from</name></name> <operator>=</operator> <name>from</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><name>ByteBuf</name></type> <name>encode</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>buffer</name> <init>= <expr><call><name><name>BufferPools</name><operator>.</operator><name>forNetworking</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><name>MAX_LENGTH</name></expr></argument>, <argument><expr><name><name>BufferType</name><operator>.</operator><name>OFF_HEAP</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <try>try <init>(<decl><type><name>DataOutputBufferFixed</name></type> <name>out</name> <init>= <expr><operator>new</operator> <call><name>DataOutputBufferFixed</name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeInt</name></name><argument_list>(<argument><expr><name>maxMessagingVersion</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <comment type="line">// pre-4.0 nodes should only receive the address, never port, and it's ok to hardcode VERSION_30</comment>
+                <expr_stmt><expr><call><name><name>inetAddressAndPortSerializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>from</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>VERSION_30</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>flip</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><call><name><name>GlobalBufferPoolAllocator</name><operator>.</operator><name>wrap</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation>
+        <type><specifier>static</specifier> <name>ConfirmOutboundPre40</name></type> <name>maybeDecode</name><parameter_list>(<parameter><decl><type><name>ByteBuf</name></type> <name>in</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>nio</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>nioBuffer</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>start</name> <init>= <expr><call><name><name>nio</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>DataInputPlus</name></type> <name>input</name> <init>= <expr><operator>new</operator> <call><name>DataInputBuffer</name><argument_list>(<argument><expr><name>nio</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <try>try
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>version</name> <init>= <expr><call><name><name>input</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>address</name> <init>= <expr><call><name><name>inetAddressAndPortSerializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>input</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>skipBytes</name></name><argument_list>(<argument><expr><call><name><name>nio</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>start</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><operator>new</operator> <call><name>ConfirmOutboundPre40</name><argument_list>(<argument><expr><name>version</name></expr></argument>, <argument><expr><name>address</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>EOFException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <comment type="line">// makes the assumption we didn't have enough bytes to deserialize an IPv6 address,</comment>
+                <comment type="line">// as we only check the MIN_LENGTH of the buf.</comment>
+                <return>return <expr><literal type="null">null</literal></expr>;</return>
+            </block_content>}</block></catch>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>other</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><operator>(</operator><name>other</name> <operator>instanceof</operator> <name>ConfirmOutboundPre40</name><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>ConfirmOutboundPre40</name></type> <name>that</name> <init>= <expr><operator>(</operator><name>ConfirmOutboundPre40</name><operator>)</operator> <name>other</name></expr></init></decl>;</decl_stmt>
+            <return>return <expr><name><name>this</name><operator>.</operator><name>maxMessagingVersion</name></name> <operator>==</operator> <name><name>that</name><operator>.</operator><name>maxMessagingVersion</name></name>
+                   <operator>&amp;&amp;</operator> <call><name><name>Objects</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>this</name><operator>.</operator><name>from</name></name></expr></argument>, <argument><expr><name><name>that</name><operator>.</operator><name>from</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"ConfirmOutboundPre40(maxMessagingVersion: %d; address: %s)"</literal></expr></argument>, <argument><expr><name>maxMessagingVersion</name></expr></argument>, <argument><expr><name>from</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>int</name></type> <name>getBits</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>packed</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>start</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>count</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>(</operator><name>packed</name> <operator>&gt;&gt;&gt;</operator> <name>start</name><operator>)</operator> <operator>&amp;</operator> <operator>~</operator><operator>(</operator><operator>-</operator><literal type="number">1</literal> <operator>&lt;&lt;</operator> <name>count</name><operator>)</operator></expr>;</return>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

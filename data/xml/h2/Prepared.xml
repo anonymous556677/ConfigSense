@@ -1,0 +1,475 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/h2database/h2/src/main/org/h2/command/Prepared.java"><comment type="block">/*
+ * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Initial Developer: H2 Group
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>command</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>ArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>HashSet</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>api</name><operator>.</operator><name>DatabaseEventListener</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>api</name><operator>.</operator><name>ErrorCode</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>Database</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>DbObject</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>SessionLocal</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>Expression</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>Parameter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>message</name><operator>.</operator><name>DbException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>message</name><operator>.</operator><name>Trace</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>result</name><operator>.</operator><name>ResultInterface</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>TableView</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>HasSQL</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A prepared statement.
+ */</comment>
+<class><specifier>public</specifier> <specifier>abstract</specifier> class <name>Prepared</name> <block>{
+
+    <comment type="block" format="javadoc">/**
+     * The session.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>SessionLocal</name></type> <name>session</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The SQL string.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>String</name></type> <name>sqlStatement</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The SQL tokens.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>sqlTokens</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Whether to create a new object (for indexes).
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>boolean</name></type> <name>create</name> <init>= <expr><literal type="boolean">true</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The list of parameters.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Parameter</name></argument>&gt;</argument_list></name></type> <name>parameters</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * If the query should be prepared before each execution. This is set for
+     * queries with LIKE ?, because the query plan depends on the parameter
+     * value.
+     */</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>boolean</name></type> <name>prepareAlways</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>modificationMetaId</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Command</name></type> <name>command</name></decl>;</decl_stmt>
+    <comment type="block" format="javadoc">/**
+     * Used to preserve object identities on database startup. {@code 0} if
+     * object is not stored, {@code -1} if object is stored and its ID is
+     * already read, {@code &gt;0} if object is stored and its id is not yet read.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>persistedObjectId</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>currentRowNumber</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>rowScanCount</name></decl>;</decl_stmt>
+    <comment type="block" format="javadoc">/**
+     * Common table expressions (CTE) in queries require us to create temporary views,
+     * which need to be cleaned up once a command is done executing.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>TableView</name></argument>&gt;</argument_list></name></type> <name>cteCleanups</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Create a new object.
+     *
+     * @param session the session
+     */</comment>
+    <constructor><specifier>public</specifier> <name>Prepared</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>session</name></name> <operator>=</operator> <name>session</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name>modificationMetaId</name> <operator>=</operator> <call><name><name>session</name><operator>.</operator><name>getDatabase</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getModificationMetaId</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Check if this command is transactional.
+     * If it is not, then it forces the current transaction to commit.
+     *
+     * @return true if it is
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>boolean</name></type> <name>isTransactional</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Get an empty result set containing the meta data.
+     *
+     * @return the result set
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>ResultInterface</name></type> <name>queryMeta</name><parameter_list>()</parameter_list>;</function_decl>
+
+
+    <comment type="block" format="javadoc">/**
+     * Get the command type as defined in CommandInterface
+     *
+     * @return the statement type
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>int</name></type> <name>getType</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Check if this command is read only.
+     *
+     * @return true if it is
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isReadOnly</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check if the statement needs to be re-compiled.
+     *
+     * @return true if it must
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>needRecompile</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>Database</name></type> <name>db</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>getDatabase</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>db</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>CONNECTION_BROKEN_1</name></name></expr></argument>, <argument><expr><literal type="string">"database closed"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+        <comment type="line">// parser: currently, compiling every create/drop/... twice</comment>
+        <comment type="line">// because needRecompile return true even for the first execution</comment>
+        <return>return <expr><name>prepareAlways</name> <operator>||</operator>
+                <name>modificationMetaId</name> <operator>&lt;</operator> <call><name><name>db</name><operator>.</operator><name>getModificationMetaId</name></name><argument_list>()</argument_list></call> <operator>||</operator>
+                <call><name><name>db</name><operator>.</operator><name>getSettings</name></name><argument_list>()</argument_list></call><operator>.</operator><name>recompileAlways</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the meta data modification id of the database when this statement was
+     * compiled.
+     *
+     * @return the meta data modification id
+     */</comment>
+    <function><type><name>long</name></type> <name>getModificationMetaId</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>modificationMetaId</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the meta data modification id of this statement.
+     *
+     * @param id the new id
+     */</comment>
+    <function><type><name>void</name></type> <name>setModificationMetaId</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>id</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>modificationMetaId</name></name> <operator>=</operator> <name>id</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the parameter list of this statement.
+     *
+     * @param parameters the parameter list
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setParameterList</name><parameter_list>(<parameter><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Parameter</name></argument>&gt;</argument_list></name></type> <name>parameters</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>parameters</name></name> <operator>=</operator> <name>parameters</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the parameter list.
+     *
+     * @return the parameter list
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Parameter</name></argument>&gt;</argument_list></name></type> <name>getParameters</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>parameters</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check if all parameters have been set.
+     *
+     * @throws DbException if any parameter has not been set
+     */</comment>
+    <function><type><specifier>protected</specifier> <name>void</name></type> <name>checkParameters</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>persistedObjectId</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <comment type="line">// restore original persistedObjectId on Command re-run</comment>
+            <comment type="line">// i.e. due to concurrent update</comment>
+            <expr_stmt><expr><name>persistedObjectId</name> <operator>=</operator> <operator>~</operator><name>persistedObjectId</name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>parameters</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>Parameter</name></type> <name>param</name> <range>: <expr><name>parameters</name></expr></range></decl></init>)</control> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>param</name><operator>.</operator><name>checkSet</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the command.
+     *
+     * @param command the new command
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setCommand</name><parameter_list>(<parameter><decl><type><name>Command</name></type> <name>command</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>command</name></name> <operator>=</operator> <name>command</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check if this object is a query.
+     *
+     * @return true if it is
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isQuery</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Prepare this statement.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>prepare</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <comment type="line">// nothing to do</comment>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Execute the statement.
+     *
+     * @return the update count
+     * @throws DbException if it is a query
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>update</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>METHOD_NOT_ALLOWED_FOR_QUERY</name></name></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Execute the query.
+     *
+     * @param maxrows the maximum number of rows to return
+     * @return the result set
+     * @throws DbException if it is not a query
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unused"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <name>ResultInterface</name></type> <name>query</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>maxrows</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>METHOD_ONLY_ALLOWED_FOR_QUERY</name></name></expr></argument>)</argument_list></call></expr>;</throw>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the SQL statement.
+     *
+     * @param sql the SQL statement
+     * @param sqlTokens the SQL tokens
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>final</specifier> <name>void</name></type> <name>setSQL</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>sql</name></decl></parameter>, <parameter><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>sqlTokens</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>sqlStatement</name></name> <operator>=</operator> <name>sql</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>sqlTokens</name></name> <operator>=</operator> <name>sqlTokens</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the SQL statement.
+     *
+     * @return the SQL statement
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>final</specifier> <name>String</name></type> <name>getSQL</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>sqlStatement</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the SQL tokens.
+     *
+     * @return the SQL tokens
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>final</specifier> <name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>getSQLTokens</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>sqlTokens</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the object id to use for the database object that is created in this
+     * statement. This id is only set when the object is already persisted.
+     * If not set, this method returns 0.
+     *
+     * @return the object id or 0 if not set
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getPersistedObjectId</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>id</name> <init>= <expr><name>persistedObjectId</name></expr></init></decl>;</decl_stmt>
+        <return>return <expr><ternary><condition><expr><name>id</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><name>id</name></expr> </then><else>: <expr><literal type="number">0</literal></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the current object id, or get a new id from the database. The object
+     * id is used when creating new database object (CREATE statement). This
+     * method may be called only once.
+     *
+     * @return the object id
+     */</comment>
+    <function><type><specifier>protected</specifier> <name>int</name></type> <name>getObjectId</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>id</name> <init>= <expr><name>persistedObjectId</name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>id</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>id</name> <operator>=</operator> <call><name><name>session</name><operator>.</operator><name>getDatabase</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>allocateObjectId</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>id</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getInternalError</name></name><argument_list>(<argument><expr><literal type="string">"Prepared.getObjectId() was called before"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name>persistedObjectId</name> <operator>=</operator> <operator>~</operator><name>persistedObjectId</name></expr>;</expr_stmt>  <comment type="line">// while negative, it can be restored later</comment>
+        <return>return <expr><name>id</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the SQL statement with the execution plan.
+     *
+     * @param sqlFlags formatting flags
+     * @return the execution plan
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getPlanSQL</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>sqlFlags</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check if this statement was canceled.
+     *
+     * @throws DbException if it was canceled
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>checkCanceled</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>checkCanceled</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>Command</name></type> <name>c</name> <init>= <expr><ternary><condition><expr><name>command</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>command</name></expr> </then><else>: <expr><call><name><name>session</name><operator>.</operator><name>getCurrentCommand</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>c</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>c</name><operator>.</operator><name>checkCanceled</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the persisted object id for this statement.
+     *
+     * @param i the object id
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setPersistedObjectId</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>i</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>persistedObjectId</name></name> <operator>=</operator> <name>i</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>create</name></name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the session for this statement.
+     *
+     * @param currentSession the new session
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setSession</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>currentSession</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>session</name></name> <operator>=</operator> <name>currentSession</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Print information about the statement executed if info trace level is
+     * enabled.
+     *
+     * @param startTimeNanos when the statement was started
+     * @param rowCount the query or update row count
+     */</comment>
+    <function><type><name>void</name></type> <name>trace</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>startTimeNanos</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>rowCount</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>session</name><operator>.</operator><name>getTrace</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isInfoEnabled</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <name>startTimeNanos</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>deltaTimeNanos</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>startTimeNanos</name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>String</name></type> <name>params</name> <init>= <expr><call><name><name>Trace</name><operator>.</operator><name>formatParams</name></name><argument_list>(<argument><expr><name>parameters</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>getTrace</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>infoSQL</name><argument_list>(<argument><expr><name>sqlStatement</name></expr></argument>, <argument><expr><name>params</name></expr></argument>, <argument><expr><name>rowCount</name></expr></argument>, <argument><expr><name>deltaTimeNanos</name> <operator>/</operator> <literal type="number">1_000_000L</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <comment type="line">// startTime_nanos can be zero for the command that actually turns on</comment>
+        <comment type="line">// statistics</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>session</name><operator>.</operator><name>getDatabase</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getQueryStatistics</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <name>startTimeNanos</name> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>deltaTimeNanos</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>startTimeNanos</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>getDatabase</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getQueryStatisticsData</name><argument_list>()</argument_list></call><operator>.</operator><call><name>update</name><argument_list>(<argument><expr><call><name>toString</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>deltaTimeNanos</name></expr></argument>, <argument><expr><name>rowCount</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the prepare always flag.
+     * If set, the statement is re-compiled whenever it is executed.
+     *
+     * @param prepareAlways the new value
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setPrepareAlways</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>prepareAlways</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>prepareAlways</name></name> <operator>=</operator> <name>prepareAlways</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the current row number.
+     *
+     * @param rowNumber the row number
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setCurrentRowNumber</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>rowNumber</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><operator>++</operator><name>rowScanCount</name> <operator>&amp;</operator> <literal type="number">127</literal><operator>)</operator> <operator>==</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name>checkCanceled</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>currentRowNumber</name></name> <operator>=</operator> <name>rowNumber</name></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>setProgress</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the current row number.
+     *
+     * @return the row number
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getCurrentRowNumber</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>currentRowNumber</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Notifies query progress via the DatabaseEventListener
+     */</comment>
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>setProgress</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><name>currentRowNumber</name> <operator>&amp;</operator> <literal type="number">127</literal><operator>)</operator> <operator>==</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>getDatabase</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>setProgress</name><argument_list>(<argument><expr><name><name>DatabaseEventListener</name><operator>.</operator><name>STATE_STATEMENT_PROGRESS</name></name></expr></argument>, <argument><expr><name>sqlStatement</name></expr></argument>,
+                    <argument><expr><name>currentRowNumber</name></expr></argument>, <argument><expr><literal type="number">0L</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Convert the statement to a String.
+     *
+     * @return the SQL statement
+     */</comment>
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>sqlStatement</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the SQL snippet of the expression list.
+     *
+     * @param list the expression list
+     * @return the SQL snippet
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>String</name></type> <name>getSimpleSQL</name><parameter_list>(<parameter><decl><type><name><name>Expression</name><index>[]</index></name></type> <name>list</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>Expression</name><operator>.</operator><name>writeExpressions</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>list</name></expr></argument>, <argument><expr><name><name>HasSQL</name><operator>.</operator><name>TRACE_SQL_FLAGS</name></name></expr></argument>)</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the SQL statement of the exception to the given row.
+     *
+     * @param e the exception
+     * @param rowId the row number
+     * @param values the values of the row
+     * @return the exception
+     */</comment>
+    <function><type><specifier>protected</specifier> <name>DbException</name></type> <name>setRow</name><parameter_list>(<parameter><decl><type><name>DbException</name></type> <name>e</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>rowId</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>values</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>buff</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>sqlStatement</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>buff</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name>sqlStatement</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>buff</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" -- "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>rowId</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>buff</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"row #"</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>rowId</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="char">' '</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>buff</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">'('</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>values</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="char">')'</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name><name>e</name><operator>.</operator><name>addSQL</name></name><argument_list>(<argument><expr><call><name><name>buff</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isCacheable</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return the temporary views created for CTE's.
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>TableView</name></argument>&gt;</argument_list></name></type> <name>getCteCleanups</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>cteCleanups</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the temporary views created for CTE's.
+     *
+     * @param cteCleanups the temporary views
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setCteCleanups</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>TableView</name></argument>&gt;</argument_list></name></type> <name>cteCleanups</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cteCleanups</name></name> <operator>=</operator> <name>cteCleanups</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>final</specifier> <name>SessionLocal</name></type> <name>getSession</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>session</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Find and collect all DbObjects, this Prepared depends on.
+     *
+     * @param dependencies collection of dependencies to populate
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>collectDependencies</name><parameter_list>(<parameter><decl><type><name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>DbObject</name></argument>&gt;</argument_list></name></type> <name>dependencies</name></decl></parameter>)</parameter_list> <block>{<block_content/>}</block></function>
+}</block></class>
+</unit>

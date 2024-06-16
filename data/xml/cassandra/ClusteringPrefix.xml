@@ -1,0 +1,681 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/ClusteringPrefix.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cache</name><operator>.</operator><name>IMeasurableMemory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>marshal</name><operator>.</operator><name>ByteArrayAccessor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>marshal</name><operator>.</operator><name>ByteBufferAccessor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>marshal</name><operator>.</operator><name>CompositeType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>marshal</name><operator>.</operator><name>ValueAccessor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>marshal</name><operator>.</operator><name>AbstractType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataInputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ByteArrayUtil</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ByteBufferUtil</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A clustering prefix is the unit of what a {@link ClusteringComparator} can compare.
+ * &lt;p&gt;
+ * It holds values for the clustering columns of a table (potentially only a prefix of all of them) and has
+ * a "kind" that allows us to implement slices with inclusive and exclusive bounds.
+ * &lt;p&gt;
+ * In practice, {@code ClusteringPrefix} is just the common parts to its 3 main subtype: {@link Clustering} and
+ * {@link ClusteringBound}/{@link ClusteringBoundary}, where:
+ *   1) {@code Clustering} represents the clustering values for a row, i.e. the values for it's clustering columns.
+ *   2) {@code ClusteringBound} represents a bound (start or end) of a slice (of rows) or a range tombstone.
+ *   3) {@code ClusteringBoundary} represents the threshold between two adjacent range tombstones.
+ * See those classes for more details.
+ */</comment>
+<interface><specifier>public</specifier> interface <name><name>ClusteringPrefix</name><parameter_list>&lt;<parameter><name>V</name></parameter>&gt;</parameter_list></name> <super_list><extends>extends <super><name>IMeasurableMemory</name></super>, <super><name><name>Clusterable</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Serializer</name></type> <name>serializer</name> <init>= <expr><operator>new</operator> <call><name>Serializer</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The kind of clustering prefix this actually is.
+     *
+     * The kind {@code STATIC_CLUSTERING} is only implemented by {@link Clustering#STATIC_CLUSTERING} and {@code CLUSTERING} is
+     * implemented by the {@link Clustering} class. The rest is used by {@link ClusteringBound} and {@link ClusteringBoundary}.
+     */</comment>
+    <enum><specifier>public</specifier> enum <name>Kind</name>
+    <block>{
+        <comment type="line">// WARNING: the ordering of that enum matters because we use ordinal() in the serialization</comment>
+
+        <decl><name>EXCL_END_BOUND</name>              <argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><operator>-</operator><literal type="number">1</literal></expr></argument>)</argument_list></decl>,
+        <decl><name>INCL_START_BOUND</name>            <argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><operator>-</operator><literal type="number">1</literal></expr></argument>)</argument_list></decl>,
+        <decl><name>EXCL_END_INCL_START_BOUNDARY</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><operator>-</operator><literal type="number">1</literal></expr></argument>)</argument_list></decl>,
+        <decl><name>STATIC_CLUSTERING</name>           <argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><operator>-</operator><literal type="number">1</literal></expr></argument>)</argument_list></decl>,
+        <decl><name>CLUSTERING</name>                  <argument_list>(<argument><expr><literal type="number">2</literal></expr></argument>,  <argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></decl>,
+        <decl><name>INCL_END_EXCL_START_BOUNDARY</name><argument_list>(<argument><expr><literal type="number">3</literal></expr></argument>,  <argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></decl>,
+        <decl><name>INCL_END_BOUND</name>              <argument_list>(<argument><expr><literal type="number">3</literal></expr></argument>,  <argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></decl>,
+        <decl><name>EXCL_START_BOUND</name>            <argument_list>(<argument><expr><literal type="number">3</literal></expr></argument>,  <argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></decl>;
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>comparison</name></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+         * Return the comparison of this kind to CLUSTERING.
+         * For bounds/boundaries, this basically tells us if we sort before or after our clustering values.
+         */</comment>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>int</name></type> <name>comparedToClustering</name></decl>;</decl_stmt>
+
+        <constructor><name>Kind</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>comparison</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>comparedToClustering</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>comparison</name></name> <operator>=</operator> <name>comparison</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>comparedToClustering</name></name> <operator>=</operator> <name>comparedToClustering</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <comment type="block" format="javadoc">/**
+         * Compares the 2 provided kind.
+         * &lt;p&gt;
+         * Note: this should be used instead of {@link #compareTo} when comparing clustering prefixes. We do
+         * not override that latter method because it is final for an enum.
+         */</comment>
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>int</name></type> <name>compare</name><parameter_list>(<parameter><decl><type><name>Kind</name></type> <name>k1</name></decl></parameter>, <parameter><decl><type><name>Kind</name></type> <name>k2</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>Integer</name><operator>.</operator><name>compare</name></name><argument_list>(<argument><expr><name><name>k1</name><operator>.</operator><name>comparison</name></name></expr></argument>, <argument><expr><name><name>k2</name><operator>.</operator><name>comparison</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Returns the inverse of the current kind.
+         * &lt;p&gt;
+         * This invert both start into end (and vice-versa) and inclusive into exclusive (and vice-versa).
+         *
+         * @return the invert of this kind. For instance, if this kind is an exlusive start, this return
+         * an inclusive end.
+         */</comment>
+        <function><type><specifier>public</specifier> <name>Kind</name></type> <name>invert</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <switch>switch <condition>(<expr><name>this</name></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><name>EXCL_START_BOUND</name></expr>:</case>              <return>return <expr><name>INCL_END_BOUND</name></expr>;</return>
+                <case>case <expr><name>INCL_START_BOUND</name></expr>:</case>              <return>return <expr><name>EXCL_END_BOUND</name></expr>;</return>
+                <case>case <expr><name>EXCL_END_BOUND</name></expr>:</case>                <return>return <expr><name>INCL_START_BOUND</name></expr>;</return>
+                <case>case <expr><name>INCL_END_BOUND</name></expr>:</case>                <return>return <expr><name>EXCL_START_BOUND</name></expr>;</return>
+                <case>case <expr><name>EXCL_END_INCL_START_BOUNDARY</name></expr>:</case>  <return>return <expr><name>INCL_END_EXCL_START_BOUNDARY</name></expr>;</return>
+                <case>case <expr><name>INCL_END_EXCL_START_BOUNDARY</name></expr>:</case>  <return>return <expr><name>EXCL_END_INCL_START_BOUNDARY</name></expr>;</return>
+                <default>default:</default>                            <return>return <expr><name>this</name></expr>;</return>
+            </block_content>}</block></switch>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isBound</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <switch>switch <condition>(<expr><name>this</name></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><name>INCL_START_BOUND</name></expr>:</case>
+                <case>case <expr><name>INCL_END_BOUND</name></expr>:</case>
+                <case>case <expr><name>EXCL_START_BOUND</name></expr>:</case>
+                <case>case <expr><name>EXCL_END_BOUND</name></expr>:</case>
+                    <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+                <default>default:</default>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            </block_content>}</block></switch>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isBoundary</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <switch>switch <condition>(<expr><name>this</name></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><name>INCL_END_EXCL_START_BOUNDARY</name></expr>:</case>
+                <case>case <expr><name>EXCL_END_INCL_START_BOUNDARY</name></expr>:</case>
+                    <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+                <default>default:</default>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            </block_content>}</block></switch>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isStart</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <switch>switch <condition>(<expr><name>this</name></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><name>INCL_START_BOUND</name></expr>:</case>
+                <case>case <expr><name>EXCL_END_INCL_START_BOUNDARY</name></expr>:</case>
+                <case>case <expr><name>INCL_END_EXCL_START_BOUNDARY</name></expr>:</case>
+                <case>case <expr><name>EXCL_START_BOUND</name></expr>:</case>
+                    <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+                <default>default:</default>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            </block_content>}</block></switch>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isEnd</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <switch>switch <condition>(<expr><name>this</name></expr>)</condition>
+            <block>{<block_content>
+                <case>case <expr><name>INCL_END_BOUND</name></expr>:</case>
+                <case>case <expr><name>EXCL_END_INCL_START_BOUNDARY</name></expr>:</case>
+                <case>case <expr><name>INCL_END_EXCL_START_BOUNDARY</name></expr>:</case>
+                <case>case <expr><name>EXCL_END_BOUND</name></expr>:</case>
+                    <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+                <default>default:</default>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            </block_content>}</block></switch>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isOpen</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>reversed</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>isBoundary</name><argument_list>()</argument_list></call> <operator>||</operator> <operator>(</operator><ternary><condition><expr><name>reversed</name></expr> ?</condition><then> <expr><call><name>isEnd</name><argument_list>()</argument_list></call></expr> </then><else>: <expr><call><name>isStart</name><argument_list>()</argument_list></call></expr></else></ternary><operator>)</operator></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isClose</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>reversed</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>isBoundary</name><argument_list>()</argument_list></call> <operator>||</operator> <operator>(</operator><ternary><condition><expr><name>reversed</name></expr> ?</condition><then> <expr><call><name>isStart</name><argument_list>()</argument_list></call></expr> </then><else>: <expr><call><name>isEnd</name><argument_list>()</argument_list></call></expr></else></ternary><operator>)</operator></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Kind</name></type> <name>closeBoundOfBoundary</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>reversed</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><call><name>isBoundary</name><argument_list>()</argument_list></call></expr>;</assert>
+            <return>return <expr><ternary><condition><expr><name>reversed</name></expr>
+                 ?</condition><then> <expr><operator>(</operator><ternary><condition><expr><name>this</name> <operator>==</operator> <name>INCL_END_EXCL_START_BOUNDARY</name></expr> ?</condition><then> <expr><name>EXCL_START_BOUND</name></expr> </then><else>: <expr><name>INCL_START_BOUND</name></expr></else></ternary><operator>)</operator></expr>
+                 </then><else>: <expr><operator>(</operator><ternary><condition><expr><name>this</name> <operator>==</operator> <name>INCL_END_EXCL_START_BOUNDARY</name></expr> ?</condition><then> <expr><name>INCL_END_BOUND</name></expr> </then><else>: <expr><name>EXCL_END_BOUND</name></expr></else></ternary><operator>)</operator></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Kind</name></type> <name>openBoundOfBoundary</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>reversed</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><call><name>isBoundary</name><argument_list>()</argument_list></call></expr>;</assert>
+            <return>return <expr><ternary><condition><expr><name>reversed</name></expr>
+                 ?</condition><then> <expr><operator>(</operator><ternary><condition><expr><name>this</name> <operator>==</operator> <name>INCL_END_EXCL_START_BOUNDARY</name></expr> ?</condition><then> <expr><name>INCL_END_BOUND</name></expr> </then><else>: <expr><name>EXCL_END_BOUND</name></expr></else></ternary><operator>)</operator></expr>
+                 </then><else>: <expr><operator>(</operator><ternary><condition><expr><name>this</name> <operator>==</operator> <name>INCL_END_EXCL_START_BOUNDARY</name></expr> ?</condition><then> <expr><name>EXCL_START_BOUND</name></expr> </then><else>: <expr><name>INCL_START_BOUND</name></expr></else></ternary><operator>)</operator></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+    }</block></enum>
+
+    <function><type><specifier>default</specifier> <name>boolean</name></type> <name>isBottom</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>kind</name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Kind</name><operator>.</operator><name>INCL_START_BOUND</name></name> <operator>&amp;&amp;</operator> <call><name>size</name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>default</specifier> <name>boolean</name></type> <name>isTop</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>kind</name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Kind</name><operator>.</operator><name>INCL_END_BOUND</name></name> <operator>&amp;&amp;</operator> <call><name>size</name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function_decl><type><specifier>public</specifier> <name>Kind</name></type> <name>kind</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * The number of values in this prefix.
+     *
+     * There can't be more values that the this is a prefix of has of clustering columns.
+     *
+     * @return the number of values in this prefix.
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <name>int</name></type> <name>size</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <function><type><specifier>default</specifier> <name>boolean</name></type> <name>isEmpty</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>size</name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Retrieves the ith value of this prefix.
+     *
+     * @param i the index of the value to retrieve. Must be such that {@code 0 &lt;= i &lt; size()}.
+     *
+     * @return the ith value of this prefix. Note that a value can be {@code null}.
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <name>V</name></type> <name>get</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>i</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <function_decl><type><specifier>public</specifier> <name><name>ValueAccessor</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>accessor</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <function><type><specifier>default</specifier> <name>ByteBuffer</name></type> <name>bufferAt</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>i</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>accessor</name><argument_list>()</argument_list></call><operator>.</operator><call><name>toBuffer</name><argument_list>(<argument><expr><call><name>get</name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>default</specifier> <name>String</name></type> <name>stringAt</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>i</name></decl></parameter>, <parameter><decl><type><name>ClusteringComparator</name></type> <name>comparator</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>comparator</name><operator>.</operator><name>subtype</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>getString</name><argument_list>(<argument><expr><call><name>get</name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name>accessor</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>default</specifier> <name>void</name></type> <name>validate</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>i</name></decl></parameter>, <parameter><decl><type><name>ClusteringComparator</name></type> <name>comparator</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>comparator</name><operator>.</operator><name>subtype</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>validate</name><argument_list>(<argument><expr><call><name>get</name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name>accessor</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Adds the data of this clustering prefix to the provided Digest instance.
+     *
+     * @param digest the Digest instance to which to add this prefix.
+     */</comment>
+    <function><type><specifier>default</specifier> <name>void</name></type> <name>digest</name><parameter_list>(<parameter><decl><type><name>Digest</name></type> <name>digest</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name>size</name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>V</name></type> <name>value</name> <init>= <expr><call><name>get</name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>value</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>digest</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>value</name></expr></argument>, <argument><expr><call><name>accessor</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+        <expr_stmt><expr><call><name><name>digest</name><operator>.</operator><name>updateWithByte</name></name><argument_list>(<argument><expr><call><name>kind</name><argument_list>()</argument_list></call><operator>.</operator><call><name>ordinal</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * The size of the data hold by this prefix.
+     *
+     * @return the size of the data hold by this prefix (this is not the size of the object in memory, just
+     * the size of the data it stores).
+     */</comment>
+    <function><type><specifier>default</specifier> <name>int</name></type> <name>dataSize</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name>size</name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>V</name></type> <name>v</name> <init>= <expr><call><name>get</name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>size</name> <operator>+=</operator> <ternary><condition><expr><name>v</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="number">0</literal></expr> </then><else>: <expr><call><name>accessor</name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>(<argument><expr><name>v</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><name>size</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Generates a proper string representation of the prefix.
+     *
+     * @param metadata the metadata for the table the clustering prefix is of.
+     * @return a human-readable string representation fo this prefix.
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <comment type="block">/*
+     * TODO: we should stop using Clustering for partition keys. Maybe we can add
+     * a few methods to DecoratedKey so we don't have to (note that while using a Clustering
+     * allows to use buildBound(), it's actually used for partition keys only when every restriction
+     * is an equal, so we could easily create a specific method for keys for that.
+     */</comment>
+    <function><type><specifier>default</specifier> <name>ByteBuffer</name></type> <name>serializeAsPartitionKey</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name>size</name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">1</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>accessor</name><argument_list>()</argument_list></call><operator>.</operator><call><name>toBuffer</name><argument_list>(<argument><expr><call><name>get</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>ByteBuffer</name><index>[]</index></name></type> <name>values</name> <init>= <expr><operator>new</operator> <name><name>ByteBuffer</name><index>[<expr><call><name>size</name><argument_list>()</argument_list></call></expr>]</index></name></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name>size</name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><name><name>values</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <call><name>accessor</name><argument_list>()</argument_list></call><operator>.</operator><call><name>toBuffer</name><argument_list>(<argument><expr><call><name>get</name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <return>return <expr><call><name><name>CompositeType</name><operator>.</operator><name>build</name></name><argument_list>(<argument><expr><name><name>ByteBufferAccessor</name><operator>.</operator><name>instance</name></name></expr></argument>, <argument><expr><name>values</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+    <comment type="block" format="javadoc">/**
+     * The values of this prefix as an array.
+     * &lt;p&gt;
+     * Please note that this may or may not require an array creation. So 1) you should *not*
+     * modify the returned array and 2) it's more efficient to use {@link #size()} and
+     * {@link #get} unless you actually need an array.
+     *
+     * @return the values for this prefix as an array.
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <name><name>V</name><index>[]</index></name></type> <name>getRawValues</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <function_decl><type><specifier>public</specifier> <name><name>ByteBuffer</name><index>[]</index></name></type> <name>getBufferArray</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * If the prefix contains byte buffers that can be minimized (see {@link ByteBufferUtil#minimalBufferFor(ByteBuffer)}),
+     * this will return a copy of the prefix with minimized values, otherwise it returns itself.
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>minimize</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>Serializer</name>
+    <block>{
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>clustering</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>types</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <comment type="line">// We shouldn't serialize static clusterings</comment>
+            <assert>assert <expr><call><name><name>clustering</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <name><name>Kind</name><operator>.</operator><name>STATIC_CLUSTERING</name></name></expr>;</assert>
+            <if_stmt><if>if <condition>(<expr><call><name><name>clustering</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Kind</name><operator>.</operator><name>CLUSTERING</name></name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeByte</name></name><argument_list>(<argument><expr><call><name><name>clustering</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>ordinal</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>Clustering</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><operator>(</operator><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name><operator>)</operator><name>clustering</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>types</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>ClusteringBoundOrBoundary</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><operator>(</operator><name><name>ClusteringBoundOrBoundary</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name><operator>)</operator><name>clustering</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>types</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>skip</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>types</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Kind</name></type> <name>kind</name> <init>= <expr><call><name><name>Kind</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call><index>[<expr><call><name><name>in</name><operator>.</operator><name>readByte</name></name><argument_list>()</argument_list></call></expr>]</index></expr></init></decl>;</decl_stmt>
+            <comment type="line">// We shouldn't serialize static clusterings</comment>
+            <assert>assert <expr><name>kind</name> <operator>!=</operator> <name><name>Kind</name><operator>.</operator><name>STATIC_CLUSTERING</name></name></expr>;</assert>
+            <if_stmt><if>if <condition>(<expr><name>kind</name> <operator>==</operator> <name><name>Kind</name><operator>.</operator><name>CLUSTERING</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>Clustering</name><operator>.</operator><name>serializer</name><operator>.</operator><name>skip</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>types</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>ClusteringBoundOrBoundary</name><operator>.</operator><name>serializer</name><operator>.</operator><name>skipValues</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>kind</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>types</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name><name>byte</name><index>[]</index></name></argument>&gt;</argument_list></name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>types</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Kind</name></type> <name>kind</name> <init>= <expr><call><name><name>Kind</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call><index>[<expr><call><name><name>in</name><operator>.</operator><name>readByte</name></name><argument_list>()</argument_list></call></expr>]</index></expr></init></decl>;</decl_stmt>
+            <comment type="line">// We shouldn't serialize static clusterings</comment>
+            <assert>assert <expr><name>kind</name> <operator>!=</operator> <name><name>Kind</name><operator>.</operator><name>STATIC_CLUSTERING</name></name></expr>;</assert>
+            <if_stmt><if>if <condition>(<expr><name>kind</name> <operator>==</operator> <name><name>Kind</name><operator>.</operator><name>CLUSTERING</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><call><name><name>Clustering</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserialize</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>types</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <return>return <expr><call><name><name>ClusteringBoundOrBoundary</name><operator>.</operator><name>serializer</name><operator>.</operator><name>deserializeValues</name></name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><name>kind</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>types</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>serializedSize</name><parameter_list>(<parameter><decl><type><name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>clustering</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>types</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// We shouldn't serialize static clusterings</comment>
+            <assert>assert <expr><call><name><name>clustering</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <name><name>Kind</name><operator>.</operator><name>STATIC_CLUSTERING</name></name></expr>;</assert>
+            <if_stmt><if>if <condition>(<expr><call><name><name>clustering</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Kind</name><operator>.</operator><name>CLUSTERING</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="number">1</literal> <operator>+</operator> <call><name><name>Clustering</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><operator>(</operator><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name><operator>)</operator><name>clustering</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>types</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <return>return <expr><call><name><name>ClusteringBoundOrBoundary</name><operator>.</operator><name>serializer</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><operator>(</operator><name><name>ClusteringBoundOrBoundary</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name><operator>)</operator><name>clustering</name></expr></argument>, <argument><expr><name>version</name></expr></argument>, <argument><expr><name>types</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><parameter_list type="generic">&lt;<parameter><name>V</name></parameter>&gt;</parameter_list> <name>void</name></type> <name>serializeValuesWithoutSize</name><parameter_list>(<parameter><decl><type><name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>clustering</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>types</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>offset</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>clusteringSize</name> <init>= <expr><call><name><name>clustering</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>ValueAccessor</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>accessor</name> <init>= <expr><call><name><name>clustering</name><operator>.</operator><name>accessor</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <comment type="line">// serialize in batches of 32, to avoid garbage when deserializing headers</comment>
+            <while>while <condition>(<expr><name>offset</name> <operator>&lt;</operator> <name>clusteringSize</name></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// we micro-batch the headers, so that we can incur fewer method calls,</comment>
+                <comment type="line">// and generate no garbage on deserialization;</comment>
+                <comment type="line">// we piggyback on vint encoding so that, typically, only 1 byte is used per 32 clustering values,</comment>
+                <comment type="line">// i.e. more than we ever expect to see</comment>
+                <decl_stmt><decl><type><name>int</name></type> <name>limit</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>clusteringSize</name></expr></argument>, <argument><expr><name>offset</name> <operator>+</operator> <literal type="number">32</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeUnsignedVInt</name></name><argument_list>(<argument><expr><call><name>makeHeader</name><argument_list>(<argument><expr><name>clustering</name></expr></argument>, <argument><expr><name>offset</name></expr></argument>, <argument><expr><name>limit</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <while>while <condition>(<expr><name>offset</name> <operator>&lt;</operator> <name>limit</name></expr>)</condition>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>V</name></type> <name>v</name> <init>= <expr><call><name><name>clustering</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>offset</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>v</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>accessor</name><operator>.</operator><name>isEmpty</name></name><argument_list>(<argument><expr><name>v</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name><name>types</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>offset</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>writeValue</name><argument_list>(<argument><expr><name>v</name></expr></argument>, <argument><expr><name>accessor</name></expr></argument>, <argument><expr><name>out</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                    <expr_stmt><expr><name>offset</name><operator>++</operator></expr>;</expr_stmt>
+                </block_content>}</block></while>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <function><type><parameter_list type="generic">&lt;<parameter><name>V</name></parameter>&gt;</parameter_list> <name>long</name></type> <name>valuesWithoutSizeSerializedSize</name><parameter_list>(<parameter><decl><type><name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>clustering</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>types</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>result</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>offset</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>clusteringSize</name> <init>= <expr><call><name><name>clustering</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <while>while <condition>(<expr><name>offset</name> <operator>&lt;</operator> <name>clusteringSize</name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>limit</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>clusteringSize</name></expr></argument>, <argument><expr><name>offset</name> <operator>+</operator> <literal type="number">32</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><name>result</name> <operator>+=</operator> <call><name><name>TypeSizes</name><operator>.</operator><name>sizeofUnsignedVInt</name></name><argument_list>(<argument><expr><call><name>makeHeader</name><argument_list>(<argument><expr><name>clustering</name></expr></argument>, <argument><expr><name>offset</name></expr></argument>, <argument><expr><name>limit</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>offset</name> <operator>=</operator> <name>limit</name></expr>;</expr_stmt>
+            </block_content>}</block></while>
+            <decl_stmt><decl><type><name><name>ValueAccessor</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>accessor</name> <init>= <expr><call><name><name>clustering</name><operator>.</operator><name>accessor</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>clusteringSize</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>V</name></type> <name>v</name> <init>= <expr><call><name><name>clustering</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>v</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>accessor</name><operator>.</operator><name>isEmpty</name></name><argument_list>(<argument><expr><name>v</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <continue>continue;</continue></block_content></block></if></if_stmt> <comment type="line">// handled in the header</comment>
+
+                <expr_stmt><expr><name>result</name> <operator>+=</operator> <call><name><name>types</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>writtenLength</name><argument_list>(<argument><expr><name>v</name></expr></argument>, <argument><expr><name>accessor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <return>return <expr><name>result</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name><name>byte</name><index>[]</index><index>[]</index></name></type> <name>deserializeValuesWithoutSize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>types</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <comment type="line">// Callers of this method should handle the case where size = 0 (in all case we want to return a special value anyway).</comment>
+            <assert>assert <expr><name>size</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>;</assert>
+            <decl_stmt><decl><type><name><name>byte</name><index>[]</index><index>[]</index></name></type> <name>values</name> <init>= <expr><operator>new</operator> <name><name>byte</name><index>[<expr><name>size</name></expr>]</index><index>[]</index></name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>offset</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <while>while <condition>(<expr><name>offset</name> <operator>&lt;</operator> <name>size</name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>long</name></type> <name>header</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>int</name></type> <name>limit</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name>offset</name> <operator>+</operator> <literal type="number">32</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <while>while <condition>(<expr><name>offset</name> <operator>&lt;</operator> <name>limit</name></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name><name>values</name><index>[<expr><name>offset</name></expr>]</index></name> <operator>=</operator> <ternary><condition><expr><call><name>isNull</name><argument_list>(<argument><expr><name>header</name></expr></argument>, <argument><expr><name>offset</name></expr></argument>)</argument_list></call></expr>
+                                     ?</condition><then> <expr><literal type="null">null</literal></expr>
+                                     </then><else>: <expr><operator>(</operator><ternary><condition><expr><call><name>isEmpty</name><argument_list>(<argument><expr><name>header</name></expr></argument>, <argument><expr><name>offset</name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><name><name>ByteArrayUtil</name><operator>.</operator><name>EMPTY_BYTE_ARRAY</name></name></expr>
+                                                                </then><else>: <expr><call><name><name>types</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>offset</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>readArray</name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getMaxValueSize</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></else></ternary><operator>)</operator></expr></else></ternary></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>offset</name><operator>++</operator></expr>;</expr_stmt>
+                </block_content>}</block></while>
+            </block_content>}</block></while>
+            <return>return <expr><name>values</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>void</name></type> <name>skipValuesWithoutSize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>types</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <comment type="line">// Callers of this method should handle the case where size = 0 (in all case we want to return a special value anyway).</comment>
+            <assert>assert <expr><name>size</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>;</assert>
+            <decl_stmt><decl><type><name>int</name></type> <name>offset</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <while>while <condition>(<expr><name>offset</name> <operator>&lt;</operator> <name>size</name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>long</name></type> <name>header</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>int</name></type> <name>limit</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>size</name></expr></argument>, <argument><expr><name>offset</name> <operator>+</operator> <literal type="number">32</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <while>while <condition>(<expr><name>offset</name> <operator>&lt;</operator> <name>limit</name></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>isNull</name><argument_list>(<argument><expr><name>header</name></expr></argument>, <argument><expr><name>offset</name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator><call><name>isEmpty</name><argument_list>(<argument><expr><name>header</name></expr></argument>, <argument><expr><name>offset</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                         <expr_stmt><expr><call><name><name>types</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>offset</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>skipValue</name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                    <expr_stmt><expr><name>offset</name><operator>++</operator></expr>;</expr_stmt>
+                </block_content>}</block></while>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Whatever the type of a given clustering column is, its value can always be either empty or null. So we at least need to distinguish those
+         * 2 values, and because we want to be able to store fixed width values without appending their (fixed) size first, we need a way to encode
+         * empty values too. So for that, every clustering prefix includes a "header" that contains 2 bits per element in the prefix. For each element,
+         * those 2 bits encode whether the element is null, empty, or none of those.
+         */</comment>
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <parameter_list type="generic">&lt;<parameter><name>V</name></parameter>&gt;</parameter_list> <name>long</name></type> <name>makeHeader</name><parameter_list>(<parameter><decl><type><name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>clustering</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>offset</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>limit</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>header</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>ValueAccessor</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>accessor</name> <init>= <expr><call><name><name>clustering</name><operator>.</operator><name>accessor</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><name>offset</name></expr></init></decl> ;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>limit</name></expr> ;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>V</name></type> <name>v</name> <init>= <expr><call><name><name>clustering</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <comment type="line">// no need to do modulo arithmetic for i, since the left-shift execute on the modulus of RH operand by definition</comment>
+                <if_stmt><if>if <condition>(<expr><name>v</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>header</name> <operator>|=</operator> <operator>(</operator><literal type="number">1L</literal> <operator>&lt;&lt;</operator> <operator>(</operator><name>i</name> <operator>*</operator> <literal type="number">2</literal><operator>)</operator> <operator>+</operator> <literal type="number">1</literal><operator>)</operator></expr>;</expr_stmt></block_content></block></if>
+                <if type="elseif">else if <condition>(<expr><call><name><name>accessor</name><operator>.</operator><name>isEmpty</name></name><argument_list>(<argument><expr><name>v</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>header</name> <operator>|=</operator> <operator>(</operator><literal type="number">1L</literal> <operator>&lt;&lt;</operator> <operator>(</operator><name>i</name> <operator>*</operator> <literal type="number">2</literal><operator>)</operator><operator>)</operator></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></for>
+            <return>return <expr><name>header</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="line">// no need to do modulo arithmetic for i, since the left-shift execute on the modulus of RH operand by definition</comment>
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>isNull</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>i</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>mask</name> <init>= <expr><literal type="number">1L</literal> <operator>&lt;&lt;</operator> <operator>(</operator><name>i</name> <operator>*</operator> <literal type="number">2</literal><operator>)</operator> <operator>+</operator> <literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+            <return>return <expr><operator>(</operator><name>header</name> <operator>&amp;</operator> <name>mask</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="line">// no need to do modulo arithmetic for i, since the left-shift execute on the modulus of RH operand by definition</comment>
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>isEmpty</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>header</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>i</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>mask</name> <init>= <expr><literal type="number">1L</literal> <operator>&lt;&lt;</operator> <operator>(</operator><name>i</name> <operator>*</operator> <literal type="number">2</literal><operator>)</operator></expr></init></decl>;</decl_stmt>
+            <return>return <expr><operator>(</operator><name>header</name> <operator>&amp;</operator> <name>mask</name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * Helper class that makes the deserialization of clustering prefixes faster.
+     * &lt;p&gt;
+     * The main reason for this is that when we deserialize rows from sstables, there is many cases where we have
+     * a bunch of rows to skip at the beginning of an index block because those rows are before the requested slice.
+     * This class make sure we can answer the question "is the next row on disk before the requested slice" with as
+     * little work as possible. It does that by providing a comparison method that deserialize only what is needed
+     * to decide of the comparison.
+     */</comment>
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>Deserializer</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ClusteringComparator</name></type> <name>comparator</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>DataInputPlus</name></type> <name>in</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>SerializationHeader</name></type> <name>serializationHeader</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>nextIsRow</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>nextHeader</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>nextSize</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name><name>ClusteringPrefix</name><operator>.</operator><name>Kind</name></name></type> <name>nextKind</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>deserializedSize</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name><name>byte</name><index>[]</index><index>[]</index></name></type> <name>nextValues</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ValueAccessor</name><argument_list type="generic">&lt;<argument><name><name>byte</name><index>[]</index></name></argument>&gt;</argument_list></name></type> <name>accessor</name> <init>= <expr><name><name>ByteArrayAccessor</name><operator>.</operator><name>instance</name></name></expr></init></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>Deserializer</name><parameter_list>(<parameter><decl><type><name>ClusteringComparator</name></type> <name>comparator</name></decl></parameter>, <parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>SerializationHeader</name></type> <name>header</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>comparator</name></name> <operator>=</operator> <name>comparator</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>in</name></name> <operator>=</operator> <name>in</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>serializationHeader</name></name> <operator>=</operator> <name>header</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>prepare</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>flags</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>extendedFlags</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>UnfilteredSerializer</name><operator>.</operator><name>isStatic</name></name><argument_list>(<argument><expr><name>extendedFlags</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IOException</name><argument_list>(<argument><expr><literal type="string">"Corrupt flags value for clustering prefix (isStatic flag set): "</literal> <operator>+</operator> <name>flags</name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>nextIsRow</name></name> <operator>=</operator> <call><name><name>UnfilteredSerializer</name><operator>.</operator><name>kind</name></name><argument_list>(<argument><expr><name>flags</name></expr></argument>)</argument_list></call> <operator>==</operator> <name><name>Unfiltered</name><operator>.</operator><name>Kind</name><operator>.</operator><name>ROW</name></name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>nextKind</name></name> <operator>=</operator> <ternary><condition><expr><name>nextIsRow</name></expr> ?</condition><then> <expr><name><name>Kind</name><operator>.</operator><name>CLUSTERING</name></name></expr> </then><else>: <expr><call><name><name>ClusteringPrefix</name><operator>.</operator><name>Kind</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call><index>[<expr><call><name><name>in</name><operator>.</operator><name>readByte</name></name><argument_list>()</argument_list></call></expr>]</index></expr></else></ternary></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>nextSize</name></name> <operator>=</operator> <ternary><condition><expr><name>nextIsRow</name></expr> ?</condition><then> <expr><call><name><name>comparator</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr> </then><else>: <expr><call><name><name>in</name><operator>.</operator><name>readUnsignedShort</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>deserializedSize</name></name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+
+            <comment type="line">// The point of the deserializer is that some of the clustering prefix won't actually be used (because they are not</comment>
+            <comment type="line">// within the bounds of the query), and we want to reduce allocation for them. So we only reuse the values array</comment>
+            <comment type="line">// between elements if 1) we haven't returned the previous element (if we have, nextValues will be null) and 2)</comment>
+            <comment type="line">// nextValues is of the proper size. Note that the 2nd condition may not hold for range tombstone bounds, but all</comment>
+            <comment type="line">// rows have a fixed size clustering, so we'll still save in the common case.</comment>
+            <if_stmt><if>if <condition>(<expr><name>nextValues</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <name><name>nextValues</name><operator>.</operator><name>length</name></name> <operator>!=</operator> <name>nextSize</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name><name>this</name><operator>.</operator><name>nextValues</name></name> <operator>=</operator> <operator>new</operator> <name><name>byte</name><index>[<expr><name>nextSize</name></expr>]</index><index>[]</index></name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <parameter_list type="generic">&lt;<parameter><name>T</name></parameter>&gt;</parameter_list> <name>int</name></type> <name>compareNextTo</name><parameter_list>(<parameter><decl><type><name><name>ClusteringBoundOrBoundary</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>bound</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>bound</name><operator>.</operator><name>isTop</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><operator>-</operator><literal type="number">1</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>bound</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>hasComponent</name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><name><name>nextKind</name><operator>.</operator><name>comparedToClustering</name></name></expr>;</return></block_content></block></if></if_stmt>
+
+                <decl_stmt><decl><type><name>int</name></type> <name>cmp</name> <init>= <expr><call><name><name>comparator</name><operator>.</operator><name>compareComponent</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>, <argument><expr><name><name>nextValues</name><index>[<expr><name>i</name></expr>]</index></name></expr></argument>, <argument><expr><name>accessor</name></expr></argument>, <argument><expr><call><name><name>bound</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>bound</name><operator>.</operator><name>accessor</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>cmp</name> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><name>cmp</name></expr>;</return></block_content></block></if></if_stmt>
+            </block_content>}</block></for>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>bound</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name>nextSize</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><call><name><name>Kind</name><operator>.</operator><name>compare</name></name><argument_list>(<argument><expr><name>nextKind</name></expr></argument>, <argument><expr><call><name><name>bound</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+            <comment type="line">// We know that we'll have exited already if nextSize &lt; bound.size</comment>
+            <return>return <expr><operator>-</operator><call><name><name>bound</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call><operator>.</operator><name>comparedToClustering</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>boolean</name></type> <name>hasComponent</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>i</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>i</name> <operator>&gt;=</operator> <name>nextSize</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <while>while <condition>(<expr><name>deserializedSize</name> <operator>&lt;=</operator> <name>i</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>deserializeOne</name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></while>
+
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>boolean</name></type> <name>deserializeOne</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>deserializedSize</name> <operator>==</operator> <name>nextSize</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><operator>(</operator><name>deserializedSize</name> <operator>%</operator> <literal type="number">32</literal><operator>)</operator> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>nextHeader</name> <operator>=</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>int</name></type> <name>i</name> <init>= <expr><name>deserializedSize</name><operator>++</operator></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name><name>nextValues</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <ternary><condition><expr><call><name><name>Serializer</name><operator>.</operator><name>isNull</name></name><argument_list>(<argument><expr><name>nextHeader</name></expr></argument>, <argument><expr><name>i</name></expr></argument>)</argument_list></call></expr>
+                          ?</condition><then> <expr><literal type="null">null</literal></expr>
+                          </then><else>: <expr><operator>(</operator><ternary><condition><expr><call><name><name>Serializer</name><operator>.</operator><name>isEmpty</name></name><argument_list>(<argument><expr><name>nextHeader</name></expr></argument>, <argument><expr><name>i</name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><name><name>ByteArrayUtil</name><operator>.</operator><name>EMPTY_BYTE_ARRAY</name></name></expr>
+                                                               </then><else>: <expr><call><name><name>serializationHeader</name><operator>.</operator><name>clusteringTypes</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>readArray</name><argument_list>(<argument><expr><name>in</name></expr></argument>, <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getMaxValueSize</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></else></ternary><operator>)</operator></expr></else></ternary></expr>;</expr_stmt>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>deserializeAll</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <while>while <condition>(<expr><call><name>deserializeOne</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <continue>continue;</continue></block_content></block></while>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>ClusteringBoundOrBoundary</name><argument_list type="generic">&lt;<argument><name><name>byte</name><index>[]</index></name></argument>&gt;</argument_list></name></type> <name>deserializeNextBound</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <assert>assert <expr><operator>!</operator><name>nextIsRow</name></expr>;</assert>
+            <expr_stmt><expr><call><name>deserializeAll</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name><name>ClusteringBoundOrBoundary</name><argument_list type="generic">&lt;<argument><name><name>byte</name><index>[]</index></name></argument>&gt;</argument_list></name></type> <name>bound</name> <init>= <expr><call><name><name>accessor</name><operator>.</operator><name>factory</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>boundOrBoundary</name><argument_list>(<argument><expr><name>nextKind</name></expr></argument>, <argument><expr><name>nextValues</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>nextValues</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            <return>return <expr><name>bound</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>Clustering</name><argument_list type="generic">&lt;<argument><name><name>byte</name><index>[]</index></name></argument>&gt;</argument_list></name></type> <name>deserializeNextClustering</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <assert>assert <expr><name>nextIsRow</name></expr>;</assert>
+            <expr_stmt><expr><call><name>deserializeAll</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name><name>byte</name><index>[]</index></name></argument>&gt;</argument_list></name></type> <name>clustering</name> <init>= <expr><call><name><name>accessor</name><operator>.</operator><name>factory</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>clustering</name><argument_list>(<argument><expr><name>nextValues</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>nextValues</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            <return>return <expr><name>clustering</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>ClusteringPrefix</name><operator>.</operator><name>Kind</name></name></type> <name>skipNext</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><name>deserializedSize</name></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>nextSize</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><operator>(</operator><name>i</name> <operator>%</operator> <literal type="number">32</literal><operator>)</operator> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>nextHeader</name> <operator>=</operator> <call><name><name>in</name><operator>.</operator><name>readUnsignedVInt</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>Serializer</name><operator>.</operator><name>isNull</name></name><argument_list>(<argument><expr><name>nextHeader</name></expr></argument>, <argument><expr><name>i</name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>Serializer</name><operator>.</operator><name>isEmpty</name></name><argument_list>(<argument><expr><name>nextHeader</name></expr></argument>, <argument><expr><name>i</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>serializationHeader</name><operator>.</operator><name>clusteringTypes</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>skipValue</name><argument_list>(<argument><expr><name>in</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></for>
+            <expr_stmt><expr><name>deserializedSize</name> <operator>=</operator> <name>nextSize</name></expr>;</expr_stmt>
+            <return>return <expr><name>nextKind</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <parameter_list type="generic">&lt;<parameter><name>V</name></parameter>&gt;</parameter_list> <name>int</name></type> <name>hashCode</name><parameter_list>(<parameter><decl><type><name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name>V</name></argument>&gt;</argument_list></name></type> <name>prefix</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>result</name> <init>= <expr><literal type="number">31</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>prefix</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>result</name> <operator>+=</operator> <literal type="number">31</literal> <operator>*</operator> <call><name><name>prefix</name><operator>.</operator><name>accessor</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>hashCode</name><argument_list>(<argument><expr><call><name><name>prefix</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <return>return <expr><literal type="number">31</literal> <operator>*</operator> <name>result</name> <operator>+</operator> <call><name><name>Objects</name><operator>.</operator><name>hashCode</name></name><argument_list>(<argument><expr><call><name><name>prefix</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <parameter_list type="generic">&lt;<parameter><name>V1</name></parameter>, <parameter><name>V2</name></parameter>&gt;</parameter_list> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name>V1</name></argument>&gt;</argument_list></name></type> <name>left</name></decl></parameter>, <parameter><decl><type><name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name>V2</name></argument>&gt;</argument_list></name></type> <name>right</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>left</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <call><name><name>right</name><operator>.</operator><name>kind</name></name><argument_list>()</argument_list></call> <operator>||</operator> <call><name><name>left</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <call><name><name>right</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>left</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>V1</name></type> <name>lVal</name> <init>= <expr><call><name><name>left</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>V2</name></type> <name>rVal</name> <init>= <expr><call><name><name>right</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>lVal</name> <operator>==</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>rVal</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <continue>continue;</continue></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>lVal</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <name>rVal</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>ValueAccessor</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>lVal</name></expr></argument>, <argument><expr><call><name><name>left</name><operator>.</operator><name>accessor</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>rVal</name></expr></argument>, <argument><expr><call><name><name>right</name><operator>.</operator><name>accessor</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>prefix</name></decl></parameter>, <parameter><decl><type><name>Object</name></type> <name>o</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if<condition>(<expr><operator>!</operator><operator>(</operator><name>o</name> <operator>instanceof</operator> <name>ClusteringPrefix</name><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name>equals</name><argument_list>(<argument><expr><name>prefix</name></expr></argument>, <argument><expr><operator>(</operator><name><name>ClusteringPrefix</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name><operator>)</operator> <name>o</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+}</block></interface>
+</unit>

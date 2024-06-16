@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/service/PendingRangeCalculatorService.java"><comment type="block" format="javadoc">/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name></name>;</package>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>JMXEnabledThreadPoolExecutor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>NamedThreadFactory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>Schema</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Keyspace</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>AbstractReplicationStrategy</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ExecutorUtils</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicInteger</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>PendingRangeCalculatorService</name>
+<block>{
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>PendingRangeCalculatorService</name></type> <name>instance</name> <init>= <expr><operator>new</operator> <call><name>PendingRangeCalculatorService</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>PendingRangeCalculatorService</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// the executor will only run a single range calculation at a time while keeping at most one task queued in order</comment>
+    <comment type="line">// to trigger an update only after the most recent state change and not for each update individually</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>JMXEnabledThreadPoolExecutor</name></type> <name>executor</name> <init>= <expr><operator>new</operator> <call><name>JMXEnabledThreadPoolExecutor</name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>SECONDS</name></name></expr></argument>,
+            <argument><expr><operator>new</operator> <call><name><name>LinkedBlockingQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><operator>new</operator> <call><name>NamedThreadFactory</name><argument_list>(<argument><expr><literal type="string">"PendingRangeCalculator"</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="string">"internal"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>AtomicInteger</name></type> <name>updateJobs</name> <init>= <expr><operator>new</operator> <call><name>AtomicInteger</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>PendingRangeCalculatorService</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>setRejectedExecutionHandler</name></name><argument_list>(<argument><expr><lambda><parameter_list>(<parameter><decl><name>r</name></decl></parameter>, <parameter><decl><name>e</name></decl></parameter>)</parameter_list> -&gt;
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>PendingRangeCalculatorServiceDiagnostics</name><operator>.</operator><name>taskRejected</name></name><argument_list>(<argument><expr><name>instance</name></expr></argument>, <argument><expr><name>updateJobs</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>PendingRangeCalculatorService</name><operator>.</operator><name>instance</name><operator>.</operator><name>finishUpdate</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></lambda></expr></argument>
+        )</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>PendingRangeTask</name> <super_list><implements>implements <super><name>Runnable</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>AtomicInteger</name></type> <name>updateJobs</name></decl>;</decl_stmt>
+
+        <constructor><name>PendingRangeTask</name><parameter_list>(<parameter><decl><type><name>AtomicInteger</name></type> <name>updateJobs</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>updateJobs</name></name> <operator>=</operator> <name>updateJobs</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>PendingRangeCalculatorServiceDiagnostics</name><operator>.</operator><name>taskStarted</name></name><argument_list>(<argument><expr><name>instance</name></expr></argument>, <argument><expr><name>updateJobs</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <decl_stmt><decl><type><name>long</name></type> <name>start</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>currentTimeMillis</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>keyspaces</name> <init>= <expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getNonLocalStrategyKeyspaces</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <for>for <control>(<init><decl><type><name>String</name></type> <name>keyspaceName</name> <range>: <expr><name>keyspaces</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name>calculatePendingRanges</name><argument_list>(<argument><expr><call><name><name>Keyspace</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><name>keyspaceName</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>getReplicationStrategy</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>keyspaceName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+                <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Finished PendingRangeTask for {} keyspaces in {}ms"</literal></expr></argument>, <argument><expr><call><name><name>keyspaces</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>System</name><operator>.</operator><name>currentTimeMillis</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>start</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>PendingRangeCalculatorServiceDiagnostics</name><operator>.</operator><name>taskFinished</name></name><argument_list>(<argument><expr><name>instance</name></expr></argument>, <argument><expr><name>updateJobs</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <finally>finally
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>PendingRangeCalculatorService</name><operator>.</operator><name>instance</name><operator>.</operator><name>finishUpdate</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></finally></try>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>finishUpdate</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>jobs</name> <init>= <expr><call><name><name>updateJobs</name><operator>.</operator><name>decrementAndGet</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>PendingRangeCalculatorServiceDiagnostics</name><operator>.</operator><name>taskCountChanged</name></name><argument_list>(<argument><expr><name>instance</name></expr></argument>, <argument><expr><name>jobs</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>update</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>jobs</name> <init>= <expr><call><name><name>updateJobs</name><operator>.</operator><name>incrementAndGet</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>PendingRangeCalculatorServiceDiagnostics</name><operator>.</operator><name>taskCountChanged</name></name><argument_list>(<argument><expr><name>instance</name></expr></argument>, <argument><expr><name>jobs</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>execute</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>PendingRangeTask</name><argument_list>(<argument><expr><name>updateJobs</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>blockUntilFinished</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// We want to be sure the job we're blocking for is actually finished and we can't trust the TPE's active job count</comment>
+        <while>while <condition>(<expr><call><name><name>updateJobs</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>Thread</name><operator>.</operator><name>sleep</name></name><argument_list>(<argument><expr><literal type="number">100</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>InterruptedException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></while>
+    </block_content>}</block></function>
+
+
+    <comment type="line">// public &amp; static for testing purposes</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>calculatePendingRanges</name><parameter_list>(<parameter><decl><type><name>AbstractReplicationStrategy</name></type> <name>strategy</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>keyspaceName</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>getTokenMetadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>calculatePendingRanges</name><argument_list>(<argument><expr><name>strategy</name></expr></argument>, <argument><expr><name>keyspaceName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>shutdownAndWait</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>timeout</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>unit</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>InterruptedException</name></expr></argument>, <argument><expr><name>TimeoutException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>ExecutorUtils</name><operator>.</operator><name>shutdownNowAndWait</name></name><argument_list>(<argument><expr><name>timeout</name></expr></argument>, <argument><expr><name>unit</name></expr></argument>, <argument><expr><name>executor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

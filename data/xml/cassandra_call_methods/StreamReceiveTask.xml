@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/streaming/StreamReceiveTask.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>streaming</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ExecutorService</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Executors</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeoutException</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Preconditions</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>NamedThreadFactory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ColumnFamilyStore</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableId</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>JVMStabilityInspector</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ExecutorUtils</name><operator>.</operator><name>awaitTermination</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ExecutorUtils</name><operator>.</operator><name>shutdown</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Task that manages receiving files for the session for certain ColumnFamily.
+ */</comment>
+<class><specifier>public</specifier> class <name>StreamReceiveTask</name> <super_list><extends>extends <super><name>StreamTask</name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>StreamReceiveTask</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>ExecutorService</name></type> <name>executor</name> <init>= <expr><call><name><name>Executors</name><operator>.</operator><name>newCachedThreadPool</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>NamedThreadFactory</name><argument_list>(<argument><expr><literal type="string">"StreamReceiveTask"</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>StreamReceiver</name></type> <name>receiver</name></decl>;</decl_stmt>
+
+    <comment type="line">// number of streams to receive</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>totalStreams</name></decl>;</decl_stmt>
+
+    <comment type="line">// total size of streams to receive</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>totalSize</name></decl>;</decl_stmt>
+
+    <comment type="line">// true if task is done (either completed or aborted)</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>boolean</name></type> <name>done</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>remoteStreamsReceived</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>bytesReceived</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>StreamReceiveTask</name><parameter_list>(<parameter><decl><type><name>StreamSession</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>TableId</name></type> <name>tableId</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>totalStreams</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>totalSize</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>tableId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>receiver</name></name> <operator>=</operator> <call><name><name>ColumnFamilyStore</name><operator>.</operator><name>getIfExists</name></name><argument_list>(<argument><expr><name>tableId</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>getStreamManager</name><argument_list>()</argument_list></call><operator>.</operator><call><name>createStreamReceiver</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>totalStreams</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>totalStreams</name></name> <operator>=</operator> <name>totalStreams</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>totalSize</name></name> <operator>=</operator> <name>totalSize</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Process received stream.
+     *
+     * @param stream Stream received.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>received</name><parameter_list>(<parameter><decl><type><name>IncomingStream</name></type> <name>stream</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkState</name></name><argument_list>(<argument><expr><operator>!</operator><call><name><name>session</name><operator>.</operator><name>isPreview</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="string">"we should never receive sstables when previewing"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>done</name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"[{}] Received stream {} on already finished stream received task. Aborting stream."</literal></expr></argument>, <argument><expr><call><name><name>session</name><operator>.</operator><name>planId</name></name><argument_list>()</argument_list></call></expr></argument>,
+                        <argument><expr><call><name><name>stream</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>receiver</name><operator>.</operator><name>discardStream</name></name><argument_list>(<argument><expr><name>stream</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <expr_stmt><expr><name>remoteStreamsReceived</name> <operator>+=</operator> <call><name><name>stream</name><operator>.</operator><name>getNumFiles</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>bytesReceived</name> <operator>+=</operator> <call><name><name>stream</name><operator>.</operator><name>getSize</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><call><name><name>tableId</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name><name>stream</name><operator>.</operator><name>getTableId</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"received {} of {} total files, {} of total bytes {}"</literal></expr></argument>, <argument><expr><name>remoteStreamsReceived</name></expr></argument>, <argument><expr><name>totalStreams</name></expr></argument>,
+                     <argument><expr><name>bytesReceived</name></expr></argument>, <argument><expr><call><name><name>stream</name><operator>.</operator><name>getSize</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>receiver</name><operator>.</operator><name>received</name></name><argument_list>(<argument><expr><name>stream</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>remoteStreamsReceived</name> <operator>==</operator> <name>totalStreams</name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>done</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>executor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>OnCompletionRunnable</name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getTotalNumberOfFiles</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>totalStreams</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getTotalSize</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>totalSize</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>StreamReceiver</name></type> <name>getReceiver</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>done</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Stream receive task %s of cf %s already finished."</literal></expr></argument>, <argument><expr><call><name><name>session</name><operator>.</operator><name>planId</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>tableId</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <return>return <expr><name>receiver</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>OnCompletionRunnable</name> <super_list><implements>implements <super><name>Runnable</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>StreamReceiveTask</name></type> <name>task</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>OnCompletionRunnable</name><parameter_list>(<parameter><decl><type><name>StreamReceiveTask</name></type> <name>task</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>task</name></name> <operator>=</operator> <name>task</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>ColumnFamilyStore</name><operator>.</operator><name>getIfExists</name></name><argument_list>(<argument><expr><name><name>task</name><operator>.</operator><name>tableId</name></name></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <comment type="line">// schema was dropped during streaming</comment>
+                    <expr_stmt><expr><call><name><name>task</name><operator>.</operator><name>receiver</name><operator>.</operator><name>abort</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>task</name><operator>.</operator><name>session</name><operator>.</operator><name>taskCompleted</name></name><argument_list>(<argument><expr><name>task</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+
+                <expr_stmt><expr><call><name><name>task</name><operator>.</operator><name>receiver</name><operator>.</operator><name>finished</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>task</name><operator>.</operator><name>session</name><operator>.</operator><name>taskCompleted</name></name><argument_list>(<argument><expr><name>task</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>JVMStabilityInspector</name><operator>.</operator><name>inspectThrowable</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>task</name><operator>.</operator><name>session</name><operator>.</operator><name>onError</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch>
+            <finally>finally
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>task</name><operator>.</operator><name>receiver</name><operator>.</operator><name>cleanup</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></finally></try>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * Abort this task.
+     * If the task already received all files and
+     * {@link org.apache.cassandra.streaming.StreamReceiveTask.OnCompletionRunnable} task is submitted,
+     * then task cannot be aborted.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>abort</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>done</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><name>done</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>receiver</name><operator>.</operator><name>abort</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>shutdownAndWait</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>timeout</name></decl></parameter>, <parameter><decl><type><name>TimeUnit</name></type> <name>unit</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>InterruptedException</name></expr></argument>, <argument><expr><name>TimeoutException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>shutdown</name><argument_list>(<argument><expr><name>executor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>awaitTermination</name><argument_list>(<argument><expr><name>timeout</name></expr></argument>, <argument><expr><name>unit</name></expr></argument>, <argument><expr><name>executor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

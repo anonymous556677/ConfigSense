@@ -1,0 +1,973 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/cql3/QueryProcessor.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentHashMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicInteger</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>github</name><operator>.</operator><name>benmanes</name><operator>.</operator><name>caffeine</name><operator>.</operator><name>cache</name><operator>.</operator><name>Cache</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>github</name><operator>.</operator><name>benmanes</name><operator>.</operator><name>caffeine</name><operator>.</operator><name>cache</name><operator>.</operator><name>Caffeine</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Predicate</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>primitives</name><operator>.</operator><name>Ints</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>MoreExecutors</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>antlr</name><operator>.</operator><name>runtime</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ScheduledExecutors</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>ClientRequestMetrics</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>ClientRequestsMetricsHolder</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>Schema</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>SchemaChangeListener</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>SchemaConstants</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>functions</name><operator>.</operator><name>Function</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>functions</name><operator>.</operator><name>FunctionName</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>statements</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>RowIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>PartitionIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>PartitionIterators</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>marshal</name><operator>.</operator><name>AbstractType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>gms</name><operator>.</operator><name>Gossiper</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>CQLMetrics</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>pager</name><operator>.</operator><name>QueryPager</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>tracing</name><operator>.</operator><name>Tracing</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name><operator>.</operator><name>ProtocolVersion</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name><operator>.</operator><name>messages</name><operator>.</operator><name>ResultMessage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>*</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>CassandraRelevantProperties</name><operator>.</operator><name>ENABLE_NODELOCAL_QUERIES</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cql3</name><operator>.</operator><name>statements</name><operator>.</operator><name>RequestValidations</name><operator>.</operator><name>checkTrue</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>QueryProcessor</name> <super_list><implements>implements <super><name>QueryHandler</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>CassandraVersion</name></type> <name>CQL_VERSION</name> <init>= <expr><operator>new</operator> <call><name>CassandraVersion</name><argument_list>(<argument><expr><literal type="string">"3.4.5"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// See comments on QueryProcessor #prepare</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>CassandraVersion</name></type> <name>NEW_PREPARED_STATEMENT_BEHAVIOUR_SINCE_30</name> <init>= <expr><operator>new</operator> <call><name>CassandraVersion</name><argument_list>(<argument><expr><literal type="string">"3.0.26"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>CassandraVersion</name></type> <name>NEW_PREPARED_STATEMENT_BEHAVIOUR_SINCE_3X</name> <init>= <expr><operator>new</operator> <call><name>CassandraVersion</name><argument_list>(<argument><expr><literal type="string">"3.11.12"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>CassandraVersion</name></type> <name>NEW_PREPARED_STATEMENT_BEHAVIOUR_SINCE_40</name> <init>= <expr><operator>new</operator> <call><name>CassandraVersion</name><argument_list>(<argument><expr><literal type="string">"4.0.2"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>QueryProcessor</name></type> <name>instance</name> <init>= <expr><operator>new</operator> <call><name>QueryProcessor</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>QueryProcessor</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>Cache</name><argument_list type="generic">&lt;<argument><name>MD5Digest</name></argument>, <argument><name>Prepared</name></argument>&gt;</argument_list></name></type> <name>preparedStatements</name></decl>;</decl_stmt>
+
+    <comment type="line">// A map for prepared statements used internally (which we don't want to mix with user statement, in particular we don't</comment>
+    <comment type="line">// bother with expiration on those.</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>ConcurrentMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>Prepared</name></argument>&gt;</argument_list></name></type> <name>internalStatements</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// Direct calls to processStatement do not increment the preparedStatementsExecuted/regularStatementsExecuted</comment>
+    <comment type="line">// counters. Callers of processStatement are responsible for correctly notifying metrics</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>CQLMetrics</name></type> <name>metrics</name> <init>= <expr><operator>new</operator> <call><name>CQLMetrics</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>AtomicInteger</name></type> <name>lastMinuteEvictionsCount</name> <init>= <expr><operator>new</operator> <call><name>AtomicInteger</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <static>static
+    <block>{<block_content>
+        <expr_stmt><expr><name>preparedStatements</name> <operator>=</operator> <call><name><name>Caffeine</name><operator>.</operator><name>newBuilder</name></name><argument_list>()</argument_list></call>
+                             <operator>.</operator><call><name>executor</name><argument_list>(<argument><expr><call><name><name>MoreExecutors</name><operator>.</operator><name>directExecutor</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call>
+                             <operator>.</operator><call><name>maximumWeight</name><argument_list>(<argument><expr><call><name>capacityToBytes</name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getPreparedStatementsCacheSizeMB</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call>
+                             <operator>.</operator><call><name>weigher</name><argument_list>(<argument><expr><name>QueryProcessor</name><operator>::</operator><name>measure</name></expr></argument>)</argument_list></call>
+                             <operator>.</operator><call><name>removalListener</name><argument_list>(<argument><expr><lambda><parameter_list>(<parameter><decl><name>key</name></decl></parameter>, <parameter><decl><name>prepared</name></decl></parameter>, <parameter><decl><name>cause</name></decl></parameter>)</parameter_list> -&gt; <block>{<block_content>
+                                 <decl_stmt><decl><type><name>MD5Digest</name></type> <name>md5Digest</name> <init>= <expr><operator>(</operator><name>MD5Digest</name><operator>)</operator> <name>key</name></expr></init></decl>;</decl_stmt>
+                                 <if_stmt><if>if <condition>(<expr><call><name><name>cause</name><operator>.</operator><name>wasEvicted</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                                 <block>{<block_content>
+                                     <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>preparedStatementsEvicted</name><operator>.</operator><name>inc</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                                     <expr_stmt><expr><call><name><name>lastMinuteEvictionsCount</name><operator>.</operator><name>incrementAndGet</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                                     <expr_stmt><expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>removePreparedStatement</name></name><argument_list>(<argument><expr><name>md5Digest</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                                 </block_content>}</block></if></if_stmt>
+                             </block_content>}</block></lambda></expr></argument>)</argument_list></call><operator>.</operator><call><name>build</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>ScheduledExecutors</name><operator>.</operator><name>scheduledTasks</name><operator>.</operator><name>scheduleAtFixedRate</name></name><argument_list>(<argument><expr><lambda><parameter_list>()</parameter_list> -&gt; <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>count</name> <init>= <expr><call><name><name>lastMinuteEvictionsCount</name><operator>.</operator><name>getAndSet</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>count</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"{} prepared statements discarded in the last minute because cache limit reached ({} MB)"</literal></expr></argument>,
+                            <argument><expr><name>count</name></expr></argument>,
+                            <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getPreparedStatementsCacheSizeMB</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></lambda></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MINUTES</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Initialized prepared statement caches with {} MB"</literal></expr></argument>,
+                    <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getPreparedStatementsCacheSizeMB</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></static>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>long</name></type> <name>capacityToBytes</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>cacheSizeMB</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>cacheSizeMB</name> <operator>*</operator> <literal type="number">1024</literal> <operator>*</operator> <literal type="number">1024</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>int</name></type> <name>preparedStatementsCount</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>preparedStatements</name><operator>.</operator><name>asMap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// Work around initialization dependency</comment>
+    <enum><specifier>private</specifier> enum <name>InternalStateInstance</name>
+    <block>{
+        <decl><name>INSTANCE</name></decl>;
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ClientState</name></type> <name>clientState</name></decl>;</decl_stmt>
+
+        <constructor><name>InternalStateInstance</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name>clientState</name> <operator>=</operator> <call><name><name>ClientState</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>(<argument><expr><name><name>SchemaConstants</name><operator>.</operator><name>SYSTEM_KEYSPACE_NAME</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+    }</block></enum>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>preloadPreparedStatements</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>count</name> <init>= <expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>loadPreparedStatements</name></name><argument_list>(<argument><expr><lambda><parameter_list>(<parameter><decl><name>id</name></decl></parameter>, <parameter><decl><name>query</name></decl></parameter>, <parameter><decl><name>keyspace</name></decl></parameter>)</parameter_list> -&gt; <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>ClientState</name></type> <name>clientState</name> <init>= <expr><call><name><name>ClientState</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>keyspace</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>clientState</name><operator>.</operator><name>setKeyspace</name></name><argument_list>(<argument><expr><name>keyspace</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                <decl_stmt><decl><type><name>Prepared</name></type> <name>prepared</name> <init>= <expr><call><name>parseAndPrepare</name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><name>clientState</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>preparedStatements</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>id</name></expr></argument>, <argument><expr><name>prepared</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <comment type="line">// Preload `null` statement for non-fully qualified statements, since it can't be parsed if loaded from cache and will be dropped</comment>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><name><name>prepared</name><operator>.</operator><name>fullyQualified</name></name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>preparedStatements</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name>computeId</name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><lambda><parameter_list>(<parameter><decl><name>ignored_</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name>prepared</name></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>RequestValidationException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>JVMStabilityInspector</name><operator>.</operator><name>inspectThrowable</name></name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Prepared statement recreation error, removing statement: %s %s %s"</literal></expr></argument>, <argument><expr><name>id</name></expr></argument>, <argument><expr><name>query</name></expr></argument>, <argument><expr><name>keyspace</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>removePreparedStatement</name></name><argument_list>(<argument><expr><name>id</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></lambda></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Preloaded {} prepared statements"</literal></expr></argument>, <argument><expr><name>count</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+
+    <comment type="block" format="javadoc">/**
+     * Clears the prepared statement cache.
+     * @param memoryOnly {@code true} if only the in memory caches must be cleared, {@code false} otherwise.
+     */</comment>
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>clearPreparedStatements</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>memoryOnly</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>preparedStatements</name><operator>.</operator><name>invalidateAll</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>memoryOnly</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>resetPreparedStatements</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name><name>ConcurrentMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>Prepared</name></argument>&gt;</argument_list></name></type> <name>getInternalStatements</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>internalStatements</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>QueryState</name></type> <name>internalQueryState</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>QueryState</name><argument_list>(<argument><expr><name><name>InternalStateInstance</name><operator>.</operator><name>INSTANCE</name><operator>.</operator><name>clientState</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <constructor><specifier>private</specifier> <name>QueryProcessor</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>registerListener</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>StatementInvalidatingListener</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>evictPrepared</name><parameter_list>(<parameter><decl><type><name>MD5Digest</name></type> <name>id</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>preparedStatements</name><operator>.</operator><name>invalidate</name></name><argument_list>(<argument><expr><name>id</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>removePreparedStatement</name></name><argument_list>(<argument><expr><name>id</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>HashMap</name><argument_list type="generic">&lt;<argument><name>MD5Digest</name></argument>, <argument><name>Prepared</name></argument>&gt;</argument_list></name></type> <name>getPreparedStatements</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>preparedStatements</name><operator>.</operator><name>asMap</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Prepared</name></type> <name>getPrepared</name><parameter_list>(<parameter><decl><type><name>MD5Digest</name></type> <name>id</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>preparedStatements</name><operator>.</operator><name>getIfPresent</name></name><argument_list>(<argument><expr><name>id</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>validateKey</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>key</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>key</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>key</name><operator>.</operator><name>remaining</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>)</condition>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Key may not be empty"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>key</name> <operator>==</operator> <name><name>ByteBufferUtil</name><operator>.</operator><name>UNSET_BYTE_BUFFER</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Key may not be unset"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <comment type="line">// check that key can be handled by FBUtilities.writeShortByteArray</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>key</name><operator>.</operator><name>remaining</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <name><name>FBUtilities</name><operator>.</operator><name>MAX_UNSIGNED_SHORT</name></name></expr>)</condition>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Key length of "</literal> <operator>+</operator> <call><name><name>key</name><operator>.</operator><name>remaining</name></name><argument_list>()</argument_list></call> <operator>+</operator>
+                                              <literal type="string">" is longer than maximum of "</literal> <operator>+</operator> <name><name>FBUtilities</name><operator>.</operator><name>MAX_UNSIGNED_SHORT</name></name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ResultMessage</name></type> <name>processStatement</name><parameter_list>(<parameter><decl><type><name>CQLStatement</name></type> <name>statement</name></decl></parameter>, <parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>QueryOptions</name></type> <name>options</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument>, <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Process {} @CL.{}"</literal></expr></argument>, <argument><expr><name>statement</name></expr></argument>, <argument><expr><call><name><name>options</name><operator>.</operator><name>getConsistency</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>ClientState</name></type> <name>clientState</name> <init>= <expr><call><name><name>queryState</name><operator>.</operator><name>getClientState</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>statement</name><operator>.</operator><name>authorize</name></name><argument_list>(<argument><expr><name>clientState</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>statement</name><operator>.</operator><name>validate</name></name><argument_list>(<argument><expr><name>clientState</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>ResultMessage</name></type> <name>result</name> <init>= <expr><ternary><condition><expr><call><name><name>options</name><operator>.</operator><name>getConsistency</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>ConsistencyLevel</name><operator>.</operator><name>NODE_LOCAL</name></name></expr>
+                             ?</condition><then> <expr><call><name>processNodeLocalStatement</name><argument_list>(<argument><expr><name>statement</name></expr></argument>, <argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>)</argument_list></call></expr>
+                             </then><else>: <expr><call><name><name>statement</name><operator>.</operator><name>execute</name></name><argument_list>(<argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+        <return>return <expr><ternary><condition><expr><name>result</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><operator>new</operator> <call><name><name>ResultMessage</name><operator>.</operator><name>Void</name></name><argument_list>()</argument_list></call></expr> </then><else>: <expr><name>result</name></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>ResultMessage</name></type> <name>processNodeLocalStatement</name><parameter_list>(<parameter><decl><type><name>CQLStatement</name></type> <name>statement</name></decl></parameter>, <parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>QueryOptions</name></type> <name>options</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>ENABLE_NODELOCAL_QUERIES</name><operator>.</operator><name>getBoolean</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"NODE_LOCAL consistency level is highly dangerous and should be used only for debugging purposes"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>statement</name> <operator>instanceof</operator> <name>BatchStatement</name> <operator>||</operator> <name>statement</name> <operator>instanceof</operator> <name>ModificationStatement</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>processNodeLocalWrite</name><argument_list>(<argument><expr><name>statement</name></expr></argument>, <argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+        <if type="elseif">else if <condition>(<expr><name>statement</name> <operator>instanceof</operator> <name>SelectStatement</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>processNodeLocalSelect</name><argument_list>(<argument><expr><operator>(</operator><name>SelectStatement</name><operator>)</operator> <name>statement</name></expr></argument>, <argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"NODE_LOCAL consistency level can only be used with BATCH, UPDATE, INSERT, DELETE, and SELECT statements"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>ResultMessage</name></type> <name>processNodeLocalWrite</name><parameter_list>(<parameter><decl><type><name>CQLStatement</name></type> <name>statement</name></decl></parameter>, <parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>QueryOptions</name></type> <name>options</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ClientRequestMetrics</name></type>  <name>levelMetrics</name> <init>= <expr><call><name><name>ClientRequestsMetricsHolder</name><operator>.</operator><name>writeMetricsForLevel</name></name><argument_list>(<argument><expr><name><name>ConsistencyLevel</name><operator>.</operator><name>NODE_LOCAL</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ClientRequestMetrics</name></type> <name>globalMetrics</name> <init>= <expr><name><name>ClientRequestsMetricsHolder</name><operator>.</operator><name>writeMetrics</name></name></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>startTime</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <return>return <expr><call><name><name>statement</name><operator>.</operator><name>executeLocally</name></name><argument_list>(<argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <finally>finally
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>latency</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>startTime</name></expr></init></decl>;</decl_stmt>
+             <expr_stmt><expr><call><name><name>levelMetrics</name><operator>.</operator><name>addNano</name></name><argument_list>(<argument><expr><name>latency</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>globalMetrics</name><operator>.</operator><name>addNano</name></name><argument_list>(<argument><expr><name>latency</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></finally></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>ResultMessage</name></type> <name>processNodeLocalSelect</name><parameter_list>(<parameter><decl><type><name>SelectStatement</name></type> <name>statement</name></decl></parameter>, <parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>QueryOptions</name></type> <name>options</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ClientRequestMetrics</name></type>  <name>levelMetrics</name> <init>= <expr><call><name><name>ClientRequestsMetricsHolder</name><operator>.</operator><name>readMetricsForLevel</name></name><argument_list>(<argument><expr><name><name>ConsistencyLevel</name><operator>.</operator><name>NODE_LOCAL</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ClientRequestMetrics</name></type> <name>globalMetrics</name> <init>= <expr><name><name>ClientRequestsMetricsHolder</name><operator>.</operator><name>readMetrics</name></name></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>isBootstrapMode</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>SchemaConstants</name><operator>.</operator><name>isLocalSystemKeyspace</name></name><argument_list>(<argument><expr><call><name><name>statement</name><operator>.</operator><name>keyspace</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>levelMetrics</name><operator>.</operator><name>unavailables</name><operator>.</operator><name>mark</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>globalMetrics</name><operator>.</operator><name>unavailables</name><operator>.</operator><name>mark</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <throw>throw <expr><operator>new</operator> <call><name>IsBootstrappingException</name><argument_list>()</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>startTime</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <return>return <expr><call><name><name>statement</name><operator>.</operator><name>executeLocally</name></name><argument_list>(<argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <finally>finally
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>latency</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>startTime</name></expr></init></decl>;</decl_stmt>
+             <expr_stmt><expr><call><name><name>levelMetrics</name><operator>.</operator><name>addNano</name></name><argument_list>(<argument><expr><name>latency</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>globalMetrics</name><operator>.</operator><name>addNano</name></name><argument_list>(<argument><expr><name>latency</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></finally></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>ResultMessage</name></type> <name>process</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>queryString</name></decl></parameter>, <parameter><decl><type><name>ConsistencyLevel</name></type> <name>cl</name></decl></parameter>, <parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument>, <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>QueryOptions</name></type> <name>options</name> <init>= <expr><call><name><name>QueryOptions</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>(<argument><expr><name>cl</name></expr></argument>, <argument><expr><name><name>Collections</name><operator>.</operator></name>&lt;<name>ByteBuffer</name><operator>&gt;</operator><call><name>emptyList</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>CQLStatement</name></type> <name>statement</name> <init>= <expr><call><name><name>instance</name><operator>.</operator><name>parse</name></name><argument_list>(<argument><expr><name>queryString</name></expr></argument>, <argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>instance</name><operator>.</operator><name>process</name></name><argument_list>(<argument><expr><name>statement</name></expr></argument>, <argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>CQLStatement</name></type> <name>parse</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>queryString</name></decl></parameter>, <parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>QueryOptions</name></type> <name>options</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>getStatement</name><argument_list>(<argument><expr><name>queryString</name></expr></argument>, <argument><expr><call><name><name>queryState</name><operator>.</operator><name>getClientState</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>cloneWithKeyspaceIfSet</name><argument_list>(<argument><expr><call><name><name>options</name><operator>.</operator><name>getKeyspace</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ResultMessage</name></type> <name>process</name><parameter_list>(<parameter><decl><type><name>CQLStatement</name></type> <name>statement</name></decl></parameter>,
+                                 <parameter><decl><type><name>QueryState</name></type> <name>state</name></decl></parameter>,
+                                 <parameter><decl><type><name>QueryOptions</name></type> <name>options</name></decl></parameter>,
+                                 <parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>customPayload</name></decl></parameter>,
+                                 <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument>, <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <return>return <expr><call><name>process</name><argument_list>(<argument><expr><name>statement</name></expr></argument>, <argument><expr><name>state</name></expr></argument>, <argument><expr><name>options</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ResultMessage</name></type> <name>process</name><parameter_list>(<parameter><decl><type><name>CQLStatement</name></type> <name>prepared</name></decl></parameter>, <parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>QueryOptions</name></type> <name>options</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument>, <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>options</name><operator>.</operator><name>prepare</name></name><argument_list>(<argument><expr><call><name><name>prepared</name><operator>.</operator><name>getBindVariables</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>prepared</name><operator>.</operator><name>getBindVariables</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call> <operator>!=</operator> <call><name><name>options</name><operator>.</operator><name>getValues</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Invalid amount of bind variables"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>queryState</name><operator>.</operator><name>getClientState</name></name><argument_list>()</argument_list></call><operator>.</operator><name>isInternal</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>regularStatementsExecuted</name><operator>.</operator><name>inc</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name>processStatement</name><argument_list>(<argument><expr><name>prepared</name></expr></argument>, <argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>CQLStatement</name></type> <name>parseStatement</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>queryStr</name></decl></parameter>, <parameter><decl><type><name>ClientState</name></type> <name>clientState</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <return>return <expr><call><name>getStatement</name><argument_list>(<argument><expr><name>queryStr</name></expr></argument>, <argument><expr><name>clientState</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>UntypedResultSet</name></type> <name>process</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>ConsistencyLevel</name></type> <name>cl</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <return>return <expr><call><name>process</name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><name>cl</name></expr></argument>, <argument><expr><name><name>Collections</name><operator>.</operator></name>&lt;<name>ByteBuffer</name><operator>&gt;</operator><call><name>emptyList</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>UntypedResultSet</name></type> <name>process</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>ConsistencyLevel</name></type> <name>cl</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>values</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>QueryState</name></type> <name>queryState</name> <init>= <expr><call><name><name>QueryState</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>QueryOptions</name></type> <name>options</name> <init>= <expr><call><name><name>QueryOptions</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>(<argument><expr><name>cl</name></expr></argument>, <argument><expr><name>values</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>CQLStatement</name></type> <name>statement</name> <init>= <expr><call><name><name>instance</name><operator>.</operator><name>parse</name></name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ResultMessage</name></type> <name>result</name> <init>= <expr><call><name><name>instance</name><operator>.</operator><name>process</name></name><argument_list>(<argument><expr><name>statement</name></expr></argument>, <argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>, <argument><expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>result</name> <operator>instanceof</operator> <name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>UntypedResultSet</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><operator>(</operator><operator>(</operator><name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name><operator>)</operator><name>result</name><operator>)</operator><operator>.</operator><name>result</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>QueryOptions</name></type> <name>makeInternalOptions</name><parameter_list>(<parameter><decl><type><name>CQLStatement</name></type> <name>prepared</name></decl></parameter>, <parameter><decl><type><name><name>Object</name><index>[]</index></name></type> <name>values</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>makeInternalOptions</name><argument_list>(<argument><expr><name>prepared</name></expr></argument>, <argument><expr><name>values</name></expr></argument>, <argument><expr><name><name>ConsistencyLevel</name><operator>.</operator><name>ONE</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>QueryOptions</name></type> <name>makeInternalOptions</name><parameter_list>(<parameter><decl><type><name>CQLStatement</name></type> <name>prepared</name></decl></parameter>, <parameter><decl><type><name><name>Object</name><index>[]</index></name></type> <name>values</name></decl></parameter>, <parameter><decl><type><name>ConsistencyLevel</name></type> <name>cl</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>prepared</name><operator>.</operator><name>getBindVariables</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call> <operator>!=</operator> <name><name>values</name><operator>.</operator><name>length</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Invalid number of values. Expecting %d but got %d"</literal></expr></argument>, <argument><expr><call><name><name>prepared</name><operator>.</operator><name>getBindVariables</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>values</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>boundValues</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name><name>values</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>values</name><operator>.</operator><name>length</name></name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Object</name></type> <name>value</name> <init>= <expr><name><name>values</name><index>[<expr><name>i</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>AbstractType</name></type> <name>type</name> <init>= <expr><call><name><name>prepared</name><operator>.</operator><name>getBindVariables</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call><operator>.</operator><name>type</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>boundValues</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><ternary><condition><expr><name>value</name> <operator>instanceof</operator> <name>ByteBuffer</name> <operator>||</operator> <name>value</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><operator>(</operator><name>ByteBuffer</name><operator>)</operator><name>value</name></expr> </then><else>: <expr><call><name><name>type</name><operator>.</operator><name>decompose</name></name><argument_list>(<argument><expr><name>value</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><call><name><name>QueryOptions</name><operator>.</operator><name>forInternalCalls</name></name><argument_list>(<argument><expr><name>cl</name></expr></argument>, <argument><expr><name>boundValues</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>Prepared</name></type> <name>prepareInternal</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Prepared</name></type> <name>prepared</name> <init>= <expr><call><name><name>internalStatements</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>query</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>prepared</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>prepared</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><name>prepared</name> <operator>=</operator> <call><name>parseAndPrepare</name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><call><name>internalQueryState</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getClientState</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>internalStatements</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><name>prepared</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>prepared</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>Prepared</name></type> <name>parseAndPrepare</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>ClientState</name></type> <name>clientState</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isInternal</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>CQLStatement</name><operator>.</operator><name>Raw</name></name></type> <name>raw</name> <init>= <expr><call><name>parseStatement</name><argument_list>(<argument><expr><name>query</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>boolean</name></type> <name>fullyQualified</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>String</name></type> <name>keyspace</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// Set keyspace for statement that require login</comment>
+        <if_stmt><if>if <condition>(<expr><name>raw</name> <operator>instanceof</operator> <name>QualifiedStatement</name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>QualifiedStatement</name></type> <name>qualifiedStatement</name> <init>= <expr><operator>(</operator><operator>(</operator><name>QualifiedStatement</name><operator>)</operator> <name>raw</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>fullyQualified</name> <operator>=</operator> <call><name><name>qualifiedStatement</name><operator>.</operator><name>isFullyQualified</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>qualifiedStatement</name><operator>.</operator><name>setKeyspace</name></name><argument_list>(<argument><expr><name>clientState</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>keyspace</name> <operator>=</operator> <call><name><name>qualifiedStatement</name><operator>.</operator><name>keyspace</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <comment type="line">// Note: if 2 threads prepare the same query, we'll live so don't bother synchronizing</comment>
+        <decl_stmt><decl><type><name>CQLStatement</name></type> <name>statement</name> <init>= <expr><call><name><name>raw</name><operator>.</operator><name>prepare</name></name><argument_list>(<argument><expr><name>clientState</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>statement</name><operator>.</operator><name>validate</name></name><argument_list>(<argument><expr><name>clientState</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>isInternal</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><operator>new</operator> <call><name>Prepared</name><argument_list>(<argument><expr><name>statement</name></expr></argument>, <argument><expr><literal type="string">""</literal></expr></argument>, <argument><expr><name>fullyQualified</name></expr></argument>, <argument><expr><name>keyspace</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <return>return <expr><operator>new</operator> <call><name>Prepared</name><argument_list>(<argument><expr><name>statement</name></expr></argument>, <argument><expr><name>query</name></expr></argument>, <argument><expr><name>fullyQualified</name></expr></argument>, <argument><expr><name>keyspace</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>UntypedResultSet</name></type> <name>executeInternal</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>Object</name><modifier>...</modifier></type> <name>values</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Prepared</name></type> <name>prepared</name> <init>= <expr><call><name>prepareInternal</name><argument_list>(<argument><expr><name>query</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ResultMessage</name></type> <name>result</name> <init>= <expr><call><name><name>prepared</name><operator>.</operator><name>statement</name><operator>.</operator><name>executeLocally</name></name><argument_list>(<argument><expr><call><name>internalQueryState</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>makeInternalOptions</name><argument_list>(<argument><expr><name><name>prepared</name><operator>.</operator><name>statement</name></name></expr></argument>, <argument><expr><name>values</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>result</name> <operator>instanceof</operator> <name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>UntypedResultSet</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><operator>(</operator><operator>(</operator><name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name><operator>)</operator><name>result</name><operator>)</operator><operator>.</operator><name>result</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>UntypedResultSet</name></type> <name>execute</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>ConsistencyLevel</name></type> <name>cl</name></decl></parameter>, <parameter><decl><type><name>Object</name><modifier>...</modifier></type> <name>values</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <return>return <expr><call><name>execute</name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><name>cl</name></expr></argument>, <argument><expr><call><name>internalQueryState</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>values</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>UntypedResultSet</name></type> <name>execute</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>ConsistencyLevel</name></type> <name>cl</name></decl></parameter>, <parameter><decl><type><name>QueryState</name></type> <name>state</name></decl></parameter>, <parameter><decl><type><name>Object</name><modifier>...</modifier></type> <name>values</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument></throws>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Prepared</name></type> <name>prepared</name> <init>= <expr><call><name>prepareInternal</name><argument_list>(<argument><expr><name>query</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>ResultMessage</name></type> <name>result</name> <init>= <expr><call><name><name>prepared</name><operator>.</operator><name>statement</name><operator>.</operator><name>execute</name></name><argument_list>(<argument><expr><name>state</name></expr></argument>, <argument><expr><call><name>makeInternalOptions</name><argument_list>(<argument><expr><name><name>prepared</name><operator>.</operator><name>statement</name></name></expr></argument>, <argument><expr><name>values</name></expr></argument>, <argument><expr><name>cl</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>result</name> <operator>instanceof</operator> <name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><call><name><name>UntypedResultSet</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><operator>(</operator><operator>(</operator><name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name><operator>)</operator><name>result</name><operator>)</operator><operator>.</operator><name>result</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></else></if_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>RequestValidationException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><literal type="string">"Error validating "</literal> <operator>+</operator> <name>query</name></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>UntypedResultSet</name></type> <name>executeInternalWithPaging</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>pageSize</name></decl></parameter>, <parameter><decl><type><name>Object</name><modifier>...</modifier></type> <name>values</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Prepared</name></type> <name>prepared</name> <init>= <expr><call><name>prepareInternal</name><argument_list>(<argument><expr><name>query</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><operator>(</operator><name><name>prepared</name><operator>.</operator><name>statement</name></name> <operator>instanceof</operator> <name>SelectStatement</name><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Only SELECTs can be paged"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>SelectStatement</name></type> <name>select</name> <init>= <expr><operator>(</operator><name>SelectStatement</name><operator>)</operator><name><name>prepared</name><operator>.</operator><name>statement</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>QueryPager</name></type> <name>pager</name> <init>= <expr><call><name><name>select</name><operator>.</operator><name>getQuery</name></name><argument_list>(<argument><expr><call><name>makeInternalOptions</name><argument_list>(<argument><expr><name><name>prepared</name><operator>.</operator><name>statement</name></name></expr></argument>, <argument><expr><name>values</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>nowInSeconds</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>getPager</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name><name>ProtocolVersion</name><operator>.</operator><name>CURRENT</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>UntypedResultSet</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>select</name></expr></argument>, <argument><expr><name>pager</name></expr></argument>, <argument><expr><name>pageSize</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Same than executeLocally, but to use for queries we know are only executed once so that the
+     * created statement object is not cached.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>UntypedResultSet</name></type> <name>executeOnceInternal</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>Object</name><modifier>...</modifier></type> <name>values</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>executeOnceInternal</name><argument_list>(<argument><expr><call><name>internalQueryState</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>query</name></expr></argument>, <argument><expr><name>values</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Execute an internal query with the provided {@code nowInSec} and {@code timestamp} for the {@code QueryState}.
+     * &lt;p&gt;This method ensure that the statement will not be cached in the prepared statement cache.&lt;/p&gt;
+     */</comment>
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>UntypedResultSet</name></type> <name>executeOnceInternalWithNowAndTimestamp</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>timestamp</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>Object</name><modifier>...</modifier></type> <name>values</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>QueryState</name></type> <name>queryState</name> <init>= <expr><operator>new</operator> <call><name>QueryState</name><argument_list>(<argument><expr><name><name>InternalStateInstance</name><operator>.</operator><name>INSTANCE</name><operator>.</operator><name>clientState</name></name></expr></argument>, <argument><expr><name>timestamp</name></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name>executeOnceInternal</name><argument_list>(<argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>query</name></expr></argument>, <argument><expr><name>values</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>UntypedResultSet</name></type> <name>executeOnceInternal</name><parameter_list>(<parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>Object</name><modifier>...</modifier></type> <name>values</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>CQLStatement</name></type> <name>statement</name> <init>= <expr><call><name>parseStatement</name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><call><name><name>queryState</name><operator>.</operator><name>getClientState</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>statement</name><operator>.</operator><name>validate</name></name><argument_list>(<argument><expr><call><name><name>queryState</name><operator>.</operator><name>getClientState</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>ResultMessage</name></type> <name>result</name> <init>= <expr><call><name><name>statement</name><operator>.</operator><name>executeLocally</name></name><argument_list>(<argument><expr><name>queryState</name></expr></argument>, <argument><expr><call><name>makeInternalOptions</name><argument_list>(<argument><expr><name>statement</name></expr></argument>, <argument><expr><name>values</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>result</name> <operator>instanceof</operator> <name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>UntypedResultSet</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><operator>(</operator><operator>(</operator><name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name><operator>)</operator><name>result</name><operator>)</operator><operator>.</operator><name>result</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * A special version of executeLocally that takes the time used as "now" for the query in argument.
+     * Note that this only make sense for Selects so this only accept SELECT statements and is only useful in rare
+     * cases.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>UntypedResultSet</name></type> <name>executeInternalWithNow</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>nowInSec</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>Object</name><modifier>...</modifier></type> <name>values</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Prepared</name></type> <name>prepared</name> <init>= <expr><call><name>prepareInternal</name><argument_list>(<argument><expr><name>query</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <assert>assert <expr><name><name>prepared</name><operator>.</operator><name>statement</name></name> <operator>instanceof</operator> <name>SelectStatement</name></expr>;</assert>
+        <decl_stmt><decl><type><name>SelectStatement</name></type> <name>select</name> <init>= <expr><operator>(</operator><name>SelectStatement</name><operator>)</operator><name><name>prepared</name><operator>.</operator><name>statement</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ResultMessage</name></type> <name>result</name> <init>= <expr><call><name><name>select</name><operator>.</operator><name>executeInternal</name></name><argument_list>(<argument><expr><call><name>internalQueryState</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>makeInternalOptions</name><argument_list>(<argument><expr><name><name>prepared</name><operator>.</operator><name>statement</name></name></expr></argument>, <argument><expr><name>values</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>nowInSec</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <assert>assert <expr><name>result</name> <operator>instanceof</operator> <name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name></expr>;</assert>
+        <return>return <expr><call><name><name>UntypedResultSet</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><operator>(</operator><operator>(</operator><name><name>ResultMessage</name><operator>.</operator><name>Rows</name></name><operator>)</operator><name>result</name><operator>)</operator><operator>.</operator><name>result</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>UntypedResultSet</name></type> <name>resultify</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>RowIterator</name></type> <name>partition</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>resultify</name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><call><name><name>PartitionIterators</name><operator>.</operator><name>singletonIterator</name></name><argument_list>(<argument><expr><name>partition</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>UntypedResultSet</name></type> <name>resultify</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>, <parameter><decl><type><name>PartitionIterator</name></type> <name>partitions</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <try>try <init>(<decl><type><name>PartitionIterator</name></type> <name>iter</name> <init>= <expr><name>partitions</name></expr></init></decl>)</init>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>SelectStatement</name></type> <name>ss</name> <init>= <expr><operator>(</operator><name>SelectStatement</name><operator>)</operator> <call><name>getStatement</name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>ResultSet</name></type> <name>cqlRows</name> <init>= <expr><call><name><name>ss</name><operator>.</operator><name>process</name></name><argument_list>(<argument><expr><name>iter</name></expr></argument>, <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>nowInSeconds</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <return>return <expr><call><name><name>UntypedResultSet</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>cqlRows</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>ResultMessage</name><operator>.</operator><name>Prepared</name></name></type> <name>prepare</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>query</name></decl></parameter>,
+                                          <parameter><decl><type><name>ClientState</name></type> <name>clientState</name></decl></parameter>,
+                                          <parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>customPayload</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <return>return <expr><call><name>prepare</name><argument_list>(<argument><expr><name>query</name></expr></argument>, <argument><expr><name>clientState</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>boolean</name></type> <name>newPreparedStatementBehaviour</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>useNewPreparedStatementBehaviour</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>newPreparedStatementBehaviour</name> <operator>||</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getForceNewPreparedStatementBehaviour</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <synchronized>synchronized <init>(<expr><name>this</name></expr>)</init>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>CassandraVersion</name></type> <name>minVersion</name> <init>= <expr><call><name><name>Gossiper</name><operator>.</operator><name>instance</name><operator>.</operator><name>getMinVersion</name></name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getWriteRpcTimeout</name></name><argument_list>(<argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>minVersion</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator>
+                <operator>(</operator><operator>(</operator><name><name>minVersion</name><operator>.</operator><name>major</name></name> <operator>==</operator> <literal type="number">3</literal> <operator>&amp;&amp;</operator> <name><name>minVersion</name><operator>.</operator><name>minor</name></name> <operator>==</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <call><name><name>minVersion</name><operator>.</operator><name>compareTo</name></name><argument_list>(<argument><expr><name>NEW_PREPARED_STATEMENT_BEHAVIOUR_SINCE_30</name></expr></argument>)</argument_list></call> <operator>&gt;=</operator> <literal type="number">0</literal><operator>)</operator> <operator>||</operator>
+                 <operator>(</operator><name><name>minVersion</name><operator>.</operator><name>major</name></name> <operator>==</operator> <literal type="number">3</literal> <operator>&amp;&amp;</operator> <name><name>minVersion</name><operator>.</operator><name>minor</name></name> <operator>&gt;</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <call><name><name>minVersion</name><operator>.</operator><name>compareTo</name></name><argument_list>(<argument><expr><name>NEW_PREPARED_STATEMENT_BEHAVIOUR_SINCE_3X</name></expr></argument>)</argument_list></call> <operator>&gt;=</operator> <literal type="number">0</literal><operator>)</operator> <operator>||</operator>
+                 <operator>(</operator><call><name><name>minVersion</name><operator>.</operator><name>compareTo</name></name><argument_list>(<argument><expr><name>NEW_PREPARED_STATEMENT_BEHAVIOUR_SINCE_40</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call> <operator>&gt;=</operator> <literal type="number">0</literal><operator>)</operator><operator>)</operator></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Fully upgraded to at least {}"</literal></expr></argument>, <argument><expr><name>minVersion</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>newPreparedStatementBehaviour</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <return>return <expr><name>newPreparedStatementBehaviour</name></expr>;</return>
+        </block_content>}</block></synchronized>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * This method got slightly out of hand, but this is with best intentions: to allow users to be upgraded from any
+     * prior version, and help implementers avoid previous mistakes by clearly separating fully qualified and non-fully
+     * qualified statement behaviour.
+     *
+     * Basically we need to handle 4 different hashes here;
+     * 1. fully qualified query with keyspace
+     * 2. fully qualified query without keyspace
+     * 3. unqualified query with keyspace
+     * 4. unqualified query without keyspace
+     *
+     * The correct combination to return is 2/3 - the problem is during upgrades (assuming upgrading from &lt; 3.0.26)
+     * - Existing clients have hash 1 or 3
+     * - Query prepared on a 3.0.25/3.11.12/4.0.2 instance needs to return hash 1/3 to be able to execute it on a 3.0.25 instance
+     * - This is handled by the useNewPreparedStatementBehaviour flag - while there still are 3.0.25 instances in
+     *   the cluster we always return hash 1/3
+     * - Once fully upgraded we start returning hash 2/3, this will cause a prepared statement id mismatch for existing
+     *   clients, but they will be able to continue using the old prepared statement id after that exception since we
+     *   store the query both with and without keyspace.
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>ResultMessage</name><operator>.</operator><name>Prepared</name></name></type> <name>prepare</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>queryString</name></decl></parameter>, <parameter><decl><type><name>ClientState</name></type> <name>clientState</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>useNewPreparedStatementBehaviour</name> <init>= <expr><call><name>useNewPreparedStatementBehaviour</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>MD5Digest</name></type> <name>hashWithoutKeyspace</name> <init>= <expr><call><name>computeId</name><argument_list>(<argument><expr><name>queryString</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>MD5Digest</name></type> <name>hashWithKeyspace</name> <init>= <expr><call><name>computeId</name><argument_list>(<argument><expr><name>queryString</name></expr></argument>, <argument><expr><call><name><name>clientState</name><operator>.</operator><name>getRawKeyspace</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Prepared</name></type> <name>cachedWithoutKeyspace</name> <init>= <expr><call><name><name>preparedStatements</name><operator>.</operator><name>getIfPresent</name></name><argument_list>(<argument><expr><name>hashWithoutKeyspace</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Prepared</name></type> <name>cachedWithKeyspace</name> <init>= <expr><call><name><name>preparedStatements</name><operator>.</operator><name>getIfPresent</name></name><argument_list>(<argument><expr><name>hashWithKeyspace</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// We assume it is only safe to return cached prepare if we have both instances</comment>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>safeToReturnCached</name> <init>= <expr><name>cachedWithoutKeyspace</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>cachedWithKeyspace</name> <operator>!=</operator> <literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>safeToReturnCached</name></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>useNewPreparedStatementBehaviour</name></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name><name>cachedWithoutKeyspace</name><operator>.</operator><name>fullyQualified</name></name></expr>)</condition><block type="pseudo"><block_content> <comment type="line">// For fully qualified statements, we always skip keyspace to avoid digest switching</comment>
+                    <return>return <expr><call><name>createResultMessage</name><argument_list>(<argument><expr><name>hashWithoutKeyspace</name></expr></argument>, <argument><expr><name>cachedWithoutKeyspace</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><call><name><name>clientState</name><operator>.</operator><name>getRawKeyspace</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><name><name>cachedWithKeyspace</name><operator>.</operator><name>fullyQualified</name></name></expr>)</condition><block type="pseudo"><block_content> <comment type="line">// For non-fully qualified statements, we always include keyspace to avoid ambiguity</comment>
+                    <return>return <expr><call><name>createResultMessage</name><argument_list>(<argument><expr><name>hashWithKeyspace</name></expr></argument>, <argument><expr><name>cachedWithKeyspace</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+            </block_content>}</block></if>
+            <else>else <comment type="line">// legacy caches, pre-CASSANDRA-15252 behaviour</comment>
+            <block>{<block_content>
+                <return>return <expr><call><name>createResultMessage</name><argument_list>(<argument><expr><name>hashWithKeyspace</name></expr></argument>, <argument><expr><name>cachedWithKeyspace</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <comment type="line">// Make sure the missing one is going to be eventually re-prepared</comment>
+            <expr_stmt><expr><call><name>evictPrepared</name><argument_list>(<argument><expr><name>hashWithKeyspace</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>evictPrepared</name><argument_list>(<argument><expr><name>hashWithoutKeyspace</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+
+        <decl_stmt><decl><type><name>Prepared</name></type> <name>prepared</name> <init>= <expr><call><name>parseAndPrepare</name><argument_list>(<argument><expr><name>queryString</name></expr></argument>, <argument><expr><name>clientState</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>CQLStatement</name></type> <name>statement</name> <init>= <expr><name><name>prepared</name><operator>.</operator><name>statement</name></name></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>int</name></type> <name>boundTerms</name> <init>= <expr><call><name><name>statement</name><operator>.</operator><name>getBindVariables</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>boundTerms</name> <operator>&gt;</operator> <name><name>FBUtilities</name><operator>.</operator><name>MAX_UNSIGNED_SHORT</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Too many markers(?). %d markers exceed the allowed maximum of %d"</literal></expr></argument>, <argument><expr><name>boundTerms</name></expr></argument>, <argument><expr><name><name>FBUtilities</name><operator>.</operator><name>MAX_UNSIGNED_SHORT</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name><name>prepared</name><operator>.</operator><name>fullyQualified</name></name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>ResultMessage</name><operator>.</operator><name>Prepared</name></name></type> <name>qualifiedWithoutKeyspace</name> <init>= <expr><call><name>storePreparedStatement</name><argument_list>(<argument><expr><name>queryString</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>prepared</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>ResultMessage</name><operator>.</operator><name>Prepared</name></name></type> <name>qualifiedWithKeyspace</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>clientState</name><operator>.</operator><name>getRawKeyspace</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>qualifiedWithKeyspace</name> <operator>=</operator> <call><name>storePreparedStatement</name><argument_list>(<argument><expr><name>queryString</name></expr></argument>, <argument><expr><call><name><name>clientState</name><operator>.</operator><name>getRawKeyspace</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>prepared</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><name>useNewPreparedStatementBehaviour</name> <operator>&amp;&amp;</operator> <name>qualifiedWithKeyspace</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name>qualifiedWithKeyspace</name></expr>;</return></block_content></block></if></if_stmt>
+
+            <return>return <expr><name>qualifiedWithoutKeyspace</name></expr>;</return>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>clientState</name><operator>.</operator><name>warnAboutUseWithPreparedStatements</name></name><argument_list>(<argument><expr><name>hashWithKeyspace</name></expr></argument>, <argument><expr><call><name><name>clientState</name><operator>.</operator><name>getRawKeyspace</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <decl_stmt><decl><type><name><name>ResultMessage</name><operator>.</operator><name>Prepared</name></name></type> <name>nonQualifiedWithKeyspace</name> <init>= <expr><call><name>storePreparedStatement</name><argument_list>(<argument><expr><name>queryString</name></expr></argument>, <argument><expr><call><name><name>clientState</name><operator>.</operator><name>getRawKeyspace</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>prepared</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>ResultMessage</name><operator>.</operator><name>Prepared</name></name></type> <name>nonQualifiedWithNullKeyspace</name> <init>= <expr><call><name>storePreparedStatement</name><argument_list>(<argument><expr><name>queryString</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>prepared</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><name>useNewPreparedStatementBehaviour</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name>nonQualifiedWithNullKeyspace</name></expr>;</return></block_content></block></if></if_stmt>
+
+            <return>return <expr><name>nonQualifiedWithKeyspace</name></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>MD5Digest</name></type> <name>computeId</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>queryString</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>keyspace</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>toHash</name> <init>= <expr><ternary><condition><expr><name>keyspace</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>queryString</name></expr> </then><else>: <expr><name>keyspace</name> <operator>+</operator> <name>queryString</name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>MD5Digest</name><operator>.</operator><name>compute</name></name><argument_list>(<argument><expr><name>toHash</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name><name>ResultMessage</name><operator>.</operator><name>Prepared</name></name></type> <name>getStoredPreparedStatement</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>queryString</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>clientKeyspace</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>MD5Digest</name></type> <name>statementId</name> <init>= <expr><call><name>computeId</name><argument_list>(<argument><expr><name>queryString</name></expr></argument>, <argument><expr><name>clientKeyspace</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Prepared</name></type> <name>existing</name> <init>= <expr><call><name><name>preparedStatements</name><operator>.</operator><name>getIfPresent</name></name><argument_list>(<argument><expr><name>statementId</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>existing</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name>checkTrue</name><argument_list>(<argument><expr><call><name><name>queryString</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>existing</name><operator>.</operator><name>rawCQLStatement</name></name></expr></argument>)</argument_list></call></expr></argument>,
+                <argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"MD5 hash collision: query with the same MD5 hash was already prepared. \n Existing: '%s'"</literal></expr></argument>, <argument><expr><name><name>existing</name><operator>.</operator><name>rawCQLStatement</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <return>return <expr><call><name>createResultMessage</name><argument_list>(<argument><expr><name>statementId</name></expr></argument>, <argument><expr><name>existing</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>private</specifier> <specifier>static</specifier> <name><name>ResultMessage</name><operator>.</operator><name>Prepared</name></name></type> <name>createResultMessage</name><parameter_list>(<parameter><decl><type><name>MD5Digest</name></type> <name>statementId</name></decl></parameter>, <parameter><decl><type><name>Prepared</name></type> <name>existing</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>ResultSet</name><operator>.</operator><name>PreparedMetadata</name></name></type> <name>preparedMetadata</name> <init>= <expr><call><name><name>ResultSet</name><operator>.</operator><name>PreparedMetadata</name><operator>.</operator><name>fromPrepared</name></name><argument_list>(<argument><expr><name><name>existing</name><operator>.</operator><name>statement</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>ResultSet</name><operator>.</operator><name>ResultMetadata</name></name></type> <name>resultMetadata</name> <init>= <expr><call><name><name>ResultSet</name><operator>.</operator><name>ResultMetadata</name><operator>.</operator><name>fromPrepared</name></name><argument_list>(<argument><expr><name><name>existing</name><operator>.</operator><name>statement</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <call><name><name>ResultMessage</name><operator>.</operator><name>Prepared</name></name><argument_list>(<argument><expr><name>statementId</name></expr></argument>, <argument><expr><call><name><name>resultMetadata</name><operator>.</operator><name>getResultMetadataId</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>preparedMetadata</name></expr></argument>, <argument><expr><name>resultMetadata</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name><name>ResultMessage</name><operator>.</operator><name>Prepared</name></name></type> <name>storePreparedStatement</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>queryString</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>keyspace</name></decl></parameter>, <parameter><decl><type><name>Prepared</name></type> <name>prepared</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+    <block>{<block_content>
+        <comment type="line">// Concatenate the current keyspace so we don't mix prepared statements between keyspace (#5352).</comment>
+        <comment type="line">// (if the keyspace is null, queryString has to have a fully-qualified keyspace so it's fine.</comment>
+        <decl_stmt><decl><type><name>long</name></type> <name>statementSize</name> <init>= <expr><call><name><name>ObjectSizes</name><operator>.</operator><name>measureDeep</name></name><argument_list>(<argument><expr><name><name>prepared</name><operator>.</operator><name>statement</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// don't execute the statement if it's bigger than the allowed threshold</comment>
+        <if_stmt><if>if <condition>(<expr><name>statementSize</name> <operator>&gt;</operator> <call><name>capacityToBytes</name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getPreparedStatementsCacheSizeMB</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Prepared statement of size %d bytes is larger than allowed maximum of %d MB: %s..."</literal></expr></argument>,
+                                                            <argument><expr><name>statementSize</name></expr></argument>,
+                                                            <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getPreparedStatementsCacheSizeMB</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                            <argument><expr><call><name><name>queryString</name><operator>.</operator><name>substring</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="number">200</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <decl_stmt><decl><type><name>MD5Digest</name></type> <name>statementId</name> <init>= <expr><call><name>computeId</name><argument_list>(<argument><expr><name>queryString</name></expr></argument>, <argument><expr><name>keyspace</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Prepared</name></type> <name>previous</name> <init>= <expr><call><name><name>preparedStatements</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>statementId</name></expr></argument>, <argument><expr><lambda><parameter_list>(<parameter><decl><name>ignored_</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name>prepared</name></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>previous</name> <operator>==</operator> <name>prepared</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>writePreparedStatement</name></name><argument_list>(<argument><expr><name>keyspace</name></expr></argument>, <argument><expr><name>statementId</name></expr></argument>, <argument><expr><name>queryString</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>writePreparedStatement</name></name><argument_list>(<argument><expr><name>keyspace</name></expr></argument>, <argument><expr><name>statementId</name></expr></argument>, <argument><expr><name>queryString</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name><name>ResultSet</name><operator>.</operator><name>PreparedMetadata</name></name></type> <name>preparedMetadata</name> <init>= <expr><call><name><name>ResultSet</name><operator>.</operator><name>PreparedMetadata</name><operator>.</operator><name>fromPrepared</name></name><argument_list>(<argument><expr><name><name>prepared</name><operator>.</operator><name>statement</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>ResultSet</name><operator>.</operator><name>ResultMetadata</name></name></type> <name>resultMetadata</name> <init>= <expr><call><name><name>ResultSet</name><operator>.</operator><name>ResultMetadata</name><operator>.</operator><name>fromPrepared</name></name><argument_list>(<argument><expr><name><name>prepared</name><operator>.</operator><name>statement</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <call><name><name>ResultMessage</name><operator>.</operator><name>Prepared</name></name><argument_list>(<argument><expr><name>statementId</name></expr></argument>, <argument><expr><call><name><name>resultMetadata</name><operator>.</operator><name>getResultMetadataId</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>preparedMetadata</name></expr></argument>, <argument><expr><name>resultMetadata</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ResultMessage</name></type> <name>processPrepared</name><parameter_list>(<parameter><decl><type><name>CQLStatement</name></type> <name>statement</name></decl></parameter>,
+                                         <parameter><decl><type><name>QueryState</name></type> <name>state</name></decl></parameter>,
+                                         <parameter><decl><type><name>QueryOptions</name></type> <name>options</name></decl></parameter>,
+                                         <parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>customPayload</name></decl></parameter>,
+                                         <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+                                                 <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument>, <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <return>return <expr><call><name>processPrepared</name><argument_list>(<argument><expr><name>statement</name></expr></argument>, <argument><expr><name>state</name></expr></argument>, <argument><expr><name>options</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ResultMessage</name></type> <name>processPrepared</name><parameter_list>(<parameter><decl><type><name>CQLStatement</name></type> <name>statement</name></decl></parameter>, <parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>QueryOptions</name></type> <name>options</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument>, <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>variables</name> <init>= <expr><call><name><name>options</name><operator>.</operator><name>getValues</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// Check to see if there are any bound variables to verify</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><operator>(</operator><call><name><name>variables</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>statement</name><operator>.</operator><name>getBindVariables</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isEmpty</name><argument_list>()</argument_list></call><operator>)</operator></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>variables</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <call><name><name>statement</name><operator>.</operator><name>getBindVariables</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"there were %d markers(?) in CQL but %d bound variables"</literal></expr></argument>,
+                                                                <argument><expr><call><name><name>statement</name><operator>.</operator><name>getBindVariables</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call></expr></argument>,
+                                                                <argument><expr><call><name><name>variables</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <comment type="line">// at this point there is a match in count between markers and variables that is non-zero</comment>
+            <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <call><name><name>variables</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"[{}] '{}'"</literal></expr></argument>, <argument><expr><name>i</name><operator>+</operator><literal type="number">1</literal></expr></argument>, <argument><expr><call><name><name>variables</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for></block_content></block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>metrics</name><operator>.</operator><name>preparedStatementsExecuted</name><operator>.</operator><name>inc</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name>processStatement</name><argument_list>(<argument><expr><name>statement</name></expr></argument>, <argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ResultMessage</name></type> <name>processBatch</name><parameter_list>(<parameter><decl><type><name>BatchStatement</name></type> <name>statement</name></decl></parameter>,
+                                      <parameter><decl><type><name>QueryState</name></type> <name>state</name></decl></parameter>,
+                                      <parameter><decl><type><name>BatchQueryOptions</name></type> <name>options</name></decl></parameter>,
+                                      <parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>customPayload</name></decl></parameter>,
+                                      <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+                                              <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument>, <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <return>return <expr><call><name>processBatch</name><argument_list>(<argument><expr><name>statement</name></expr></argument>, <argument><expr><name>state</name></expr></argument>, <argument><expr><name>options</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ResultMessage</name></type> <name>processBatch</name><parameter_list>(<parameter><decl><type><name>BatchStatement</name></type> <name>batch</name></decl></parameter>, <parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>BatchQueryOptions</name></type> <name>options</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestExecutionException</name></expr></argument>, <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ClientState</name></type> <name>clientState</name> <init>= <expr><call><name><name>queryState</name><operator>.</operator><name>getClientState</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>cloneWithKeyspaceIfSet</name><argument_list>(<argument><expr><call><name><name>options</name><operator>.</operator><name>getKeyspace</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>batch</name><operator>.</operator><name>authorize</name></name><argument_list>(<argument><expr><name>clientState</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>batch</name><operator>.</operator><name>validate</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>batch</name><operator>.</operator><name>validate</name></name><argument_list>(<argument><expr><name>clientState</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name><name>batch</name><operator>.</operator><name>execute</name></name><argument_list>(<argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>options</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>CQLStatement</name></type> <name>getStatement</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>queryStr</name></decl></parameter>, <parameter><decl><type><name>ClientState</name></type> <name>clientState</name></decl></parameter>)</parameter_list>
+    <throws>throws <argument><expr><name>RequestValidationException</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Parsing {}"</literal></expr></argument>, <argument><expr><name>queryStr</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name><name>CQLStatement</name><operator>.</operator><name>Raw</name></name></type> <name>statement</name> <init>= <expr><call><name>parseStatement</name><argument_list>(<argument><expr><name>queryStr</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// Set keyspace for statement that require login</comment>
+        <if_stmt><if>if <condition>(<expr><name>statement</name> <operator>instanceof</operator> <name>QualifiedStatement</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><operator>(</operator><operator>(</operator><name>QualifiedStatement</name><operator>)</operator> <name>statement</name><operator>)</operator><operator>.</operator><call><name>setKeyspace</name><argument_list>(<argument><expr><name>clientState</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Preparing statement"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name><name>statement</name><operator>.</operator><name>prepare</name></name><argument_list>(<argument><expr><name>clientState</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <parameter_list type="generic">&lt;<parameter><name>T</name> <extends>extends <name>CQLStatement</name><operator>.</operator><name>Raw</name></extends></parameter>&gt;</parameter_list> <name>T</name></type> <name>parseStatement</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>queryStr</name></decl></parameter>, <parameter><decl><type><name><name>Class</name><argument_list type="generic">&lt;<argument><name>T</name></argument>&gt;</argument_list></name></type> <name>klass</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>type</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>SyntaxException</name></expr></argument></throws>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>CQLStatement</name><operator>.</operator><name>Raw</name></name></type> <name>stmt</name> <init>= <expr><call><name>parseStatement</name><argument_list>(<argument><expr><name>queryStr</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>klass</name><operator>.</operator><name>isAssignableFrom</name></name><argument_list>(<argument><expr><call><name><name>stmt</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Invalid query, must be a "</literal> <operator>+</operator> <name>type</name> <operator>+</operator> <literal type="string">" statement but was: "</literal> <operator>+</operator> <call><name><name>stmt</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <return>return <expr><call><name><name>klass</name><operator>.</operator><name>cast</name></name><argument_list>(<argument><expr><name>stmt</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>RequestValidationException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><call><name><name>e</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>CQLStatement</name><operator>.</operator><name>Raw</name></name></type> <name>parseStatement</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>queryStr</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>SyntaxException</name></expr></argument></throws>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <return>return <expr><call><name><name>CQLFragmentParser</name><operator>.</operator><name>parseAnyUnhandled</name></name><argument_list>(<argument><expr><name>CqlParser</name><operator>::</operator><name>query</name></expr></argument>, <argument><expr><name>queryStr</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>CassandraException</name></type> <name>ce</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><name>ce</name></expr>;</throw>
+        </block_content>}</block></catch>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>RuntimeException</name></type> <name>re</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"The statement: [%s] could not be parsed."</literal></expr></argument>, <argument><expr><name>queryStr</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>re</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <throw>throw <expr><operator>new</operator> <call><name>SyntaxException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Failed parsing statement: [%s] reason: %s %s"</literal></expr></argument>,
+                                                    <argument><expr><name>queryStr</name></expr></argument>,
+                                                    <argument><expr><call><name><name>re</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getSimpleName</name><argument_list>()</argument_list></call></expr></argument>,
+                                                    <argument><expr><call><name><name>re</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>RecognitionException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>SyntaxException</name><argument_list>(<argument><expr><literal type="string">"Invalid or malformed CQL query string: "</literal> <operator>+</operator> <call><name><name>e</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>int</name></type> <name>measure</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>key</name></decl></parameter>, <parameter><decl><type><name>Prepared</name></type> <name>value</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>Ints</name><operator>.</operator><name>checkedCast</name></name><argument_list>(<argument><expr><call><name><name>ObjectSizes</name><operator>.</operator><name>measureDeep</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call> <operator>+</operator> <call><name><name>ObjectSizes</name><operator>.</operator><name>measureDeep</name></name><argument_list>(<argument><expr><name>value</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Clear our internal statmeent cache for test purposes.
+     */</comment>
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>clearInternalStatementsCache</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>internalStatements</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>clearPreparedStatementsCache</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>preparedStatements</name><operator>.</operator><name>asMap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>clear</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>StatementInvalidatingListener</name> <super_list><extends>extends <super><name>SchemaChangeListener</name></super></extends></super_list>
+    <block>{
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>removeInvalidPreparedStatements</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>cfName</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>removeInvalidPreparedStatements</name><argument_list>(<argument><expr><call><name><name>internalStatements</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>iterator</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>cfName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>removeInvalidPersistentPreparedStatements</name><argument_list>(<argument><expr><call><name><name>preparedStatements</name><operator>.</operator><name>asMap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>entrySet</name><argument_list>()</argument_list></call><operator>.</operator><call><name>iterator</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>cfName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>removeInvalidPreparedStatementsForFunction</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>functionName</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Predicate</name><argument_list type="generic">&lt;<argument><name>Function</name></argument>&gt;</argument_list></name></type> <name>matchesFunction</name> <init>= <expr><lambda><parameter_list type="pseudo"><parameter><decl><name>f</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>ksName</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name><name>f</name><operator>.</operator><name>name</name></name><argument_list>()</argument_list></call><operator>.</operator><name>keyspace</name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>functionName</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name><name>f</name><operator>.</operator><name>name</name></name><argument_list>()</argument_list></call><operator>.</operator><name>name</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></init></decl>;</decl_stmt>
+
+            <for>for <control>(<init><decl><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>MD5Digest</name></argument>, <argument><name>Prepared</name></argument>&gt;</argument_list></name></name></argument>&gt;</argument_list></name></type> <name>iter</name> <init>= <expr><call><name><name>preparedStatements</name><operator>.</operator><name>asMap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>entrySet</name><argument_list>()</argument_list></call><operator>.</operator><call><name>iterator</name><argument_list>()</argument_list></call></expr></init></decl>;</init>
+                 <condition><expr><call><name><name>iter</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>;</condition><incr/>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>MD5Digest</name></argument>, <argument><name>Prepared</name></argument>&gt;</argument_list></name></name></type> <name>pstmt</name> <init>= <expr><call><name><name>iter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>Iterables</name><operator>.</operator><name>any</name></name><argument_list>(<argument><expr><call><name><name>pstmt</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name><name>statement</name><operator>.</operator><name>getFunctions</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>matchesFunction</name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>removePreparedStatement</name></name><argument_list>(<argument><expr><call><name><name>pstmt</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>iter</name><operator>.</operator><name>remove</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></for>
+
+
+            <expr_stmt><expr><call><name><name>Iterators</name><operator>.</operator><name>removeIf</name></name><argument_list>(<argument><expr><call><name><name>internalStatements</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>iterator</name><argument_list>()</argument_list></call></expr></argument>,
+                               <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>statement</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>Iterables</name><operator>.</operator><name>any</name></name><argument_list>(<argument><expr><call><name><name>statement</name><operator>.</operator><name>statement</name><operator>.</operator><name>getFunctions</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>matchesFunction</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>removeInvalidPersistentPreparedStatements</name><parameter_list>(<parameter><decl><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>MD5Digest</name></argument>, <argument><name>Prepared</name></argument>&gt;</argument_list></name></name></argument>&gt;</argument_list></name></type> <name>iterator</name></decl></parameter>,
+                                                                      <parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>cfName</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <while>while <condition>(<expr><call><name><name>iterator</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>MD5Digest</name></argument>, <argument><name>Prepared</name></argument>&gt;</argument_list></name></name></type> <name>entry</name> <init>= <expr><call><name><name>iterator</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name>shouldInvalidate</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>cfName</name></expr></argument>, <argument><expr><call><name><name>entry</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call><operator>.</operator><name>statement</name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>SystemKeyspace</name><operator>.</operator><name>removePreparedStatement</name></name><argument_list>(<argument><expr><call><name><name>entry</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>iterator</name><operator>.</operator><name>remove</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>removeInvalidPreparedStatements</name><parameter_list>(<parameter><decl><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>Prepared</name></argument>&gt;</argument_list></name></type> <name>iterator</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>cfName</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <while>while <condition>(<expr><call><name><name>iterator</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name>shouldInvalidate</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>cfName</name></expr></argument>, <argument><expr><call><name><name>iterator</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call><operator>.</operator><name>statement</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>iterator</name><operator>.</operator><name>remove</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>shouldInvalidate</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>cfName</name></decl></parameter>, <parameter><decl><type><name>CQLStatement</name></type> <name>statement</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>statementKsName</name></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>String</name></type> <name>statementCfName</name></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>statement</name> <operator>instanceof</operator> <name>ModificationStatement</name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>ModificationStatement</name></type> <name>modificationStatement</name> <init>= <expr><operator>(</operator><operator>(</operator><name>ModificationStatement</name><operator>)</operator> <name>statement</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><name>statementKsName</name> <operator>=</operator> <call><name><name>modificationStatement</name><operator>.</operator><name>keyspace</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>statementCfName</name> <operator>=</operator> <call><name><name>modificationStatement</name><operator>.</operator><name>columnFamily</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><name>statement</name> <operator>instanceof</operator> <name>SelectStatement</name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>SelectStatement</name></type> <name>selectStatement</name> <init>= <expr><operator>(</operator><operator>(</operator><name>SelectStatement</name><operator>)</operator> <name>statement</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><name>statementKsName</name> <operator>=</operator> <call><name><name>selectStatement</name><operator>.</operator><name>keyspace</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>statementCfName</name> <operator>=</operator> <call><name><name>selectStatement</name><operator>.</operator><name>columnFamily</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><name>statement</name> <operator>instanceof</operator> <name>BatchStatement</name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>BatchStatement</name></type> <name>batchStatement</name> <init>= <expr><operator>(</operator><operator>(</operator><name>BatchStatement</name><operator>)</operator> <name>statement</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+                <for>for <control>(<init><decl><type><name>ModificationStatement</name></type> <name>stmt</name> <range>: <expr><call><name><name>batchStatement</name><operator>.</operator><name>getStatements</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name>shouldInvalidate</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>cfName</name></expr></argument>, <argument><expr><name>stmt</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+                </block_content>}</block></for>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            </block_content>}</block></else></if_stmt>
+
+            <return>return <expr><call><name><name>ksName</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>statementKsName</name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <operator>(</operator><name>cfName</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>cfName</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name>statementCfName</name></expr></argument>)</argument_list></call><operator>)</operator></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>onCreateFunction</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>functionName</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>argTypes</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>onCreateFunctionInternal</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>functionName</name></expr></argument>, <argument><expr><name>argTypes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>onCreateAggregate</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>aggregateName</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>argTypes</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>onCreateFunctionInternal</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>aggregateName</name></expr></argument>, <argument><expr><name>argTypes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>onCreateFunctionInternal</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>functionName</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>argTypes</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// in case there are other overloads, we have to remove all overloads since argument type</comment>
+            <comment type="line">// matching may change (due to type casting)</comment>
+            <if_stmt><if>if <condition>(<expr><call><name><name>Schema</name><operator>.</operator><name>instance</name><operator>.</operator><name>getKeyspaceMetadata</name></name><argument_list>(<argument><expr><name>ksName</name></expr></argument>)</argument_list></call><operator>.</operator><call><name><name>functions</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>FunctionName</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>functionName</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">1</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>removeInvalidPreparedStatementsForFunction</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>functionName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>onAlterTable</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>cfName</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>affectsStatements</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Column definitions for {}.{} changed, invalidating related prepared statements"</literal></expr></argument>, <argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>cfName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>affectsStatements</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name>removeInvalidPreparedStatements</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>cfName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>onAlterFunction</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>functionName</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>argTypes</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// Updating a function may imply we've changed the body of the function, so we need to invalid statements so that</comment>
+            <comment type="line">// the new definition is picked (the function is resolved at preparation time).</comment>
+            <comment type="line">// TODO: if the function has multiple overload, we could invalidate only the statement refering to the overload</comment>
+            <comment type="line">// that was updated. This requires a few changes however and probably doesn't matter much in practice.</comment>
+            <expr_stmt><expr><call><name>removeInvalidPreparedStatementsForFunction</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>functionName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>onAlterAggregate</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>aggregateName</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>argTypes</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// Updating a function may imply we've changed the body of the function, so we need to invalid statements so that</comment>
+            <comment type="line">// the new definition is picked (the function is resolved at preparation time).</comment>
+            <comment type="line">// TODO: if the function has multiple overload, we could invalidate only the statement refering to the overload</comment>
+            <comment type="line">// that was updated. This requires a few changes however and probably doesn't matter much in practice.</comment>
+            <expr_stmt><expr><call><name>removeInvalidPreparedStatementsForFunction</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>aggregateName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>onDropKeyspace</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Keyspace {} was dropped, invalidating related prepared statements"</literal></expr></argument>, <argument><expr><name>ksName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>removeInvalidPreparedStatements</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>onDropTable</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>cfName</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Table {}.{} was dropped, invalidating related prepared statements"</literal></expr></argument>, <argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>cfName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>removeInvalidPreparedStatements</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>cfName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>onDropFunction</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>functionName</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>argTypes</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>removeInvalidPreparedStatementsForFunction</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>functionName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>onDropAggregate</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>ksName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>aggregateName</name></decl></parameter>, <parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name><name>AbstractType</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>argTypes</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>removeInvalidPreparedStatementsForFunction</name><argument_list>(<argument><expr><name>ksName</name></expr></argument>, <argument><expr><name>aggregateName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

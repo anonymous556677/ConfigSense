@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/transport/ConnectionLimitHandler.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name></name>;</package>
+
+
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>Channel</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>ChannelHandler</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>ChannelHandlerContext</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>ChannelInboundHandlerAdapter</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>Attribute</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>AttributeKey</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>NoSpamLogger</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>InetAddress</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>InetSocketAddress</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>SocketAddress</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentHashMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicLong</name></name>;</import>
+
+
+<comment type="block" format="javadoc">/**
+ * {@link ChannelInboundHandlerAdapter} implementation which allows to limit the number of concurrent
+ * connections to the Server. Be aware this &lt;strong&gt;MUST&lt;/strong&gt; be shared between all child channels.
+ */</comment>
+<class><annotation>@<name><name>ChannelHandler</name><operator>.</operator><name>Sharable</name></name></annotation>
+<specifier>final</specifier> class <name>ConnectionLimitHandler</name> <super_list><extends>extends <super><name>ChannelInboundHandlerAdapter</name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>ConnectionLimitHandler</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>NoSpamLogger</name></type> <name>noSpamLogger</name> <init>= <expr><call><name><name>NoSpamLogger</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name>logger</name></expr></argument>, <argument><expr><literal type="number">1L</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MINUTES</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AttributeKey</name><argument_list type="generic">&lt;<argument><name>InetAddress</name></argument>&gt;</argument_list></name></type> <name>addressAttributeKey</name> <init>= <expr><call><name><name>AttributeKey</name><operator>.</operator><name>valueOf</name></name><argument_list>(<argument><expr><name><name>ConnectionLimitHandler</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"address"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ConcurrentMap</name><argument_list type="generic">&lt;<argument><name>InetAddress</name></argument>, <argument><name>AtomicLong</name></argument>&gt;</argument_list></name></type> <name>connectionsPerClient</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>AtomicLong</name></type> <name>counter</name> <init>= <expr><operator>new</operator> <call><name>AtomicLong</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// Keep the remote address as a channel attribute.  The channel inactive callback needs</comment>
+    <comment type="line">// to know the entry into the connetionsPerClient map and depending on the state of the remote</comment>
+    <comment type="line">// an exception may be thrown trying to retrieve the address. Make sure the same address used</comment>
+    <comment type="line">// to increment is used for decrement.</comment>
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>InetAddress</name></type> <name>setRemoteAddressAttribute</name><parameter_list>(<parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Attribute</name><argument_list type="generic">&lt;<argument><name>InetAddress</name></argument>&gt;</argument_list></name></type> <name>addressAttribute</name> <init>= <expr><call><name><name>channel</name><operator>.</operator><name>attr</name></name><argument_list>(<argument><expr><name>addressAttributeKey</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>SocketAddress</name></type> <name>remoteAddress</name> <init>= <expr><call><name><name>channel</name><operator>.</operator><name>remoteAddress</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>remoteAddress</name> <operator>instanceof</operator> <name>InetSocketAddress</name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>addressAttribute</name><operator>.</operator><name>setIfAbsent</name></name><argument_list>(<argument><expr><operator>(</operator><operator>(</operator><name>InetSocketAddress</name><operator>)</operator> <name>remoteAddress</name><operator>)</operator><operator>.</operator><call><name>getAddress</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>noSpamLogger</name><operator>.</operator><name>warn</name></name><argument_list>(<argument><expr><literal type="string">"Remote address of unknown type: {}, skipping per-IP connection limits"</literal></expr></argument>,
+                              <argument><expr><call><name><name>remoteAddress</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <return>return <expr><call><name><name>addressAttribute</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>InetAddress</name></type> <name>getRemoteAddressAttribute</name><parameter_list>(<parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Attribute</name><argument_list type="generic">&lt;<argument><name>InetAddress</name></argument>&gt;</argument_list></name></type> <name>addressAttribute</name> <init>= <expr><call><name><name>channel</name><operator>.</operator><name>attr</name></name><argument_list>(<argument><expr><name>addressAttributeKey</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>addressAttribute</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>channelActive</name><parameter_list>(<parameter><decl><type><name>ChannelHandlerContext</name></type> <name>ctx</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>Exception</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>count</name> <init>= <expr><call><name><name>counter</name><operator>.</operator><name>incrementAndGet</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>limit</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getNativeTransportMaxConcurrentConnections</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// Setting the limit to -1 disables it.</comment>
+        <if_stmt><if>if<condition>(<expr><name>limit</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>limit</name> <operator>=</operator> <name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>count</name> <operator>&gt;</operator> <name>limit</name></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// The decrement will be done in channelClosed(...)</comment>
+            <expr_stmt><expr><call><name><name>noSpamLogger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"Exceeded maximum native connection limit of {} by using {} connections (see native_transport_max_concurrent_connections in cassandra.yaml)"</literal></expr></argument>, <argument><expr><name>limit</name></expr></argument>, <argument><expr><name>count</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>ctx</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>perIpLimit</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getNativeTransportMaxConcurrentConnectionsPerIp</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>perIpLimit</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>InetAddress</name></type> <name>address</name> <init>= <expr><call><name>setRemoteAddressAttribute</name><argument_list>(<argument><expr><call><name><name>ctx</name><operator>.</operator><name>channel</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>address</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>ctx</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+                <decl_stmt><decl><type><name>AtomicLong</name></type> <name>perIpCount</name> <init>= <expr><call><name><name>connectionsPerClient</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>address</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>perIpCount</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>perIpCount</name> <operator>=</operator> <operator>new</operator> <call><name>AtomicLong</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <decl_stmt><decl><type><name>AtomicLong</name></type> <name>old</name> <init>= <expr><call><name><name>connectionsPerClient</name><operator>.</operator><name>putIfAbsent</name></name><argument_list>(<argument><expr><name>address</name></expr></argument>, <argument><expr><name>perIpCount</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>old</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><name>perIpCount</name> <operator>=</operator> <name>old</name></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>perIpCount</name><operator>.</operator><name>incrementAndGet</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <name>perIpLimit</name></expr>)</condition>
+                <block>{<block_content>
+                    <comment type="line">// The decrement will be done in channelClosed(...)</comment>
+                    <expr_stmt><expr><call><name><name>noSpamLogger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"Exceeded maximum native connection limit per ip of {} by using {} connections (see native_transport_max_concurrent_connections_per_ip)"</literal></expr></argument>, <argument><expr><name>perIpLimit</name></expr></argument>, <argument><expr><name>perIpCount</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>ctx</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>ctx</name><operator>.</operator><name>fireChannelActive</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>channelInactive</name><parameter_list>(<parameter><decl><type><name>ChannelHandlerContext</name></type> <name>ctx</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>Exception</name></expr></argument></throws>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>counter</name><operator>.</operator><name>decrementAndGet</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>InetAddress</name></type> <name>address</name> <init>= <expr><call><name>getRemoteAddressAttribute</name><argument_list>(<argument><expr><call><name><name>ctx</name><operator>.</operator><name>channel</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><name>AtomicLong</name></type> <name>count</name> <init>= <expr><ternary><condition><expr><name>address</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>connectionsPerClient</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>address</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>count</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>count</name><operator>.</operator><name>decrementAndGet</name></name><argument_list>()</argument_list></call> <operator>&lt;=</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>connectionsPerClient</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>address</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>ctx</name><operator>.</operator><name>fireChannelInactive</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

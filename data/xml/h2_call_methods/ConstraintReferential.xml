@@ -1,0 +1,632 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/h2database/h2/src/main/org/h2/constraint/ConstraintReferential.java"><comment type="block">/*
+ * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Initial Developer: H2 Group
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>constraint</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>ArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>HashSet</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>api</name><operator>.</operator><name>ErrorCode</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>command</name><operator>.</operator><name>Prepared</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>SessionLocal</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>Expression</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>Parameter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>index</name><operator>.</operator><name>Cursor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>index</name><operator>.</operator><name>Index</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>message</name><operator>.</operator><name>DbException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>result</name><operator>.</operator><name>ResultInterface</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>result</name><operator>.</operator><name>Row</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>result</name><operator>.</operator><name>SearchRow</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>schema</name><operator>.</operator><name>Schema</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>Column</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>IndexColumn</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>Table</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>StringUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>Value</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>ValueNull</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A referential constraint.
+ */</comment>
+<class><specifier>public</specifier> class <name>ConstraintReferential</name> <super_list><extends>extends <super><name>Constraint</name></super></extends></super_list> <block>{
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>IndexColumn</name><index>[]</index></name></type> <name>columns</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>IndexColumn</name><index>[]</index></name></type> <name>refColumns</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>ConstraintActionType</name></type> <name>deleteAction</name> <init>= <expr><name><name>ConstraintActionType</name><operator>.</operator><name>RESTRICT</name></name></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>ConstraintActionType</name></type> <name>updateAction</name> <init>= <expr><name><name>ConstraintActionType</name><operator>.</operator><name>RESTRICT</name></name></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Table</name></type> <name>refTable</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Index</name></type> <name>index</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>ConstraintUnique</name></type> <name>refConstraint</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>indexOwner</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>String</name></type> <name>deleteSQL</name></decl>, <decl><type ref="prev"/><name>updateSQL</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>skipOwnTable</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>ConstraintReferential</name><parameter_list>(<parameter><decl><type><name>Schema</name></type> <name>schema</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>, <parameter><decl><type><name>Table</name></type> <name>table</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>schema</name></expr></argument>, <argument><expr><name>id</name></expr></argument>, <argument><expr><name>name</name></expr></argument>, <argument><expr><name>table</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Type</name></type> <name>getConstraintType</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name><name>Constraint</name><operator>.</operator><name>Type</name><operator>.</operator><name>REFERENTIAL</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create the SQL statement of this object so a copy of the table can be
+     * made.
+     *
+     * @param forTable the table to create the object for
+     * @param quotedName the name of this object (quoted if necessary)
+     * @return the SQL statement
+     */</comment>
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>getCreateSQLForCopy</name><parameter_list>(<parameter><decl><type><name>Table</name></type> <name>forTable</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>quotedName</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getCreateSQLForCopy</name><argument_list>(<argument><expr><name>forTable</name></expr></argument>, <argument><expr><name>refTable</name></expr></argument>, <argument><expr><name>quotedName</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create the SQL statement of this object so a copy of the table can be
+     * made.
+     *
+     * @param forTable the table to create the object for
+     * @param forRefTable the referenced table
+     * @param quotedName the name of this object (quoted if necessary)
+     * @param internalIndex add the index name to the statement
+     * @return the SQL statement
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getCreateSQLForCopy</name><parameter_list>(<parameter><decl><type><name>Table</name></type> <name>forTable</name></decl></parameter>, <parameter><decl><type><name>Table</name></type> <name>forRefTable</name></decl></parameter>,
+            <parameter><decl><type><name>String</name></type> <name>quotedName</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>internalIndex</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>builder</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>(<argument><expr><literal type="string">"ALTER TABLE "</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>forTable</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">" ADD CONSTRAINT "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>forTable</name><operator>.</operator><name>isHidden</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"IF NOT EXISTS "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name>quotedName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>comment</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" COMMENT "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>StringUtils</name><operator>.</operator><name>quoteStringSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>comment</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name><name>IndexColumn</name><index>[]</index></name></type> <name>cols</name> <init>= <expr><name>columns</name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>IndexColumn</name><index>[]</index></name></type> <name>refCols</name> <init>= <expr><name>refColumns</name></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" FOREIGN KEY("</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>IndexColumn</name><operator>.</operator><name>writeColumns</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>cols</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">')'</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>internalIndex</name> <operator>&amp;&amp;</operator> <name>indexOwner</name> <operator>&amp;&amp;</operator> <name>forTable</name> <operator>==</operator> <name><name>this</name><operator>.</operator><name>table</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" INDEX "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>index</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" REFERENCES "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name><name>this</name><operator>.</operator><name>table</name></name> <operator>==</operator> <name><name>this</name><operator>.</operator><name>refTable</name></name></expr>)</condition> <block>{<block_content>
+            <comment type="line">// self-referencing constraints: need to use new table</comment>
+            <expr_stmt><expr><call><name><name>forTable</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><call><name><name>forRefTable</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">'('</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>IndexColumn</name><operator>.</operator><name>writeColumns</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>refCols</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">')'</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>deleteAction</name> <operator>!=</operator> <name><name>ConstraintActionType</name><operator>.</operator><name>RESTRICT</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" ON DELETE "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><call><name><name>deleteAction</name><operator>.</operator><name>getSqlName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>updateAction</name> <operator>!=</operator> <name><name>ConstraintActionType</name><operator>.</operator><name>RESTRICT</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" ON UPDATE "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><call><name><name>updateAction</name><operator>.</operator><name>getSqlName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" NOCHECK"</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+
+    <comment type="block" format="javadoc">/**
+     * Get a short description of the constraint. This includes the constraint
+     * name (if set), and the constraint expression.
+     *
+     * @param searchIndex the index, or null
+     * @param check the row, or null
+     * @return the description
+     */</comment>
+    <function><type><specifier>private</specifier> <name>String</name></type> <name>getShortDescription</name><parameter_list>(<parameter><decl><type><name>Index</name></type> <name>searchIndex</name></decl></parameter>, <parameter><decl><type><name>SearchRow</name></type> <name>check</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>builder</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>(<argument><expr><call><name>getName</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">": "</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>table</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>TRACE_SQL_FLAGS</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">" FOREIGN KEY("</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>IndexColumn</name><operator>.</operator><name>writeColumns</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><name>TRACE_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">") REFERENCES "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>refTable</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>TRACE_SQL_FLAGS</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="char">'('</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>IndexColumn</name><operator>.</operator><name>writeColumns</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>refColumns</name></expr></argument>, <argument><expr><name>TRACE_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">')'</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>searchIndex</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>check</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" ("</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name><name>Column</name><index>[]</index></name></type> <name>cols</name> <init>= <expr><call><name><name>searchIndex</name><operator>.</operator><name>getColumns</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>len</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name><name>columns</name><operator>.</operator><name>length</name></name></expr></argument>, <argument><expr><name><name>cols</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>len</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>idx</name> <init>= <expr><name><name>cols</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><call><name>getColumnId</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>Value</name></type> <name>c</name> <init>= <expr><call><name><name>check</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>idx</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>i</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">", "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><ternary><condition><expr><name>c</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="string">""</literal></expr> </then><else>: <expr><call><name><name>c</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">')'</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name><name>builder</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>getCreateSQLWithoutIndexes</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getCreateSQLForCopy</name><argument_list>(<argument><expr><name>table</name></expr></argument>, <argument><expr><name>refTable</name></expr></argument>, <argument><expr><call><name>getSQL</name><argument_list>(<argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>getCreateSQL</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getCreateSQLForCopy</name><argument_list>(<argument><expr><name>table</name></expr></argument>, <argument><expr><call><name>getSQL</name><argument_list>(<argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setColumns</name><parameter_list>(<parameter><decl><type><name><name>IndexColumn</name><index>[]</index></name></type> <name>cols</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name>columns</name> <operator>=</operator> <name>cols</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>IndexColumn</name><index>[]</index></name></type> <name>getColumns</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>columns</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>Column</name></argument>&gt;</argument_list></name></type> <name>getReferencedColumns</name><parameter_list>(<parameter><decl><type><name>Table</name></type> <name>table</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>Column</name></argument>&gt;</argument_list></name></type> <name>result</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>table</name> <operator>==</operator> <name><name>this</name><operator>.</operator><name>table</name></name></expr>)</condition> <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>IndexColumn</name></type> <name>c</name> <range>: <expr><name>columns</name></expr></range></decl></init>)</control> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>result</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name><name>c</name><operator>.</operator><name>column</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>table</name> <operator>==</operator> <name><name>this</name><operator>.</operator><name>refTable</name></name></expr>)</condition> <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>IndexColumn</name></type> <name>c</name> <range>: <expr><name>refColumns</name></expr></range></decl></init>)</control> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>result</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name><name>c</name><operator>.</operator><name>column</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>result</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setRefColumns</name><parameter_list>(<parameter><decl><type><name><name>IndexColumn</name><index>[]</index></name></type> <name>refCols</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name>refColumns</name> <operator>=</operator> <name>refCols</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>IndexColumn</name><index>[]</index></name></type> <name>getRefColumns</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>refColumns</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setRefTable</name><parameter_list>(<parameter><decl><type><name>Table</name></type> <name>refTable</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>refTable</name></name> <operator>=</operator> <name>refTable</name></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>refTable</name><operator>.</operator><name>isTemporary</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name>setTemporary</name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the index to use for this constraint.
+     *
+     * @param index the index
+     * @param isOwner true if the index is generated by the system and belongs
+     *            to this constraint
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setIndex</name><parameter_list>(<parameter><decl><type><name>Index</name></type> <name>index</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isOwner</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>index</name></name> <operator>=</operator> <name>index</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>indexOwner</name></name> <operator>=</operator> <name>isOwner</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the unique constraint of the referenced table to use for this
+     * constraint.
+     *
+     * @param refConstraint
+     *            the unique constraint
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setRefConstraint</name><parameter_list>(<parameter><decl><type><name>ConstraintUnique</name></type> <name>refConstraint</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>refConstraint</name></name> <operator>=</operator> <name>refConstraint</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>removeChildrenAndResources</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>table</name><operator>.</operator><name>removeConstraint</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>refTable</name><operator>.</operator><name>removeConstraint</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>indexOwner</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>table</name><operator>.</operator><name>removeIndexOrTransferOwnership</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>index</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>database</name><operator>.</operator><name>removeMeta</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><call><name>getId</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>refTable</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>index</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>refConstraint</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>columns</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>refColumns</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>deleteSQL</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>updateSQL</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>table</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>invalidate</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>checkRow</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>Table</name></type> <name>t</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>oldRow</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>newRow</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>database</name><operator>.</operator><name>getReferentialIntegrity</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>table</name><operator>.</operator><name>getCheckForeignKeyConstraints</name></name><argument_list>()</argument_list></call> <operator>||</operator>
+                <operator>!</operator><call><name><name>refTable</name><operator>.</operator><name>getCheckForeignKeyConstraints</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>t</name> <operator>==</operator> <name>table</name></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><name>skipOwnTable</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name>checkRowOwnTable</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>oldRow</name></expr></argument>, <argument><expr><name>newRow</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>t</name> <operator>==</operator> <name>refTable</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name>checkRowRefTable</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>oldRow</name></expr></argument>, <argument><expr><name>newRow</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>checkRowOwnTable</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>oldRow</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>newRow</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>newRow</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>constraintColumnsEqual</name> <init>= <expr><name>oldRow</name> <operator>!=</operator> <literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>IndexColumn</name></type> <name>col</name> <range>: <expr><name>columns</name></expr></range></decl></init>)</control> <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>idx</name> <init>= <expr><call><name><name>col</name><operator>.</operator><name>column</name><operator>.</operator><name>getColumnId</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Value</name></type> <name>v</name> <init>= <expr><call><name><name>newRow</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>idx</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>v</name> <operator>==</operator> <name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>)</condition> <block>{<block_content>
+                <comment type="line">// return early if one of the columns is NULL</comment>
+                <return>return;</return>
+            </block_content>}</block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><name>constraintColumnsEqual</name></expr>)</condition> <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>session</name><operator>.</operator><name>areEqual</name></name><argument_list>(<argument><expr><name>v</name></expr></argument>, <argument><expr><call><name><name>oldRow</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>idx</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>constraintColumnsEqual</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+        <if_stmt><if>if <condition>(<expr><name>constraintColumnsEqual</name></expr>)</condition> <block>{<block_content>
+            <comment type="line">// return early if the key columns didn't change</comment>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>refTable</name> <operator>==</operator> <name>table</name></expr>)</condition> <block>{<block_content>
+            <comment type="line">// special case self referencing constraints:</comment>
+            <comment type="line">// check the inserted row first</comment>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>self</name> <init>= <expr><literal type="boolean">true</literal></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>len</name> <init>= <expr><name><name>columns</name><operator>.</operator><name>length</name></name></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>len</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>idx</name> <init>= <expr><name><name>columns</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><call><name><name>column</name><operator>.</operator><name>getColumnId</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>Value</name></type> <name>v</name> <init>= <expr><call><name><name>newRow</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>idx</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>Column</name></type> <name>refCol</name> <init>= <expr><name><name>refColumns</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><name>column</name></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>int</name></type> <name>refIdx</name> <init>= <expr><call><name><name>refCol</name><operator>.</operator><name>getColumnId</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>Value</name></type> <name>r</name> <init>= <expr><call><name><name>newRow</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>refIdx</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>session</name><operator>.</operator><name>areEqual</name></name><argument_list>(<argument><expr><name>r</name></expr></argument>, <argument><expr><name>v</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>self</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+                    <break>break;</break>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></for>
+            <if_stmt><if>if <condition>(<expr><name>self</name></expr>)</condition> <block>{<block_content>
+                <return>return;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>Row</name></type> <name>check</name> <init>= <expr><call><name><name>refTable</name><operator>.</operator><name>getTemplateRow</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>len</name> <init>= <expr><name><name>columns</name><operator>.</operator><name>length</name></name></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>len</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>idx</name> <init>= <expr><name><name>columns</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><call><name><name>column</name><operator>.</operator><name>getColumnId</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Value</name></type> <name>v</name> <init>= <expr><call><name><name>newRow</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>idx</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Column</name></type> <name>refCol</name> <init>= <expr><name><name>refColumns</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><name>column</name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>refIdx</name> <init>= <expr><call><name><name>refCol</name><operator>.</operator><name>getColumnId</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>check</name><operator>.</operator><name>setValue</name></name><argument_list>(<argument><expr><name>refIdx</name></expr></argument>, <argument><expr><call><name><name>refCol</name><operator>.</operator><name>convert</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>v</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <decl_stmt><decl><type><name>Index</name></type> <name>refIndex</name> <init>= <expr><call><name><name>refConstraint</name><operator>.</operator><name>getIndex</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>existsRow</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>refIndex</name></expr></argument>, <argument><expr><name>check</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>REFERENTIAL_INTEGRITY_VIOLATED_PARENT_MISSING_1</name></name></expr></argument>,
+                    <argument><expr><call><name>getShortDescription</name><argument_list>(<argument><expr><name>refIndex</name></expr></argument>, <argument><expr><name>check</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>existsRow</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>Index</name></type> <name>searchIndex</name></decl></parameter>,
+            <parameter><decl><type><name>SearchRow</name></type> <name>check</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>excluding</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>Table</name></type> <name>searchTable</name> <init>= <expr><call><name><name>searchIndex</name><operator>.</operator><name>getTable</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>searchTable</name><operator>.</operator><name>lock</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name><name>Table</name><operator>.</operator><name>READ_LOCK</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>Cursor</name></type> <name>cursor</name> <init>= <expr><call><name><name>searchIndex</name><operator>.</operator><name>find</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>check</name></expr></argument>, <argument><expr><name>check</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <while>while <condition>(<expr><call><name><name>cursor</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>SearchRow</name></type> <name>found</name></decl>;</decl_stmt>
+            <expr_stmt><expr><name>found</name> <operator>=</operator> <call><name><name>cursor</name><operator>.</operator><name>getSearchRow</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>excluding</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>found</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call> <operator>==</operator> <call><name><name>excluding</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                <continue>continue;</continue>
+            </block_content>}</block></if></if_stmt>
+            <decl_stmt><decl><type><name><name>Column</name><index>[]</index></name></type> <name>cols</name> <init>= <expr><call><name><name>searchIndex</name><operator>.</operator><name>getColumns</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>allEqual</name> <init>= <expr><literal type="boolean">true</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>len</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name><name>columns</name><operator>.</operator><name>length</name></name></expr></argument>, <argument><expr><name><name>cols</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>len</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>idx</name> <init>= <expr><name><name>cols</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><call><name>getColumnId</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>Value</name></type> <name>c</name> <init>= <expr><call><name><name>check</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>idx</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>Value</name></type> <name>f</name> <init>= <expr><call><name><name>found</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>idx</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>searchTable</name><operator>.</operator><name>compareValues</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>c</name></expr></argument>, <argument><expr><name>f</name></expr></argument>)</argument_list></call> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>allEqual</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+                    <break>break;</break>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></for>
+            <if_stmt><if>if <condition>(<expr><name>allEqual</name></expr>)</condition> <block>{<block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></while>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>isEqual</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>oldRow</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>newRow</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>refConstraint</name><operator>.</operator><name>getIndex</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>compareRows</name><argument_list>(<argument><expr><name>oldRow</name></expr></argument>, <argument><expr><name>newRow</name></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>checkRow</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>oldRow</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>SearchRow</name></type> <name>check</name> <init>= <expr><call><name><name>table</name><operator>.</operator><name>getRowFactory</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>createRow</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>len</name> <init>= <expr><name><name>columns</name><operator>.</operator><name>length</name></name></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>len</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+            <decl_stmt><decl><type><name>Column</name></type> <name>refCol</name> <init>= <expr><name><name>refColumns</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><name>column</name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>refIdx</name> <init>= <expr><call><name><name>refCol</name><operator>.</operator><name>getColumnId</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Column</name></type> <name>col</name> <init>= <expr><name><name>columns</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><name>column</name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Value</name></type> <name>v</name> <init>= <expr><call><name><name>col</name><operator>.</operator><name>convert</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><call><name><name>oldRow</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>refIdx</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>v</name> <operator>==</operator> <name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>)</condition> <block>{<block_content>
+                <return>return;</return>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>check</name><operator>.</operator><name>setValue</name></name><argument_list>(<argument><expr><call><name><name>col</name><operator>.</operator><name>getColumnId</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>v</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <comment type="line">// exclude the row only for self-referencing constraints</comment>
+        <decl_stmt><decl><type><name>Row</name></type> <name>excluding</name> <init>= <expr><ternary><condition><expr><operator>(</operator><name>refTable</name> <operator>==</operator> <name>table</name><operator>)</operator></expr> ?</condition><then> <expr><name>oldRow</name></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name>existsRow</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>index</name></expr></argument>, <argument><expr><name>check</name></expr></argument>, <argument><expr><name>excluding</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>REFERENTIAL_INTEGRITY_VIOLATED_CHILD_EXISTS_1</name></name></expr></argument>,
+                    <argument><expr><call><name>getShortDescription</name><argument_list>(<argument><expr><name>index</name></expr></argument>, <argument><expr><name>check</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>checkRowRefTable</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>oldRow</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>newRow</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>oldRow</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <comment type="line">// this is an insert</comment>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>newRow</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name>isEqual</name><argument_list>(<argument><expr><name>oldRow</name></expr></argument>, <argument><expr><name>newRow</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+            <comment type="line">// on an update, if both old and new are the same, don't do anything</comment>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>newRow</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <comment type="line">// this is a delete</comment>
+            <if_stmt><if>if <condition>(<expr><name>deleteAction</name> <operator>==</operator> <name><name>ConstraintActionType</name><operator>.</operator><name>RESTRICT</name></name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name>checkRow</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>oldRow</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>i</name> <init>= <expr><ternary><condition><expr><name>deleteAction</name> <operator>==</operator> <name><name>ConstraintActionType</name><operator>.</operator><name>CASCADE</name></name></expr> ?</condition><then> <expr><literal type="number">0</literal></expr> </then><else>: <expr><name><name>columns</name><operator>.</operator><name>length</name></name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>Prepared</name></type> <name>deleteCommand</name> <init>= <expr><call><name>getDelete</name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name>setWhere</name><argument_list>(<argument><expr><name>deleteCommand</name></expr></argument>, <argument><expr><name>i</name></expr></argument>, <argument><expr><name>oldRow</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name>updateWithSkipCheck</name><argument_list>(<argument><expr><name>deleteCommand</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <comment type="line">// this is an update</comment>
+            <if_stmt><if>if <condition>(<expr><name>updateAction</name> <operator>==</operator> <name><name>ConstraintActionType</name><operator>.</operator><name>RESTRICT</name></name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name>checkRow</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>oldRow</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <decl_stmt><decl><type><name>Prepared</name></type> <name>updateCommand</name> <init>= <expr><call><name>getUpdate</name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>updateAction</name> <operator>==</operator> <name><name>ConstraintActionType</name><operator>.</operator><name>CASCADE</name></name></expr>)</condition> <block>{<block_content>
+                    <decl_stmt><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Parameter</name></argument>&gt;</argument_list></name></type> <name>params</name> <init>= <expr><call><name><name>updateCommand</name><operator>.</operator><name>getParameters</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>len</name> <init>= <expr><name><name>columns</name><operator>.</operator><name>length</name></name></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>len</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+                        <decl_stmt><decl><type><name>Parameter</name></type> <name>param</name> <init>= <expr><call><name><name>params</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                        <decl_stmt><decl><type><name>Column</name></type> <name>refCol</name> <init>= <expr><name><name>refColumns</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><name>column</name></expr></init></decl>;</decl_stmt>
+                        <expr_stmt><expr><call><name><name>param</name><operator>.</operator><name>setValue</name></name><argument_list>(<argument><expr><call><name><name>newRow</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><call><name><name>refCol</name><operator>.</operator><name>getColumnId</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></for>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><call><name>setWhere</name><argument_list>(<argument><expr><name>updateCommand</name></expr></argument>, <argument><expr><name><name>columns</name><operator>.</operator><name>length</name></name></expr></argument>, <argument><expr><name>oldRow</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name>updateWithSkipCheck</name><argument_list>(<argument><expr><name>updateCommand</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>updateWithSkipCheck</name><parameter_list>(<parameter><decl><type><name>Prepared</name></type> <name>prep</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <comment type="line">// TODO constraints: maybe delay the update or support delayed checks</comment>
+        <comment type="line">// (until commit)</comment>
+        <try>try <block>{<block_content>
+            <comment type="line">// TODO multithreaded kernel: this works only if nobody else updates</comment>
+            <comment type="line">// this or the ref table at the same time</comment>
+            <expr_stmt><expr><name>skipOwnTable</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>prep</name><operator>.</operator><name>update</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block> <finally>finally <block>{<block_content>
+            <expr_stmt><expr><name>skipOwnTable</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+        </block_content>}</block></finally></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>setWhere</name><parameter_list>(<parameter><decl><type><name>Prepared</name></type> <name>command</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>pos</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>len</name> <init>= <expr><name><name>refColumns</name><operator>.</operator><name>length</name></name></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>len</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>idx</name> <init>= <expr><name><name>refColumns</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><call><name><name>column</name><operator>.</operator><name>getColumnId</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Value</name></type> <name>v</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>idx</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Parameter</name></argument>&gt;</argument_list></name></type> <name>params</name> <init>= <expr><call><name><name>command</name><operator>.</operator><name>getParameters</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Parameter</name></type> <name>param</name> <init>= <expr><call><name><name>params</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>pos</name> <operator>+</operator> <name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>param</name><operator>.</operator><name>setValue</name></name><argument_list>(<argument><expr><name>v</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ConstraintActionType</name></type> <name>getDeleteAction</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>deleteAction</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the action to apply (restrict, cascade,...) on a delete.
+     *
+     * @param action the action
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setDeleteAction</name><parameter_list>(<parameter><decl><type><name>ConstraintActionType</name></type> <name>action</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>action</name> <operator>==</operator> <name>deleteAction</name> <operator>&amp;&amp;</operator> <name>deleteSQL</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>deleteAction</name> <operator>!=</operator> <name><name>ConstraintActionType</name><operator>.</operator><name>RESTRICT</name></name></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>CONSTRAINT_ALREADY_EXISTS_1</name></name></expr></argument>, <argument><expr><literal type="string">"ON DELETE"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>deleteAction</name></name> <operator>=</operator> <name>action</name></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>buildDeleteSQL</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Update the constraint SQL when a referenced column is renamed.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>updateOnTableColumnRename</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>deleteAction</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>deleteSQL</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>buildDeleteSQL</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>updateAction</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>updateSQL</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>buildUpdateSQL</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>buildDeleteSQL</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>deleteAction</name> <operator>==</operator> <name><name>ConstraintActionType</name><operator>.</operator><name>RESTRICT</name></name></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>builder</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>deleteAction</name> <operator>==</operator> <name><name>ConstraintActionType</name><operator>.</operator><name>CASCADE</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"DELETE FROM "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>table</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><call><name>appendUpdate</name><argument_list>(<argument><expr><name>builder</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <expr_stmt><expr><call><name>appendWhere</name><argument_list>(<argument><expr><name>builder</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>deleteSQL</name> <operator>=</operator> <call><name><name>builder</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>Prepared</name></type> <name>getUpdate</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>prepare</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>updateSQL</name></expr></argument>, <argument><expr><name>updateAction</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>Prepared</name></type> <name>getDelete</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>prepare</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>deleteSQL</name></expr></argument>, <argument><expr><name>deleteAction</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>ConstraintActionType</name></type> <name>getUpdateAction</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>updateAction</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the action to apply (restrict, cascade,...) on an update.
+     *
+     * @param action the action
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setUpdateAction</name><parameter_list>(<parameter><decl><type><name>ConstraintActionType</name></type> <name>action</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>action</name> <operator>==</operator> <name>updateAction</name> <operator>&amp;&amp;</operator> <name>updateSQL</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>updateAction</name> <operator>!=</operator> <name><name>ConstraintActionType</name><operator>.</operator><name>RESTRICT</name></name></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>CONSTRAINT_ALREADY_EXISTS_1</name></name></expr></argument>, <argument><expr><literal type="string">"ON UPDATE"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>updateAction</name></name> <operator>=</operator> <name>action</name></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>buildUpdateSQL</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>buildUpdateSQL</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>updateAction</name> <operator>==</operator> <name><name>ConstraintActionType</name><operator>.</operator><name>RESTRICT</name></name></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>builder</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>appendUpdate</name><argument_list>(<argument><expr><name>builder</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>appendWhere</name><argument_list>(<argument><expr><name>builder</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>updateSQL</name> <operator>=</operator> <call><name><name>builder</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>rebuild</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>buildUpdateSQL</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>buildDeleteSQL</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>Prepared</name></type> <name>prepare</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>sql</name></decl></parameter>, <parameter><decl><type><name>ConstraintActionType</name></type> <name>action</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>Prepared</name></type> <name>command</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>prepare</name></name><argument_list>(<argument><expr><name>sql</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>action</name> <operator>!=</operator> <name><name>ConstraintActionType</name><operator>.</operator><name>CASCADE</name></name></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name><name>ArrayList</name><argument_list type="generic">&lt;<argument><name>Parameter</name></argument>&gt;</argument_list></name></type> <name>params</name> <init>= <expr><call><name><name>command</name><operator>.</operator><name>getParameters</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>len</name> <init>= <expr><name><name>columns</name><operator>.</operator><name>length</name></name></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>len</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+                <decl_stmt><decl><type><name>Column</name></type> <name>column</name> <init>= <expr><name><name>columns</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><name>column</name></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>Parameter</name></type> <name>param</name> <init>= <expr><call><name><name>params</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>Value</name></type> <name>value</name></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>action</name> <operator>==</operator> <name><name>ConstraintActionType</name><operator>.</operator><name>SET_NULL</name></name></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>value</name> <operator>=</operator> <name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>;</expr_stmt>
+                </block_content>}</block></if> <else>else <block>{<block_content>
+                    <decl_stmt><decl><type><name>Expression</name></type> <name>expr</name> <init>= <expr><call><name><name>column</name><operator>.</operator><name>getEffectiveDefaultExpression</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>expr</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                        <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>NO_DEFAULT_SET_1</name></name></expr></argument>, <argument><expr><call><name><name>column</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+                    </block_content>}</block></if></if_stmt>
+                    <expr_stmt><expr><name>value</name> <operator>=</operator> <call><name><name>expr</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></else></if_stmt>
+                <expr_stmt><expr><call><name><name>param</name><operator>.</operator><name>setValue</name></name><argument_list>(<argument><expr><name>value</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>command</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>appendUpdate</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"UPDATE "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>table</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">" SET "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>IndexColumn</name><operator>.</operator><name>writeColumns</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><literal type="string">", "</literal></expr></argument>, <argument><expr><literal type="string">"=?"</literal></expr></argument>, <argument><expr><name><name>IndexColumn</name><operator>.</operator><name>SQL_NO_ORDER</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>appendWhere</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" WHERE "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>IndexColumn</name><operator>.</operator><name>writeColumns</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><literal type="string">" AND "</literal></expr></argument>, <argument><expr><literal type="string">"=?"</literal></expr></argument>, <argument><expr><name><name>IndexColumn</name><operator>.</operator><name>SQL_NO_ORDER</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Table</name></type> <name>getRefTable</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>refTable</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>usesIndex</name><parameter_list>(<parameter><decl><type><name>Index</name></type> <name>idx</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><name>idx</name> <operator>==</operator> <name>index</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>setIndexOwner</name><parameter_list>(<parameter><decl><type><name>Index</name></type> <name>index</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name><name>this</name><operator>.</operator><name>index</name></name> <operator>==</operator> <name>index</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>indexOwner</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getInternalError</name></name><argument_list>(<argument><expr><name>index</name> <operator>+</operator> <literal type="string">" "</literal> <operator>+</operator> <call><name>toString</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>isBefore</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>checkExistingData</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>session</name><operator>.</operator><name>getDatabase</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isStarting</name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <comment type="line">// don't check at startup</comment>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>builder</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>(<argument><expr><literal type="string">"SELECT 1 FROM (SELECT "</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>IndexColumn</name><operator>.</operator><name>writeColumns</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><name><name>IndexColumn</name><operator>.</operator><name>SQL_NO_ORDER</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" FROM "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>table</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">" WHERE "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>IndexColumn</name><operator>.</operator><name>writeColumns</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><literal type="string">" AND "</literal></expr></argument>, <argument><expr><literal type="string">" IS NOT NULL "</literal></expr></argument>, <argument><expr><name><name>IndexColumn</name><operator>.</operator><name>SQL_NO_ORDER</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" ORDER BY "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>IndexColumn</name><operator>.</operator><name>writeColumns</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">") C WHERE NOT EXISTS(SELECT 1 FROM "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>refTable</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">" P WHERE "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>l</name> <init>= <expr><name><name>columns</name><operator>.</operator><name>length</name></name></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>l</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>i</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" AND "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"C."</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>columns</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><call><name><name>column</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="char">'='</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">"P."</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>refColumns</name><index>[<expr><name>i</name></expr>]</index></name><operator>.</operator><call><name><name>column</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">')'</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>startStatementWithinTransaction</name></name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <try>try <block>{<block_content>
+            <decl_stmt><decl><type><name>ResultInterface</name></type> <name>r</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>prepare</name></name><argument_list>(<argument><expr><call><name><name>builder</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>query</name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>r</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>REFERENTIAL_INTEGRITY_VIOLATED_PARENT_MISSING_1</name></name></expr></argument>,
+                        <argument><expr><call><name>getShortDescription</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block> <finally>finally <block>{<block_content>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>endStatement</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></finally></try>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Index</name></type> <name>getIndex</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>index</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>ConstraintUnique</name></type> <name>getReferencedConstraint</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>refConstraint</name></expr>;</return>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

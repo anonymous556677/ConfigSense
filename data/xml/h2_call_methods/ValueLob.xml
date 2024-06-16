@@ -1,0 +1,299 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/h2database/h2/src/main/org/h2/value/ValueLob.java"><comment type="block">/*
+ * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0, and the
+ * EPL 1.0 (https://h2database.com/html/license.html). Initial Developer: H2
+ * Group
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>InputStream</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>Reader</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>Constants</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>SysProperties</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>message</name><operator>.</operator><name>DbException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>store</name><operator>.</operator><name>DataHandler</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>store</name><operator>.</operator><name>LobStorageFrontend</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>store</name><operator>.</operator><name>LobStorageInterface</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>store</name><operator>.</operator><name>RangeInputStream</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>store</name><operator>.</operator><name>RangeReader</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>store</name><operator>.</operator><name>fs</name><operator>.</operator><name>FileUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>IOUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>MathUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>StringUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>Utils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>lob</name><operator>.</operator><name>LobData</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>lob</name><operator>.</operator><name>LobDataDatabase</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>lob</name><operator>.</operator><name>LobDataInMemory</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A implementation of the BINARY LARGE OBJECT and CHARACTER LARGE OBJECT data
+ * types. Small objects are kept in memory and stored in the record. Large
+ * objects are either stored in the database, or in temporary files.
+ */</comment>
+<class><specifier>public</specifier> <specifier>abstract</specifier> class <name>ValueLob</name> <super_list><extends>extends <super><name>Value</name></super></extends></super_list> <block>{
+
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>BLOCK_COMPARISON_SIZE</name> <init>= <expr><literal type="number">512</literal></expr></init></decl>;</decl_stmt>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>rangeCheckUnknown</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>zeroBasedOffset</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>length</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>zeroBasedOffset</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getInvalidValueException</name></name><argument_list>(<argument><expr><literal type="string">"offset"</literal></expr></argument>, <argument><expr><name>zeroBasedOffset</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>length</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getInvalidValueException</name></name><argument_list>(<argument><expr><literal type="string">"length"</literal></expr></argument>, <argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create an input stream that is s subset of the given stream.
+     *
+     * @param inputStream the source input stream
+     * @param oneBasedOffset the offset (1 means no offset)
+     * @param length the length of the result, in bytes
+     * @param dataSize the length of the input, in bytes
+     * @return the smaller input stream
+     */</comment>
+    <function><type><specifier>protected</specifier> <specifier>static</specifier> <name>InputStream</name></type> <name>rangeInputStream</name><parameter_list>(<parameter><decl><type><name>InputStream</name></type> <name>inputStream</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>oneBasedOffset</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>length</name></decl></parameter>,
+            <parameter><decl><type><name>long</name></type> <name>dataSize</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>dataSize</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name>rangeCheck</name><argument_list>(<argument><expr><name>oneBasedOffset</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>, <argument><expr><name>length</name></expr></argument>, <argument><expr><name>dataSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><call><name>rangeCheckUnknown</name><argument_list>(<argument><expr><name>oneBasedOffset</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>, <argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <try>try <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>RangeInputStream</name><argument_list>(<argument><expr><name>inputStream</name></expr></argument>, <argument><expr><name>oneBasedOffset</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>, <argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getInvalidValueException</name></name><argument_list>(<argument><expr><literal type="string">"offset"</literal></expr></argument>, <argument><expr><name>oneBasedOffset</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create a reader that is s subset of the given reader.
+     *
+     * @param reader the input reader
+     * @param oneBasedOffset the offset (1 means no offset)
+     * @param length the length of the result, in bytes
+     * @param dataSize the length of the input, in bytes
+     * @return the smaller input stream
+     */</comment>
+    <function><type><specifier>static</specifier> <name>Reader</name></type> <name>rangeReader</name><parameter_list>(<parameter><decl><type><name>Reader</name></type> <name>reader</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>oneBasedOffset</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>length</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>dataSize</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>dataSize</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name>rangeCheck</name><argument_list>(<argument><expr><name>oneBasedOffset</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>, <argument><expr><name>length</name></expr></argument>, <argument><expr><name>dataSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><call><name>rangeCheckUnknown</name><argument_list>(<argument><expr><name>oneBasedOffset</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>, <argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <try>try <block>{<block_content>
+            <return>return <expr><operator>new</operator> <call><name>RangeReader</name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><name>oneBasedOffset</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>, <argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getInvalidValueException</name></name><argument_list>(<argument><expr><literal type="string">"offset"</literal></expr></argument>, <argument><expr><name>oneBasedOffset</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>TypeInfo</name></type> <name>type</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>final</specifier> <name>LobData</name></type> <name>lobData</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Length in bytes.
+     */</comment>
+    <decl_stmt><decl><type><name>long</name></type> <name>octetLength</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Length in characters.
+     */</comment>
+    <decl_stmt><decl><type><name>long</name></type> <name>charLength</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Cache the hashCode because it can be expensive to compute.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>hash</name></decl>;</decl_stmt>
+
+    <constructor><name>ValueLob</name><parameter_list>(<parameter><decl><type><name>LobData</name></type> <name>lobData</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>octetLength</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>charLength</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>lobData</name></name> <operator>=</operator> <name>lobData</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>octetLength</name></name> <operator>=</operator> <name>octetLength</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>charLength</name></name> <operator>=</operator> <name>charLength</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Create file name for temporary LOB storage
+     * @param handler to get path from
+     * @return full path and name of the created file
+     * @throws IOException if file creation fails
+     */</comment>
+    <function><type><specifier>static</specifier> <name>String</name></type> <name>createTempLobFileName</name><parameter_list>(<parameter><decl><type><name>DataHandler</name></type> <name>handler</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws> <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>path</name> <init>= <expr><call><name><name>handler</name><operator>.</operator><name>getDatabasePath</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>path</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>path</name> <operator>=</operator> <name><name>SysProperties</name><operator>.</operator><name>PREFIX_TEMP_FILE</name></name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name><name>FileUtils</name><operator>.</operator><name>createTempFile</name></name><argument_list>(<argument><expr><name>path</name></expr></argument>, <argument><expr><name><name>Constants</name><operator>.</operator><name>SUFFIX_TEMP_FILE</name></name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name>int</name></type> <name>getBufferSize</name><parameter_list>(<parameter><decl><type><name>DataHandler</name></type> <name>handler</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>remaining</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>remaining</name> <operator>&lt;</operator> <literal type="number">0</literal> <operator>||</operator> <name>remaining</name> <operator>&gt;</operator> <name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>remaining</name> <operator>=</operator> <name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>inplace</name> <init>= <expr><call><name><name>handler</name><operator>.</operator><name>getMaxLengthInplaceLob</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>m</name> <init>= <expr><name><name>Constants</name><operator>.</operator><name>IO_BUFFER_SIZE</name></name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>m</name> <operator>&lt;</operator> <name>remaining</name> <operator>&amp;&amp;</operator> <name>m</name> <operator>&lt;=</operator> <name>inplace</name></expr>)</condition> <block>{<block_content>
+            <comment type="line">// using "1L" to force long arithmetic because</comment>
+            <comment type="line">// inplace could be Integer.MAX_VALUE</comment>
+            <expr_stmt><expr><name>m</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>remaining</name></expr></argument>, <argument><expr><name>inplace</name> <operator>+</operator> <literal type="number">1L</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <comment type="line">// the buffer size must be bigger than the inplace lob, otherwise we</comment>
+            <comment type="line">// can't know if it must be stored in-place or not</comment>
+            <expr_stmt><expr><name>m</name> <operator>=</operator> <call><name><name>MathUtils</name><operator>.</operator><name>roundUpLong</name></name><argument_list>(<argument><expr><name>m</name></expr></argument>, <argument><expr><name><name>Constants</name><operator>.</operator><name>IO_BUFFER_SIZE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name>m</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>remaining</name></expr></argument>, <argument><expr><name>m</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>m</name> <operator>=</operator> <call><name><name>MathUtils</name><operator>.</operator><name>convertLongToInt</name></name><argument_list>(<argument><expr><name>m</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>m</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>m</name> <operator>=</operator> <name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><operator>(</operator><name>int</name><operator>)</operator> <name>m</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check if this value is linked to a specific table. For values that are
+     * kept fully in memory, this method returns false.
+     *
+     * @return true if it is
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isLinkedToTable</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>lobData</name><operator>.</operator><name>isLinkedToTable</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Remove the underlying resource, if any. For values that are kept fully in
+     * memory this method has no effect.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>remove</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>lobData</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Copy a large value, to be used in the given table. For values that are
+     * kept fully in memory this method has no effect.
+     *
+     * @param database the data handler
+     * @param tableId the table where this object is used
+     * @return the new value or itself
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>ValueLob</name></type> <name>copy</name><parameter_list>(<parameter><decl><type><name>DataHandler</name></type> <name>database</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>tableId</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>TypeInfo</name></type> <name>getType</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>TypeInfo</name></type> <name>type</name> <init>= <expr><name><name>this</name><operator>.</operator><name>type</name></name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>type</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>valueType</name> <init>= <expr><call><name>getValueType</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>type</name></name> <operator>=</operator> <name>type</name> <operator>=</operator> <operator>new</operator> <call><name>TypeInfo</name><argument_list>(<argument><expr><name>valueType</name></expr></argument>, <argument><expr><ternary><condition><expr><name>valueType</name> <operator>==</operator> <name>CLOB</name></expr> ?</condition><then> <expr><name>charLength</name></expr> </then><else>: <expr><name>octetLength</name></expr></else></ternary></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>type</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>DbException</name></type> <name>getStringTooLong</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>precision</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>DbException</name><operator>.</operator><name>getValueTooLongException</name></name><argument_list>(<argument><expr><literal type="string">"CHARACTER VARYING"</literal></expr></argument>, <argument><expr><call><name>readString</name><argument_list>(<argument><expr><literal type="number">81</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>precision</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>String</name></type> <name>readString</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>len</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <try>try <block>{<block_content>
+            <return>return <expr><call><name><name>IOUtils</name><operator>.</operator><name>readStringAndClose</name></name><argument_list>(<argument><expr><call><name>getReader</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>len</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>convertIOException</name></name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><call><name>toString</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Reader</name></type> <name>getReader</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>IOUtils</name><operator>.</operator><name>getReader</name></name><argument_list>(<argument><expr><call><name>getInputStream</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name><name>byte</name><index>[]</index></name></type> <name>getBytes</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>lobData</name> <operator>instanceof</operator> <name>LobDataInMemory</name></expr>)</condition> <block>{<block_content>
+            <return>return <expr><call><name><name>Utils</name><operator>.</operator><name>cloneByteArray</name></name><argument_list>(<argument><expr><call><name>getSmall</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name>getBytesInternal</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name><name>byte</name><index>[]</index></name></type> <name>getBytesNoCopy</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>lobData</name> <operator>instanceof</operator> <name>LobDataInMemory</name></expr>)</condition> <block>{<block_content>
+            <return>return <expr><call><name>getSmall</name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name>getBytesInternal</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name><name>byte</name><index>[]</index></name></type> <name>getSmall</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name><name>byte</name><index>[]</index></name></type> <name>small</name> <init>= <expr><operator>(</operator><operator>(</operator><name>LobDataInMemory</name><operator>)</operator> <name>lobData</name><operator>)</operator><operator>.</operator><call><name>getSmall</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>p</name> <init>= <expr><name><name>small</name><operator>.</operator><name>length</name></name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>p</name> <operator>&gt;</operator> <name><name>Constants</name><operator>.</operator><name>MAX_STRING_LENGTH</name></name></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getValueTooLongException</name></name><argument_list>(<argument><expr><literal type="string">"BINARY VARYING"</literal></expr></argument>, <argument><expr><call><name><name>StringUtils</name><operator>.</operator><name>convertBytesToHex</name></name><argument_list>(<argument><expr><name>small</name></expr></argument>, <argument><expr><literal type="number">41</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>p</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>small</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function_decl><type><specifier>abstract</specifier> <name><name>byte</name><index>[]</index></name></type> <name>getBytesInternal</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <function><type><name>DbException</name></type> <name>getBinaryTooLong</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>precision</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>DbException</name><operator>.</operator><name>getValueTooLongException</name></name><argument_list>(<argument><expr><literal type="string">"BINARY VARYING"</literal></expr></argument>, <argument><expr><call><name><name>StringUtils</name><operator>.</operator><name>convertBytesToHex</name></name><argument_list>(<argument><expr><call><name>readBytes</name><argument_list>(<argument><expr><literal type="number">41</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                <argument><expr><name>precision</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name><name>byte</name><index>[]</index></name></type> <name>readBytes</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>len</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <try>try <block>{<block_content>
+            <return>return <expr><call><name><name>IOUtils</name><operator>.</operator><name>readBytesAndClose</name></name><argument_list>(<argument><expr><call><name>getInputStream</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>len</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>convertIOException</name></name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><call><name>toString</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>hashCode</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>hash</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>valueType</name> <init>= <expr><call><name>getValueType</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>length</name> <init>= <expr><ternary><condition><expr><name>valueType</name> <operator>==</operator> <name><name>Value</name><operator>.</operator><name>CLOB</name></name></expr> ?</condition><then> <expr><name>charLength</name></expr> </then><else>: <expr><name>octetLength</name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>length</name> <operator>&gt;</operator> <literal type="number">4096</literal></expr>)</condition> <block>{<block_content>
+                <comment type="line">// TODO: should calculate the hash code when saving, and store</comment>
+                <comment type="line">// it in the database file</comment>
+                <return>return <expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><name>length</name> <operator>^</operator> <operator>(</operator><name>length</name> <operator>&gt;&gt;&gt;</operator> <literal type="number">32</literal><operator>)</operator><operator>)</operator></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>hash</name> <operator>=</operator> <call><name><name>Utils</name><operator>.</operator><name>getByteArrayHash</name></name><argument_list>(<argument><expr><call><name>getBytesNoCopy</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>hash</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>other</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><operator>(</operator><name>other</name> <operator>instanceof</operator> <name>ValueLob</name><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+        <decl_stmt><decl><type><name>ValueLob</name></type> <name>otherLob</name> <init>= <expr><operator>(</operator><name>ValueLob</name><operator>)</operator> <name>other</name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name>hashCode</name><argument_list>()</argument_list></call> <operator>!=</operator> <call><name><name>otherLob</name><operator>.</operator><name>hashCode</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+        <return>return <expr><call><name>compareTypeSafe</name><argument_list>(<argument><expr><operator>(</operator><name>Value</name><operator>)</operator> <name>other</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>getMemory</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>lobData</name><operator>.</operator><name>getMemory</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>LobData</name></type> <name>getLobData</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>lobData</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create an independent copy of this value, that will be bound to a result.
+     *
+     * @return the value (this for small objects)
+     */</comment>
+    <function><type><specifier>public</specifier> <name>ValueLob</name></type> <name>copyToResult</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>lobData</name> <operator>instanceof</operator> <name>LobDataDatabase</name></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>LobStorageInterface</name></type> <name>s</name> <init>= <expr><call><name><name>lobData</name><operator>.</operator><name>getDataHandler</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getLobStorage</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>s</name><operator>.</operator><name>isReadOnly</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                <return>return <expr><call><name><name>s</name><operator>.</operator><name>copyLob</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name><name>LobStorageFrontend</name><operator>.</operator><name>TABLE_RESULT</name></name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>this</name></expr>;</return>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/commitlog/EncryptedSegment.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+<import>import <name><name>javax</name><operator>.</operator><name>crypto</name><operator>.</operator><name>Cipher</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>FSWriteError</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>compress</name><operator>.</operator><name>BufferType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>compress</name><operator>.</operator><name>ICompressor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>security</name><operator>.</operator><name>EncryptionUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>security</name><operator>.</operator><name>EncryptionContext</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>Hex</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>security</name><operator>.</operator><name>EncryptionUtils</name><operator>.</operator><name>ENCRYPTED_BLOCK_HEADER_SIZE</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Writes encrypted segments to disk. Data is compressed before encrypting to (hopefully) reduce the size of the data into
+ * the encryption algorithms.
+ *
+ * The format of the encrypted commit log is as follows:
+ * - standard commit log header (as written by {@link CommitLogDescriptor#writeHeader(ByteBuffer, CommitLogDescriptor)})
+ * - a series of 'sync segments' that are written every time the commit log is sync()'ed
+ * -- a sync section header, see {@link CommitLogSegment#writeSyncMarker(long, ByteBuffer, int, int, int)}
+ * -- total plain text length for this section
+ * -- a series of encrypted data blocks, each of which contains:
+ * --- the length of the encrypted block (cipher text)
+ * --- the length of the unencrypted data (compressed text)
+ * --- the encrypted block, which contains:
+ * ---- the length of the plain text (raw) data
+ * ---- block of compressed data
+ *
+ * Notes:
+ * - "length of the unencrypted data" is different from the length of resulting decrypted buffer as encryption adds padding
+ * to the output buffer, and we need to ignore that padding when processing.
+ */</comment>
+<class><specifier>public</specifier> class <name>EncryptedSegment</name> <super_list><extends>extends <super><name>FileDirectSegment</name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>EncryptedSegment</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>ENCRYPTED_SECTION_HEADER_SIZE</name> <init>= <expr><name>SYNC_MARKER_SIZE</name> <operator>+</operator> <literal type="number">4</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>EncryptionContext</name></type> <name>encryptionContext</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Cipher</name></type> <name>cipher</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>EncryptedSegment</name><parameter_list>(<parameter><decl><type><name>CommitLog</name></type> <name>commitLog</name></decl></parameter>, <parameter><decl><type><name>AbstractCommitLogSegmentManager</name></type> <name>manager</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>commitLog</name></expr></argument>, <argument><expr><name>manager</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>encryptionContext</name></name> <operator>=</operator> <call><name><name>commitLog</name><operator>.</operator><name>configuration</name><operator>.</operator><name>getEncryptionContext</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><name>cipher</name> <operator>=</operator> <call><name><name>encryptionContext</name><operator>.</operator><name>getEncryptor</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>FSWriteError</name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><name>logFile</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"created a new encrypted commit log segment: {}"</literal></expr></argument>, <argument><expr><name>logFile</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>protected</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name></type> <name>additionalHeaderParameters</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name></type> <name>map</name> <init>= <expr><call><name><name>encryptionContext</name><operator>.</operator><name>toHeaderParameters</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>map</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name><name>EncryptionContext</name><operator>.</operator><name>ENCRYPTION_IV</name></name></expr></argument>, <argument><expr><call><name><name>Hex</name><operator>.</operator><name>bytesToHex</name></name><argument_list>(<argument><expr><call><name><name>cipher</name><operator>.</operator><name>getIV</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>map</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>ByteBuffer</name></type> <name>createBuffer</name><parameter_list>(<parameter><decl><type><name>CommitLog</name></type> <name>commitLog</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// Note: we want to keep the compression buffers on-heap as we need those bytes for encryption,</comment>
+        <comment type="line">// and we want to avoid copying from off-heap (compression buffer) to on-heap encryption APIs</comment>
+        <return>return <expr><call><name><name>manager</name><operator>.</operator><name>getBufferPool</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>createBuffer</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>write</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>startMarker</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>nextMarker</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>contentStart</name> <init>= <expr><name>startMarker</name> <operator>+</operator> <name>SYNC_MARKER_SIZE</name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>length</name> <init>= <expr><name>nextMarker</name> <operator>-</operator> <name>contentStart</name></expr></init></decl>;</decl_stmt>
+        <comment type="line">// The length may be 0 when the segment is being closed.</comment>
+        <assert>assert <expr><name>length</name> <operator>&gt;</operator> <literal type="number">0</literal> <operator>||</operator> <name>length</name> <operator>==</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name>isStillAllocating</name><argument_list>()</argument_list></call></expr>;</assert>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name>ICompressor</name></type> <name>compressor</name> <init>= <expr><call><name><name>encryptionContext</name><operator>.</operator><name>getCompressor</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>blockSize</name> <init>= <expr><call><name><name>encryptionContext</name><operator>.</operator><name>getChunkLength</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>inputBuffer</name> <init>= <expr><call><name><name>buffer</name><operator>.</operator><name>duplicate</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>inputBuffer</name><operator>.</operator><name>limit</name></name><argument_list>(<argument><expr><name>contentStart</name> <operator>+</operator> <name>length</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>position</name><argument_list>(<argument><expr><name>contentStart</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>buffer</name> <init>= <expr><call><name><name>manager</name><operator>.</operator><name>getBufferPool</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getThreadLocalReusableBuffer</name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getCommitLogSegmentSize</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <comment type="line">// save space for the sync marker at the beginning of this section</comment>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>syncMarkerPosition</name> <init>= <expr><name>lastWrittenPos</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>channel</name><operator>.</operator><name>position</name></name><argument_list>(<argument><expr><name>syncMarkerPosition</name> <operator>+</operator> <name>ENCRYPTED_SECTION_HEADER_SIZE</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <comment type="line">// loop over the segment data in encryption buffer sized chunks</comment>
+            <while>while <condition>(<expr><name>contentStart</name> <operator>&lt;</operator> <name>nextMarker</name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>nextBlockSize</name> <init>= <expr><ternary><condition><expr><name>nextMarker</name> <operator>-</operator> <name>blockSize</name> <operator>&gt;</operator> <name>contentStart</name></expr> ?</condition><then> <expr><name>blockSize</name></expr> </then><else>: <expr><name>nextMarker</name> <operator>-</operator> <name>contentStart</name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>slice</name> <init>= <expr><call><name><name>inputBuffer</name><operator>.</operator><name>duplicate</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>slice</name><operator>.</operator><name>limit</name></name><argument_list>(<argument><expr><name>contentStart</name> <operator>+</operator> <name>nextBlockSize</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>position</name><argument_list>(<argument><expr><name>contentStart</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <expr_stmt><expr><name>buffer</name> <operator>=</operator> <call><name><name>EncryptionUtils</name><operator>.</operator><name>compress</name></name><argument_list>(<argument><expr><name>slice</name></expr></argument>, <argument><expr><name>buffer</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><name>compressor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <comment type="line">// reuse the same buffer for the input and output of the encryption operation</comment>
+                <expr_stmt><expr><name>buffer</name> <operator>=</operator> <call><name><name>EncryptionUtils</name><operator>.</operator><name>encryptAndWrite</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>, <argument><expr><name>channel</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><name>cipher</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <expr_stmt><expr><name>contentStart</name> <operator>+=</operator> <name>nextBlockSize</name></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>manager</name><operator>.</operator><name>addSize</name></name><argument_list>(<argument><expr><call><name><name>buffer</name><operator>.</operator><name>limit</name></name><argument_list>()</argument_list></call> <operator>+</operator> <name>ENCRYPTED_BLOCK_HEADER_SIZE</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></while>
+
+            <expr_stmt><expr><name>lastWrittenPos</name> <operator>=</operator> <call><name><name>channel</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <comment type="line">// rewind to the beginning of the section and write out the sync marker</comment>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>position</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>limit</name><argument_list>(<argument><expr><name>ENCRYPTED_SECTION_HEADER_SIZE</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>writeSyncMarker</name><argument_list>(<argument><expr><name>id</name></expr></argument>, <argument><expr><name>buffer</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator> <name>syncMarkerPosition</name></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator> <name>lastWrittenPos</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>putInt</name></name><argument_list>(<argument><expr><name>SYNC_MARKER_SIZE</name></expr></argument>, <argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>buffer</name><operator>.</operator><name>rewind</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>manager</name><operator>.</operator><name>addSize</name></name><argument_list>(<argument><expr><call><name><name>buffer</name><operator>.</operator><name>limit</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><call><name><name>channel</name><operator>.</operator><name>position</name></name><argument_list>(<argument><expr><name>syncMarkerPosition</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>channel</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><name>buffer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>FSWriteError</name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><call><name>getPath</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>onDiskSize</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>lastWrittenPos</name></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

@@ -1,0 +1,696 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/lifecycle/LifecycleTransaction.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>lifecycle</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>File</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>file</name><operator>.</operator><name>Path</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>BiPredicate</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Predicate</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>*</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ColumnFamilyStore</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Directories</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>compaction</name><operator>.</operator><name>OperationType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>SSTable</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>format</name><operator>.</operator><name>SSTableReader</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>format</name><operator>.</operator><name>SSTableReader</name><operator>.</operator><name>UniqueIdentifier</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>Throwables</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Transactional</name></name>;</import>
+
+<import>import static <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Functions</name><operator>.</operator><name>compose</name></name>;</import>
+<import>import static <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Predicates</name><operator>.</operator><name>*</name></name>;</import>
+<import>import static <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>ImmutableSet</name><operator>.</operator><name>copyOf</name></name>;</import>
+<import>import static <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterables</name><operator>.</operator><name>*</name></name>;</import>
+<import>import static <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Collections</name><operator>.</operator><name>singleton</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>lifecycle</name><operator>.</operator><name>Helpers</name><operator>.</operator><name>*</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>lifecycle</name><operator>.</operator><name>View</name><operator>.</operator><name>updateCompacting</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>lifecycle</name><operator>.</operator><name>View</name><operator>.</operator><name>updateLiveSet</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>Throwables</name><operator>.</operator><name>maybeFail</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Refs</name><operator>.</operator><name>release</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Refs</name><operator>.</operator><name>selfRefs</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * IMPORTANT: When this object is involved in a transactional graph, for correct behaviour its commit MUST occur before
+ * any others, since it may legitimately fail. This is consistent with the Transactional API, which permits one failing
+ * action to occur at the beginning of the commit phase, but also *requires* that the prepareToCommit() phase only take
+ * actions that can be rolled back.
+ */</comment>
+<class><specifier>public</specifier> class <name>LifecycleTransaction</name> <super_list><extends>extends <super><name><name>Transactional</name><operator>.</operator><name>AbstractTransactional</name></name></super></extends> <implements>implements <super><name>ILifecycleTransaction</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>LifecycleTransaction</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * A class that represents accumulated modifications to the Tracker.
+     * has two instances, one containing modifications that are "staged" (i.e. invisible)
+     * and one containing those "logged" that have been made visible through a call to checkpoint()
+     */</comment>
+    <class><specifier>private</specifier> <specifier>static</specifier> class <name>State</name>
+    <block>{
+        <comment type="line">// readers that are either brand new, update a previous new reader, or update one of the original readers</comment>
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>update</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// disjoint from update, represents a subset of originals that is no longer needed</comment>
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>obsolete</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <function><type><name>void</name></type> <name>log</name><parameter_list>(<parameter><decl><type><name>State</name></type> <name>staged</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>update</name><operator>.</operator><name>removeAll</name></name><argument_list>(<argument><expr><name><name>staged</name><operator>.</operator><name>obsolete</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>update</name><operator>.</operator><name>removeAll</name></name><argument_list>(<argument><expr><name><name>staged</name><operator>.</operator><name>update</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>update</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><name><name>staged</name><operator>.</operator><name>update</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>obsolete</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><name><name>staged</name><operator>.</operator><name>obsolete</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><name>boolean</name></type> <name>contains</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>reader</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>update</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call> <operator>||</operator> <call><name><name>obsolete</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>boolean</name></type> <name>isEmpty</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>update</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>obsolete</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>void</name></type> <name>clear</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>update</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>obsolete</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"[obsolete: %s, update: %s]"</literal></expr></argument>, <argument><expr><name>obsolete</name></expr></argument>, <argument><expr><name>update</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>Tracker</name></type> <name>tracker</name></decl>;</decl_stmt>
+    <comment type="line">// The transaction logs keep track of new and old sstable files</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>LogTransaction</name></type> <name>log</name></decl>;</decl_stmt>
+    <comment type="line">// the original readers this transaction was opened over, and that it guards</comment>
+    <comment type="line">// (no other transactions may operate over these readers concurrently)</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>originals</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <comment type="line">// the set of readers we've marked as compacting (only updated on creation and in checkpoint())</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>marked</name> <init>= <expr><operator>new</operator> <call><name><name>HashSet</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <comment type="line">// the identity set of readers we've ever encountered; used to ensure we don't accidentally revisit the</comment>
+    <comment type="line">// same version of a reader. potentially a dangerous property if there are reference counting bugs</comment>
+    <comment type="line">// as they won't be caught until the transaction's lifespan is over.</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>UniqueIdentifier</name></argument>&gt;</argument_list></name></type> <name>identities</name> <init>= <expr><call><name><name>Collections</name><operator>.</operator><name>newSetFromMap</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name><name>IdentityHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// changes that have been made visible</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>State</name></type> <name>logged</name> <init>= <expr><operator>new</operator> <call><name>State</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <comment type="line">// changes that are pending</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>State</name></type> <name>staged</name> <init>= <expr><operator>new</operator> <call><name>State</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// the tidier and their readers, to be used for marking readers obsoleted during a commit</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name><name>LogTransaction</name><operator>.</operator><name>Obsoletion</name></name></argument>&gt;</argument_list></name></type> <name>obsoletions</name></decl>;</decl_stmt>
+
+    <comment type="line">// commit/rollback hooks</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>Runnable</name></argument>&gt;</argument_list></name></type> <name>commitHooks</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>Runnable</name></argument>&gt;</argument_list></name></type> <name>abortHooks</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * construct a Transaction for use in an offline operation
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>LifecycleTransaction</name></type> <name>offline</name><parameter_list>(<parameter><decl><type><name>OperationType</name></type> <name>operationType</name></decl></parameter>, <parameter><decl><type><name>SSTableReader</name></type> <name>reader</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>offline</name><argument_list>(<argument><expr><name>operationType</name></expr></argument>, <argument><expr><call><name>singleton</name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * construct a Transaction for use in an offline operation
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>LifecycleTransaction</name></type> <name>offline</name><parameter_list>(<parameter><decl><type><name>OperationType</name></type> <name>operationType</name></decl></parameter>, <parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>readers</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// if offline, for simplicity we just use a dummy tracker</comment>
+        <decl_stmt><decl><type><name>Tracker</name></type> <name>dummy</name> <init>= <expr><operator>new</operator> <call><name>Tracker</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>dummy</name><operator>.</operator><name>addInitialSSTables</name></name><argument_list>(<argument><expr><name>readers</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>dummy</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><call><name>updateCompacting</name><argument_list>(<argument><expr><call><name>emptySet</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>readers</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><operator>new</operator> <call><name>LifecycleTransaction</name><argument_list>(<argument><expr><name>dummy</name></expr></argument>, <argument><expr><name>operationType</name></expr></argument>, <argument><expr><name>readers</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * construct an empty Transaction with no existing readers
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation> <comment type="line">// log closed during postCleanup</comment>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>LifecycleTransaction</name></type> <name>offline</name><parameter_list>(<parameter><decl><type><name>OperationType</name></type> <name>operationType</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Tracker</name></type> <name>dummy</name> <init>= <expr><operator>new</operator> <call><name>Tracker</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <call><name>LifecycleTransaction</name><argument_list>(<argument><expr><name>dummy</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>LogTransaction</name><argument_list>(<argument><expr><name>operationType</name></expr></argument>, <argument><expr><name>dummy</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>Collections</name><operator>.</operator><name>emptyList</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <constructor><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation> <comment type="line">// log closed during postCleanup</comment>
+    <name>LifecycleTransaction</name><parameter_list>(<parameter><decl><type><name>Tracker</name></type> <name>tracker</name></decl></parameter>, <parameter><decl><type><name>OperationType</name></type> <name>operationType</name></decl></parameter>, <parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>readers</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>tracker</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>LogTransaction</name><argument_list>(<argument><expr><name>operationType</name></expr></argument>, <argument><expr><name>tracker</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>readers</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><name>LifecycleTransaction</name><parameter_list>(<parameter><decl><type><name>Tracker</name></type> <name>tracker</name></decl></parameter>, <parameter><decl><type><name>LogTransaction</name></type> <name>log</name></decl></parameter>, <parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>readers</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>tracker</name></name> <operator>=</operator> <name>tracker</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>log</name></name> <operator>=</operator> <name>log</name></expr>;</expr_stmt>
+        <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>reader</name> <range>: <expr><name>readers</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>originals</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>marked</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>identities</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name><name>reader</name><operator>.</operator><name>instanceId</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>LogTransaction</name></type> <name>log</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>log</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation> <comment type="line">//LifecycleNewTracker</comment>
+    <type><specifier>public</specifier> <name>OperationType</name></type> <name>opType</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>log</name><operator>.</operator><name>type</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>UUID</name></type> <name>opId</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>log</name><operator>.</operator><name>id</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>doPrepare</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// note for future: in anticompaction two different operations use the same Transaction, and both prepareToCommit()</comment>
+        <comment type="line">// separately: the second prepareToCommit is ignored as a "redundant" transition. since it is only a checkpoint</comment>
+        <comment type="line">// (and these happen anyway) this is fine but if more logic gets inserted here than is performed in a checkpoint,</comment>
+        <comment type="line">// it may break this use case, and care is needed</comment>
+        <expr_stmt><expr><call><name>checkpoint</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// prepare for compaction obsolete readers as long as they were part of the original set</comment>
+        <comment type="line">// since those that are not original are early readers that share the same desc with the finals</comment>
+        <expr_stmt><expr><call><name>maybeFail</name><argument_list>(<argument><expr><call><name>prepareForObsoletion</name><argument_list>(<argument><expr><call><name>filterIn</name><argument_list>(<argument><expr><name><name>logged</name><operator>.</operator><name>obsolete</name></name></expr></argument>, <argument><expr><name>originals</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>log</name></expr></argument>, <argument><expr><name>obsoletions</name> <operator>=</operator> <operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>log</name><operator>.</operator><name>prepareToCommit</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * point of no return: commit all changes, but leave all readers marked as compacting
+     */</comment>
+    <function><type><specifier>public</specifier> <name>Throwable</name></type> <name>doCommit</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><call><name><name>staged</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call> <operator>:</operator> <literal type="string">"must be no actions introduced between prepareToCommit and a commit"</literal></expr>;</assert>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Committing transaction over {} staged: {}, logged: {}"</literal></expr></argument>, <argument><expr><name>originals</name></expr></argument>, <argument><expr><name>staged</name></expr></argument>, <argument><expr><name>logged</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <comment type="line">// accumulate must be null if we have been used correctly, so fail immediately if it is not</comment>
+        <expr_stmt><expr><call><name>maybeFail</name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// transaction log commit failure means we must abort; safe commit is not possible</comment>
+        <expr_stmt><expr><call><name>maybeFail</name><argument_list>(<argument><expr><call><name><name>log</name><operator>.</operator><name>commit</name></name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// this is now the point of no return; we cannot safely rollback, so we ignore exceptions until we're done</comment>
+        <comment type="line">// we restore state by obsoleting our obsolete files, releasing our references to them, and updating our size</comment>
+        <comment type="line">// and notification status for the obsolete and new files</comment>
+
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name>markObsolete</name><argument_list>(<argument><expr><name>obsoletions</name></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name><name>tracker</name><operator>.</operator><name>updateSizeTracking</name></name><argument_list>(<argument><expr><name><name>logged</name><operator>.</operator><name>obsolete</name></name></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name>runOnCommitHooks</name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name>release</name><argument_list>(<argument><expr><call><name>selfRefs</name><argument_list>(<argument><expr><name><name>logged</name><operator>.</operator><name>obsolete</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name><name>tracker</name><operator>.</operator><name>notifySSTablesChanged</name></name><argument_list>(<argument><expr><name>originals</name></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><call><name><name>log</name><operator>.</operator><name>type</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <return>return <expr><name>accumulate</name></expr>;</return>
+    </block_content>}</block></function>
+
+
+    <comment type="block" format="javadoc">/**
+     * undo all of the changes made by this transaction, resetting the state to its original form
+     */</comment>
+    <function><type><specifier>public</specifier> <name>Throwable</name></type> <name>doAbort</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Aborting transaction over {} staged: {}, logged: {}"</literal></expr></argument>, <argument><expr><name>originals</name></expr></argument>, <argument><expr><name>staged</name></expr></argument>, <argument><expr><name>logged</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name>abortObsoletion</name><argument_list>(<argument><expr><name>obsoletions</name></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>logged</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>staged</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name><name>log</name><operator>.</operator><name>abort</name></name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <comment type="line">// mark obsolete all readers that are not versions of those present in the original set</comment>
+        <decl_stmt><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>obsolete</name> <init>= <expr><call><name>filterOut</name><argument_list>(<argument><expr><call><name>concatUniq</name><argument_list>(<argument><expr><name><name>staged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>originals</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Obsoleting {}"</literal></expr></argument>, <argument><expr><name>obsolete</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name>prepareForObsoletion</name><argument_list>(<argument><expr><name>obsolete</name></expr></argument>, <argument><expr><name>log</name></expr></argument>, <argument><expr><name>obsoletions</name> <operator>=</operator> <operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// it's safe to abort even if committed, see maybeFail in doCommit() above, in this case it will just report</comment>
+        <comment type="line">// a failure to abort, which is useful information to have for debug</comment>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name><name>log</name><operator>.</operator><name>abort</name></name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name>markObsolete</name><argument_list>(<argument><expr><name>obsoletions</name></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// replace all updated readers with a version restored to its original state</comment>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>restored</name> <init>= <expr><call><name>restoreUpdatedOriginals</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>invalid</name> <init>= <expr><call><name><name>Lists</name><operator>.</operator><name>newArrayList</name></name><argument_list>(<argument><expr><call><name><name>Iterables</name><operator>.</operator><name>concat</name></name><argument_list>(<argument><expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>obsolete</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name><name>tracker</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><call><name>updateLiveSet</name><argument_list>(<argument><expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name>restored</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name><name>tracker</name><operator>.</operator><name>notifySSTablesChanged</name></name><argument_list>(<argument><expr><name>invalid</name></expr></argument>, <argument><expr><name>restored</name></expr></argument>, <argument><expr><name><name>OperationType</name><operator>.</operator><name>COMPACTION</name></name></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// setReplaced immediately preceding versions that have not been obsoleted</comment>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name>setReplaced</name><argument_list>(<argument><expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name>runOnAbortooks</name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// we have replaced all of logged.update and never made visible staged.update,</comment>
+        <comment type="line">// and the files we have logged as obsolete we clone fresh versions of, so they are no longer needed either</comment>
+        <comment type="line">// any _staged_ obsoletes should either be in staged.update already, and dealt with there,</comment>
+        <comment type="line">// or is still in its original form (so left as is); in either case no extra action is needed</comment>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name>release</name><argument_list>(<argument><expr><call><name>selfRefs</name><argument_list>(<argument><expr><call><name>concat</name><argument_list>(<argument><expr><name><name>staged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>obsolete</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>logged</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>staged</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>accumulate</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>Throwable</name></type> <name>runOnCommitHooks</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>runHooks</name><argument_list>(<argument><expr><name>commitHooks</name></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>Throwable</name></type> <name>runOnAbortooks</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>runHooks</name><argument_list>(<argument><expr><name>abortHooks</name></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>Throwable</name></type> <name>runHooks</name><parameter_list>(<parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>Runnable</name></argument>&gt;</argument_list></name></type> <name>hooks</name></decl></parameter>, <parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>Runnable</name></type> <name>hook</name> <range>: <expr><name>hooks</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>hook</name><operator>.</operator><name>run</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name><name>Throwables</name><operator>.</operator><name>merge</name></name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></for>
+        <return>return <expr><name>accumulate</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>protected</specifier> <name>Throwable</name></type> <name>doPostCleanup</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>log</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name>unmarkCompacting</name><argument_list>(<argument><expr><name>marked</name></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isOffline</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>tracker</name><operator>.</operator><name>isDummy</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * call when a consistent batch of changes is ready to be made atomically visible
+     * these will be exposed in the Tracker atomically, or an exception will be thrown; in this case
+     * the transaction should be rolled back
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>checkpoint</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>maybeFail</name><argument_list>(<argument><expr><call><name>checkpoint</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+    <function><type><specifier>private</specifier> <name>Throwable</name></type> <name>checkpoint</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Checkpointing staged {}"</literal></expr></argument>, <argument><expr><name>staged</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>staged</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>accumulate</name></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>toUpdate</name> <init>= <expr><call><name>toUpdate</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>fresh</name> <init>= <expr><call><name>copyOf</name><argument_list>(<argument><expr><call><name>fresh</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// check the current versions of the readers we're replacing haven't somehow been replaced by someone else</comment>
+        <expr_stmt><expr><call><name>checkNotReplaced</name><argument_list>(<argument><expr><call><name>filterIn</name><argument_list>(<argument><expr><name>toUpdate</name></expr></argument>, <argument><expr><name><name>staged</name><operator>.</operator><name>update</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// ensure any new readers are in the compacting set, since we aren't done with them yet</comment>
+        <comment type="line">// and don't want anyone else messing with them</comment>
+        <comment type="line">// apply atomically along with updating the live set of readers</comment>
+        <expr_stmt><expr><call><name><name>tracker</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><call><name>compose</name><argument_list>(<argument><expr><call><name>updateCompacting</name><argument_list>(<argument><expr><call><name>emptySet</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>fresh</name></expr></argument>)</argument_list></call></expr></argument>,
+                              <argument><expr><call><name>updateLiveSet</name><argument_list>(<argument><expr><name>toUpdate</name></expr></argument>, <argument><expr><name><name>staged</name><operator>.</operator><name>update</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// log the staged changes and our newly marked readers</comment>
+        <expr_stmt><expr><call><name><name>marked</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><name>fresh</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>logged</name><operator>.</operator><name>log</name></name><argument_list>(<argument><expr><name>staged</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// setup our tracker, and mark our prior versions replaced, also releasing our references to them</comment>
+        <comment type="line">// we do not replace/release obsoleted readers, since we may need to restore them on rollback</comment>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name>setReplaced</name><argument_list>(<argument><expr><call><name>filterOut</name><argument_list>(<argument><expr><name>toUpdate</name></expr></argument>, <argument><expr><name><name>staged</name><operator>.</operator><name>obsolete</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name>release</name><argument_list>(<argument><expr><call><name>selfRefs</name><argument_list>(<argument><expr><call><name>filterOut</name><argument_list>(<argument><expr><name>toUpdate</name></expr></argument>, <argument><expr><name><name>staged</name><operator>.</operator><name>obsolete</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>staged</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>accumulate</name></expr>;</return>
+    </block_content>}</block></function>
+
+
+    <comment type="block" format="javadoc">/**
+     * update a reader: if !original, this is a reader that is being introduced by this transaction;
+     * otherwise it must be in the originals() set, i.e. a reader guarded by this transaction
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>update</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>reader</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>original</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><operator>!</operator><call><name><name>staged</name><operator>.</operator><name>update</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call> <operator>:</operator> <literal type="string">"each reader may only be updated once per checkpoint: "</literal> <operator>+</operator> <name>reader</name></expr>;</assert>
+        <assert>assert <expr><operator>!</operator><call><name><name>identities</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name><name>reader</name><operator>.</operator><name>instanceId</name></name></expr></argument>)</argument_list></call> <operator>:</operator> <literal type="string">"each reader instance may only be provided as an update once: "</literal> <operator>+</operator> <name>reader</name></expr>;</assert>
+        <comment type="line">// check it isn't obsolete, and that it matches the original flag</comment>
+        <assert>assert <expr><operator>!</operator><operator>(</operator><call><name><name>logged</name><operator>.</operator><name>obsolete</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call> <operator>||</operator> <call><name><name>staged</name><operator>.</operator><name>obsolete</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call><operator>)</operator> <operator>:</operator> <literal type="string">"may not update a reader that has been obsoleted"</literal></expr>;</assert>
+        <assert>assert <expr><name>original</name> <operator>==</operator> <call><name><name>originals</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call> <operator>:</operator> <call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"the 'original' indicator was incorrect (%s provided): %s"</literal></expr></argument>, <argument><expr><name>original</name></expr></argument>, <argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>;</assert>
+        <expr_stmt><expr><call><name><name>staged</name><operator>.</operator><name>update</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>identities</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name><name>reader</name><operator>.</operator><name>instanceId</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>isOffline</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>reader</name><operator>.</operator><name>setupOnline</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>update</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>readers</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>original</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for<control>(<init><decl><type><name>SSTableReader</name></type> <name>reader</name><range>: <expr><name>readers</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>update</name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><name>original</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * mark this reader as for obsoletion : on checkpoint() the reader will be removed from the live set
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>obsolete</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>reader</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Staging for obsolescence {}"</literal></expr></argument>, <argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// check this is: a reader guarded by the transaction, an instance we have already worked with</comment>
+        <comment type="line">// and that we haven't already obsoleted it, nor do we have other changes staged for it</comment>
+        <assert>assert <expr><call><name><name>identities</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name><name>reader</name><operator>.</operator><name>instanceId</name></name></expr></argument>)</argument_list></call> <operator>:</operator> <literal type="string">"only reader instances that have previously been provided may be obsoleted: "</literal> <operator>+</operator> <name>reader</name></expr>;</assert>
+        <assert>assert <expr><call><name><name>originals</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call> <operator>:</operator> <literal type="string">"only readers in the 'original' set may be obsoleted: "</literal> <operator>+</operator> <name>reader</name> <operator>+</operator> <literal type="string">" vs "</literal> <operator>+</operator> <name>originals</name></expr>;</assert>
+        <assert>assert <expr><operator>!</operator><operator>(</operator><call><name><name>logged</name><operator>.</operator><name>obsolete</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call> <operator>||</operator> <call><name><name>staged</name><operator>.</operator><name>obsolete</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call><operator>)</operator> <operator>:</operator> <literal type="string">"may not obsolete a reader that has already been obsoleted: "</literal> <operator>+</operator> <name>reader</name></expr>;</assert>
+        <assert>assert <expr><operator>!</operator><call><name><name>staged</name><operator>.</operator><name>update</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call> <operator>:</operator> <literal type="string">"may not obsolete a reader that has a staged update (must checkpoint first): "</literal> <operator>+</operator> <name>reader</name></expr>;</assert>
+        <assert>assert <expr><call><name>current</name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call> <operator>==</operator> <name>reader</name> <operator>:</operator> <literal type="string">"may only obsolete the latest version of the reader: "</literal> <operator>+</operator> <name>reader</name></expr>;</assert>
+        <expr_stmt><expr><call><name><name>staged</name><operator>.</operator><name>obsolete</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>runOnCommit</name><parameter_list>(<parameter><decl><type><name>Runnable</name></type> <name>fn</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>commitHooks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>fn</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>runOnAbort</name><parameter_list>(<parameter><decl><type><name>Runnable</name></type> <name>fn</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>abortHooks</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>fn</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * obsolete every file in the original transaction
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>obsoleteOriginals</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Staging for obsolescence {}"</literal></expr></argument>, <argument><expr><name>originals</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// if we're obsoleting, we should have no staged updates for the original files</comment>
+        <assert>assert <expr><call><name><name>Iterables</name><operator>.</operator><name>isEmpty</name></name><argument_list>(<argument><expr><call><name>filterIn</name><argument_list>(<argument><expr><name><name>staged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name>originals</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call> <operator>:</operator> <name><name>staged</name><operator>.</operator><name>update</name></name></expr>;</assert>
+
+        <comment type="line">// stage obsoletes for any currently visible versions of any original readers</comment>
+        <expr_stmt><expr><call><name><name>Iterables</name><operator>.</operator><name>addAll</name></name><argument_list>(<argument><expr><name><name>staged</name><operator>.</operator><name>obsolete</name></name></expr></argument>, <argument><expr><call><name>filterIn</name><argument_list>(<argument><expr><call><name>current</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>originals</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * return the readers we're replacing in checkpoint(), i.e. the currently visible version of those in staged
+     */</comment>
+    <function><type><specifier>private</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>toUpdate</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>copyOf</name><argument_list>(<argument><expr><call><name>filterIn</name><argument_list>(<argument><expr><call><name>current</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name><name>staged</name><operator>.</operator><name>obsolete</name></name></expr></argument>, <argument><expr><name><name>staged</name><operator>.</operator><name>update</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * new readers that haven't appeared previously (either in the original set or the logged updates)
+     */</comment>
+    <function><type><specifier>private</specifier> <name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>fresh</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>filterOut</name><argument_list>(<argument><expr><name><name>staged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name>originals</name></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * returns the currently visible readers managed by this transaction
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>current</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// i.e., those that are updates that have been logged (made visible),</comment>
+        <comment type="line">// and any original readers that have neither been obsoleted nor updated</comment>
+        <return>return <expr><call><name>concat</name><argument_list>(<argument><expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><call><name>filterOut</name><argument_list>(<argument><expr><name>originals</name></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>obsolete</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * update the current replacement of any original reader back to its original start
+     */</comment>
+    <function><type><specifier>private</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>restoreUpdatedOriginals</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>torestore</name> <init>= <expr><call><name>filterIn</name><argument_list>(<argument><expr><name>originals</name></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>obsolete</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>ImmutableList</name><operator>.</operator><name>copyOf</name></name><argument_list>(<argument><expr><call><name>transform</name><argument_list>(<argument><expr><name>torestore</name></expr></argument>, <argument><expr><lambda><parameter_list>(<parameter><decl><name>reader</name></decl></parameter>)</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name>current</name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>cloneWithRestoredStart</name><argument_list>(<argument><expr><name><name>reader</name><operator>.</operator><name>first</name></name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * the set of readers guarded by this transaction _in their original instance/state_
+     * call current(SSTableReader) on any reader in this set to get the latest instance
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>originals</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>Collections</name><operator>.</operator><name>unmodifiableSet</name></name><argument_list>(<argument><expr><name>originals</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * indicates if the reader has been marked for obsoletion
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isObsolete</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>reader</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>logged</name><operator>.</operator><name>obsolete</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call> <operator>||</operator> <call><name><name>staged</name><operator>.</operator><name>obsolete</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * return the current version of the provided reader, whether or not it is visible or staged;
+     * i.e. returns the first version present by testing staged, logged and originals in order.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>SSTableReader</name></type> <name>current</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>reader</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>container</name></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>staged</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>container</name> <operator>=</operator> <ternary><condition><expr><call><name><name>staged</name><operator>.</operator><name>update</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><name><name>staged</name><operator>.</operator><name>update</name></name></expr> </then><else>: <expr><name><name>staged</name><operator>.</operator><name>obsolete</name></name></expr></else></ternary></expr>;</expr_stmt></block_content></block></if>
+        <if type="elseif">else if <condition>(<expr><call><name><name>logged</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>container</name> <operator>=</operator> <ternary><condition><expr><call><name><name>logged</name><operator>.</operator><name>update</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr> </then><else>: <expr><name><name>logged</name><operator>.</operator><name>obsolete</name></name></expr></else></ternary></expr>;</expr_stmt></block_content></block></if>
+        <if type="elseif">else if <condition>(<expr><call><name><name>originals</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>container</name> <operator>=</operator> <name>originals</name></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content> <throw>throw <expr><operator>new</operator> <call><name>AssertionError</name><argument_list>()</argument_list></call></expr>;</throw></block_content></block></else></if_stmt>
+        <return>return <expr><call><name>select</name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><name>container</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * remove the reader from the set we're modifying
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>cancel</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>cancel</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Cancelling {} from transaction"</literal></expr></argument>, <argument><expr><name>cancel</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <assert>assert <expr><call><name><name>originals</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>cancel</name></expr></argument>)</argument_list></call> <operator>:</operator> <literal type="string">"may only cancel a reader in the 'original' set: "</literal> <operator>+</operator> <name>cancel</name> <operator>+</operator> <literal type="string">" vs "</literal> <operator>+</operator> <name>originals</name></expr>;</assert>
+        <assert>assert <expr><operator>!</operator><operator>(</operator><call><name><name>staged</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>cancel</name></expr></argument>)</argument_list></call> <operator>||</operator> <call><name><name>logged</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>cancel</name></expr></argument>)</argument_list></call><operator>)</operator> <operator>:</operator> <literal type="string">"may only cancel a reader that has not been updated or obsoleted in this transaction: "</literal> <operator>+</operator> <name>cancel</name></expr>;</assert>
+        <expr_stmt><expr><call><name><name>originals</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>cancel</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>marked</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>cancel</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>identities</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name><name>cancel</name><operator>.</operator><name>instanceId</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>maybeFail</name><argument_list>(<argument><expr><call><name>unmarkCompacting</name><argument_list>(<argument><expr><call><name>singleton</name><argument_list>(<argument><expr><name>cancel</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * remove the readers from the set we're modifying
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>cancel</name><parameter_list>(<parameter><decl><type><name><name>Iterable</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>cancels</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>cancel</name> <range>: <expr><name>cancels</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name>cancel</name><argument_list>(<argument><expr><name>cancel</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * remove the provided readers from this Transaction, and return a new Transaction to manage them
+     * only permitted to be called if the current Transaction has never been used
+     */</comment>
+    <function><type><specifier>public</specifier> <name>LifecycleTransaction</name></type> <name>split</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>readers</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Splitting {} into new transaction"</literal></expr></argument>, <argument><expr><name>readers</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>checkUnused</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>reader</name> <range>: <expr><name>readers</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <assert>assert <expr><call><name><name>identities</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name><name>reader</name><operator>.</operator><name>instanceId</name></name></expr></argument>)</argument_list></call> <operator>:</operator> <literal type="string">"may only split the same reader instance the transaction was opened with: "</literal> <operator>+</operator> <name>reader</name></expr>;</assert></block_content></block></for>
+
+        <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>reader</name> <range>: <expr><name>readers</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>identities</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name><name>reader</name><operator>.</operator><name>instanceId</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>originals</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>marked</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><operator>new</operator> <call><name>LifecycleTransaction</name><argument_list>(<argument><expr><name>tracker</name></expr></argument>, <argument><expr><call><name><name>log</name><operator>.</operator><name>type</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>readers</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * check this transaction has never been used
+     */</comment>
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>checkUnused</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><call><name><name>logged</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</assert>
+        <assert>assert <expr><call><name><name>staged</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>;</assert>
+        <assert>assert <expr><call><name><name>identities</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>==</operator> <call><name><name>originals</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</assert>
+        <assert>assert <expr><call><name><name>originals</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>==</operator> <call><name><name>marked</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</assert>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>Throwable</name></type> <name>unmarkCompacting</name><parameter_list>(<parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>unmark</name></decl></parameter>, <parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name><name>tracker</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><call><name>updateCompacting</name><argument_list>(<argument><expr><name>unmark</name></expr></argument>, <argument><expr><call><name>emptySet</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// when the CFS is invalidated, it will call unreferenceSSTables().  However, unreferenceSSTables only deals</comment>
+        <comment type="line">// with sstables that aren't currently being compacted.  If there are ongoing compactions that finish or are</comment>
+        <comment type="line">// interrupted after the CFS is invalidated, those sstables need to be unreferenced as well, so we do that here.</comment>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name><name>tracker</name><operator>.</operator><name>dropSSTablesIfInvalid</name></name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>accumulate</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// convenience method for callers that know only one sstable is involved in the transaction</comment>
+    <function><type><specifier>public</specifier> <name>SSTableReader</name></type> <name>onlyOne</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><call><name><name>originals</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">1</literal></expr>;</assert>
+        <return>return <expr><call><name>getFirst</name><argument_list>(<argument><expr><name>originals</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// LifecycleNewTracker</comment>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>trackNew</name><parameter_list>(<parameter><decl><type><name>SSTable</name></type> <name>table</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>log</name><operator>.</operator><name>trackNew</name></name><argument_list>(<argument><expr><name>table</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>untrackNew</name><parameter_list>(<parameter><decl><type><name>SSTable</name></type> <name>table</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>log</name><operator>.</operator><name>untrackNew</name></name><argument_list>(<argument><expr><name>table</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>removeUnfinishedLeftovers</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>LogTransaction</name><operator>.</operator><name>removeUnfinishedLeftovers</name></name><argument_list>(<argument><expr><call><name><name>cfs</name><operator>.</operator><name>getDirectories</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getCFDirectories</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>removeUnfinishedLeftovers</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>LogTransaction</name><operator>.</operator><name>removeUnfinishedLeftovers</name></name><argument_list>(<argument><expr><name>metadata</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the files in the folder specified, provided that the filter returns true.
+     * A filter is given each file and its type, and decides which files should be returned
+     * and which should be discarded. To classify files into their type, we read transaction
+     * log files. Should we fail to read these log files after a few times, we look at onTxnErr
+     * to determine what to do.
+     *
+     * @param folder - the folder to scan
+     * @param onTxnErr - how to handle a failure to read a txn log file
+     * @param filter - A function that receives each file and its type, it should return true to have the file returned
+     * @return - the list of files that were scanned and for which the filter returned true
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>File</name></argument>&gt;</argument_list></name></type> <name>getFiles</name><parameter_list>(<parameter><decl><type><name>Path</name></type> <name>folder</name></decl></parameter>, <parameter><decl><type><name><name>BiPredicate</name><argument_list type="generic">&lt;<argument><name>File</name></argument>, <argument><name><name>Directories</name><operator>.</operator><name>FileType</name></name></argument>&gt;</argument_list></name></type> <name>filter</name></decl></parameter>, <parameter><decl><type><name><name>Directories</name><operator>.</operator><name>OnTxnErr</name></name></type> <name>onTxnErr</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>LogAwareFileLister</name><argument_list>(<argument><expr><name>folder</name></expr></argument>, <argument><expr><name>filter</name></expr></argument>, <argument><expr><name>onTxnErr</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>list</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Retry all deletions that failed the first time around (presumably b/c the sstable was still mmap'd.)
+     * Useful because there are times when we know GC has been invoked; also exposed as an mbean.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>rescheduleFailedDeletions</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>LogTransaction</name><operator>.</operator><name>rescheduleFailedDeletions</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Deletions run on the nonPeriodicTasks executor, (both failedDeletions or global tidiers in SSTableReader)
+     * so by scheduling a new empty task and waiting for it we ensure any prior deletion has completed.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>waitForDeletions</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>LogTransaction</name><operator>.</operator><name>waitForDeletions</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="line">// a class representing the current state of the reader within this transaction, encoding the actions both logged</comment>
+    <comment type="line">// and pending, and the reader instances that are visible now, and will be after the next checkpoint (with null</comment>
+    <comment type="line">// indicating either obsolescence, or that the reader does not occur in the transaction; which is defined</comment>
+    <comment type="line">// by the corresponding Action)</comment>
+    <class><annotation>@<name>VisibleForTesting</name></annotation>
+    <specifier>public</specifier> <specifier>static</specifier> class <name>ReaderState</name>
+    <block>{
+        <enum><specifier>public</specifier> enum <name>Action</name>
+        <block>{
+            <decl><name>UPDATED</name></decl>, <decl><name>OBSOLETED</name></decl>, <decl><name>NONE</name></decl>;
+            <function><type><specifier>public</specifier> <specifier>static</specifier> <name>Action</name></type> <name>get</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>updated</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>obsoleted</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <assert>assert <expr><operator>!</operator><operator>(</operator><name>updated</name> <operator>&amp;&amp;</operator> <name>obsoleted</name><operator>)</operator></expr>;</assert>
+                <return>return <expr><ternary><condition><expr><name>updated</name></expr> ?</condition><then> <expr><name>UPDATED</name></expr> </then><else>: <expr><ternary><condition><expr><name>obsoleted</name></expr> ?</condition><then> <expr><name>OBSOLETED</name></expr> </then><else>: <expr><name>NONE</name></expr></else></ternary></expr></else></ternary></expr>;</return>
+            </block_content>}</block></function>
+        }</block></enum>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name>Action</name></type> <name>staged</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>Action</name></type> <name>logged</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>SSTableReader</name></type> <name>nextVisible</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>SSTableReader</name></type> <name>currentlyVisible</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>boolean</name></type> <name>original</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>ReaderState</name><parameter_list>(<parameter><decl><type><name>Action</name></type> <name>logged</name></decl></parameter>, <parameter><decl><type><name>Action</name></type> <name>staged</name></decl></parameter>, <parameter><decl><type><name>SSTableReader</name></type> <name>currentlyVisible</name></decl></parameter>, <parameter><decl><type><name>SSTableReader</name></type> <name>nextVisible</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>original</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>staged</name></name> <operator>=</operator> <name>staged</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>logged</name></name> <operator>=</operator> <name>logged</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>currentlyVisible</name></name> <operator>=</operator> <name>currentlyVisible</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>nextVisible</name></name> <operator>=</operator> <name>nextVisible</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>original</name></name> <operator>=</operator> <name>original</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>that</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>that</name> <operator>instanceof</operator> <name>ReaderState</name> <operator>&amp;&amp;</operator> <call><name>equals</name><argument_list>(<argument><expr><operator>(</operator><name>ReaderState</name><operator>)</operator> <name>that</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>ReaderState</name></type> <name>that</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name><name>this</name><operator>.</operator><name>staged</name></name> <operator>==</operator> <name><name>that</name><operator>.</operator><name>staged</name></name> <operator>&amp;&amp;</operator> <name><name>this</name><operator>.</operator><name>logged</name></name> <operator>==</operator> <name><name>that</name><operator>.</operator><name>logged</name></name> <operator>&amp;&amp;</operator> <name><name>this</name><operator>.</operator><name>original</name></name> <operator>==</operator> <name><name>that</name><operator>.</operator><name>original</name></name>
+                <operator>&amp;&amp;</operator> <name><name>this</name><operator>.</operator><name>currentlyVisible</name></name> <operator>==</operator> <name><name>that</name><operator>.</operator><name>currentlyVisible</name></name> <operator>&amp;&amp;</operator> <name><name>this</name><operator>.</operator><name>nextVisible</name></name> <operator>==</operator> <name><name>that</name><operator>.</operator><name>nextVisible</name></name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"[logged=%s staged=%s original=%s]"</literal></expr></argument>, <argument><expr><name>logged</name></expr></argument>, <argument><expr><name>staged</name></expr></argument>, <argument><expr><name>original</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SSTableReader</name></type> <name>visible</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>reader</name></decl></parameter>, <parameter><decl><type><name><name>Predicate</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>obsolete</name></decl></parameter>, <parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name> <modifier>...</modifier></type> <name>selectFrom</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><ternary><condition><expr><call><name><name>obsolete</name><operator>.</operator><name>apply</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name>selectFirst</name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><name>selectFrom</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>ReaderState</name></type> <name>state</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>reader</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>SSTableReader</name></type> <name>currentlyVisible</name> <init>= <expr><call><name><name>ReaderState</name><operator>.</operator><name>visible</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><call><name>in</name><argument_list>(<argument><expr><name><name>logged</name><operator>.</operator><name>obsolete</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name>originals</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>SSTableReader</name></type> <name>nextVisible</name> <init>= <expr><call><name><name>ReaderState</name><operator>.</operator><name>visible</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><call><name>orIn</name><argument_list>(<argument><expr><name><name>staged</name><operator>.</operator><name>obsolete</name></name></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>obsolete</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>staged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name><name>logged</name><operator>.</operator><name>update</name></name></expr></argument>, <argument><expr><name>originals</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <call><name>ReaderState</name><argument_list>(<argument><expr><call><name><name>ReaderState</name><operator>.</operator><name>Action</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>logged</name><operator>.</operator><name>update</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>logged</name><operator>.</operator><name>obsolete</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                               <argument><expr><call><name><name>ReaderState</name><operator>.</operator><name>Action</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>staged</name><operator>.</operator><name>update</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>staged</name><operator>.</operator><name>obsolete</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                               <argument><expr><name>currentlyVisible</name></expr></argument>, <argument><expr><name>nextVisible</name></expr></argument>, <argument><expr><call><name><name>originals</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr></argument>
+        )</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>originals</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

@@ -1,0 +1,418 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/h2database/h2/src/main/org/h2/expression/ExpressionVisitor.java"><comment type="block">/*
+ * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Initial Developer: H2 Group
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>HashSet</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>command</name><operator>.</operator><name>query</name><operator>.</operator><name>AllColumnsForPlan</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>DbObject</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>Column</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>ColumnResolver</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>Table</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>TableFilter</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * The visitor pattern is used to iterate through all expressions of a query
+ * to optimize a statement.
+ */</comment>
+<class><specifier>public</specifier> <specifier>final</specifier> class <name>ExpressionVisitor</name> <block>{
+
+    <comment type="block" format="javadoc">/**
+     * Is the value independent on unset parameters or on columns of a higher
+     * level query, or sequence values (that means can it be evaluated right
+     * now)?
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>INDEPENDENT</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The visitor singleton for the type INDEPENDENT.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>ExpressionVisitor</name></type> <name>INDEPENDENT_VISITOR</name> <init>=
+            <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>INDEPENDENT</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Are all aggregates MIN(column), MAX(column), COUNT(*), MEDIAN(column),
+     * ENVELOPE(count) for the given table (getTable)?
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>OPTIMIZABLE_AGGREGATE</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Does the expression return the same results for the same parameters?
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>DETERMINISTIC</name> <init>= <expr><literal type="number">2</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The visitor singleton for the type DETERMINISTIC.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>ExpressionVisitor</name></type> <name>DETERMINISTIC_VISITOR</name> <init>=
+            <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>DETERMINISTIC</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Can the expression be evaluated, that means are all columns set to
+     * 'evaluatable'?
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>EVALUATABLE</name> <init>= <expr><literal type="number">3</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The visitor singleton for the type EVALUATABLE.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>ExpressionVisitor</name></type> <name>EVALUATABLE_VISITOR</name> <init>=
+            <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>EVALUATABLE</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Count of cached INDEPENDENT and EVALUATABLE visitors with different query
+     * level.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>CACHED</name> <init>= <expr><literal type="number">8</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * INDEPENDENT listeners with query level 0, 1, ...
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>ExpressionVisitor</name><index>[]</index></name></type> <name>INDEPENDENT_VISITORS</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * EVALUATABLE listeners with query level 0, 1, ...
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>ExpressionVisitor</name><index>[]</index></name></type> <name>EVALUATABLE_VISITORS</name></decl>;</decl_stmt>
+
+    <static>static <block>{<block_content>
+        <decl_stmt><decl><type><name><name>ExpressionVisitor</name><index>[]</index></name></type> <name>a</name> <init>= <expr><operator>new</operator> <name><name>ExpressionVisitor</name><index>[<expr><name>CACHED</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name><name>a</name><index>[<expr><literal type="number">0</literal></expr>]</index></name> <operator>=</operator> <name>INDEPENDENT_VISITOR</name></expr>;</expr_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>CACHED</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+            <expr_stmt><expr><name><name>a</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>INDEPENDENT</name></expr></argument>, <argument><expr><name>i</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <expr_stmt><expr><name>INDEPENDENT_VISITORS</name> <operator>=</operator> <name>a</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name>a</name> <operator>=</operator> <operator>new</operator> <name><name>ExpressionVisitor</name><index>[<expr><name>CACHED</name></expr>]</index></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>a</name><index>[<expr><literal type="number">0</literal></expr>]</index></name> <operator>=</operator> <name>EVALUATABLE_VISITOR</name></expr>;</expr_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>CACHED</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+            <expr_stmt><expr><name><name>a</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>EVALUATABLE</name></expr></argument>, <argument><expr><name>i</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <expr_stmt><expr><name>EVALUATABLE_VISITORS</name> <operator>=</operator> <name>a</name></expr>;</expr_stmt>
+    </block_content>}</block></static>
+
+    <comment type="block" format="javadoc">/**
+     * Request to set the latest modification id (addDataModificationId).
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>SET_MAX_DATA_MODIFICATION_ID</name> <init>= <expr><literal type="number">4</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Does the expression have no side effects (change the data)?
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>READONLY</name> <init>= <expr><literal type="number">5</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The visitor singleton for the type EVALUATABLE.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>ExpressionVisitor</name></type> <name>READONLY_VISITOR</name> <init>=
+            <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>READONLY</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Does an expression have no relation to the given table filter
+     * (getResolver)?
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>NOT_FROM_RESOLVER</name> <init>= <expr><literal type="number">6</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Request to get the set of dependencies (addDependency).
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>GET_DEPENDENCIES</name> <init>= <expr><literal type="number">7</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Can the expression be added to a condition of an outer query. Example:
+     * ROWNUM() can't be added as a condition to the inner query of select id
+     * from (select t.*, rownum as r from test t) where r between 2 and 3; Also
+     * a sequence expression must not be used.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>QUERY_COMPARABLE</name> <init>= <expr><literal type="number">8</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Get all referenced columns for the optimiser.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>GET_COLUMNS1</name> <init>= <expr><literal type="number">9</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Get all referenced columns.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>GET_COLUMNS2</name> <init>= <expr><literal type="number">10</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Decrement query level of all expression columns.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>DECREMENT_QUERY_LEVEL</name> <init>= <expr><literal type="number">11</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The visitor singleton for the type QUERY_COMPARABLE.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>ExpressionVisitor</name></type> <name>QUERY_COMPARABLE_VISITOR</name> <init>=
+            <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>QUERY_COMPARABLE</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>type</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>queryLevel</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>set</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>AllColumnsForPlan</name></type> <name>columns1</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Table</name></type> <name>table</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>long</name><index>[]</index></name></type> <name>maxDataModificationId</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ColumnResolver</name></type> <name>resolver</name></decl>;</decl_stmt>
+
+    <constructor><specifier>private</specifier> <name>ExpressionVisitor</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>type</name></decl></parameter>,
+            <parameter><decl><type><name>int</name></type> <name>queryLevel</name></decl></parameter>,
+            <parameter><decl><type><name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>set</name></decl></parameter>,
+            <parameter><decl><type><name>AllColumnsForPlan</name></type> <name>columns1</name></decl></parameter>, <parameter><decl><type><name>Table</name></type> <name>table</name></decl></parameter>, <parameter><decl><type><name>ColumnResolver</name></type> <name>resolver</name></decl></parameter>,
+            <parameter><decl><type><name><name>long</name><index>[]</index></name></type> <name>maxDataModificationId</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>type</name></name> <operator>=</operator> <name>type</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>queryLevel</name></name> <operator>=</operator> <name>queryLevel</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>set</name></name> <operator>=</operator> <name>set</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columns1</name></name> <operator>=</operator> <name>columns1</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>table</name></name> <operator>=</operator> <name>table</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>resolver</name></name> <operator>=</operator> <name>resolver</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>maxDataModificationId</name></name> <operator>=</operator> <name>maxDataModificationId</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>private</specifier> <name>ExpressionVisitor</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>type</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>type</name></name> <operator>=</operator> <name>type</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>queryLevel</name></name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>set</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columns1</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>table</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>resolver</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>maxDataModificationId</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>private</specifier> <name>ExpressionVisitor</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>type</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>queryLevel</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>type</name></name> <operator>=</operator> <name>type</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>queryLevel</name></name> <operator>=</operator> <name>queryLevel</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>set</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>columns1</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>table</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>resolver</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>maxDataModificationId</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Create a new visitor object to collect dependencies.
+     *
+     * @param dependencies the dependencies set
+     * @return the new visitor
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>ExpressionVisitor</name></type> <name>getDependenciesVisitor</name><parameter_list>(
+            <parameter><decl><type><name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>DbObject</name></argument>&gt;</argument_list></name></type> <name>dependencies</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>GET_DEPENDENCIES</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>dependencies</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>,
+                <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create a new visitor to check if all aggregates are for the given table.
+     *
+     * @param table the table
+     * @return the new visitor
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>ExpressionVisitor</name></type> <name>getOptimizableVisitor</name><parameter_list>(<parameter><decl><type><name>Table</name></type> <name>table</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>OPTIMIZABLE_AGGREGATE</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>,
+                <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>table</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create a new visitor to check if no expression depends on the given
+     * resolver.
+     *
+     * @param resolver the resolver
+     * @return the new visitor
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>ExpressionVisitor</name></type> <name>getNotFromResolverVisitor</name><parameter_list>(<parameter><decl><type><name>ColumnResolver</name></type> <name>resolver</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>NOT_FROM_RESOLVER</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>,
+                <argument><expr><name>resolver</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create a new visitor to get all referenced columns.
+     *
+     * @param columns the columns map
+     * @return the new visitor
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>ExpressionVisitor</name></type> <name>getColumnsVisitor</name><parameter_list>(<parameter><decl><type><name>AllColumnsForPlan</name></type> <name>columns</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>GET_COLUMNS1</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create a new visitor to get all referenced columns.
+     *
+     * @param columns the columns map
+     * @param table table to gather columns from, or {@code null} to gather all columns
+     * @return the new visitor
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>ExpressionVisitor</name></type> <name>getColumnsVisitor</name><parameter_list>(<parameter><decl><type><name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>Column</name></argument>&gt;</argument_list></name></type> <name>columns</name></decl></parameter>, <parameter><decl><type><name>Table</name></type> <name>table</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>GET_COLUMNS2</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>columns</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>table</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>ExpressionVisitor</name></type> <name>getMaxModificationIdVisitor</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>SET_MAX_DATA_MODIFICATION_ID</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>,
+                <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><operator>new</operator> <name><name>long</name><index>[<expr><literal type="number">1</literal></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Create a new visitor to decrement query level in columns with the
+     * specified resolvers.
+     *
+     * @param columnResolvers
+     *            column resolvers
+     * @param queryDecrement
+     *            0 to check whether operation is allowed, 1 to actually perform
+     *            the decrement
+     * @return the new visitor
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>ExpressionVisitor</name></type> <name>getDecrementQueryLevelVisitor</name><parameter_list>(<parameter><decl><type><name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>ColumnResolver</name></argument>&gt;</argument_list></name></type> <name>columnResolvers</name></decl></parameter>,
+            <parameter><decl><type><name>int</name></type> <name>queryDecrement</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>DECREMENT_QUERY_LEVEL</name></expr></argument>, <argument><expr><name>queryDecrement</name></expr></argument>, <argument><expr><name>columnResolvers</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Add a new dependency to the set of dependencies.
+     * This is used for GET_DEPENDENCIES visitors.
+     *
+     * @param obj the additional dependency.
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unchecked"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>addDependency</name><parameter_list>(<parameter><decl><type><name>DbObject</name></type> <name>obj</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><operator>(</operator><operator>(</operator><name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>DbObject</name></argument>&gt;</argument_list></name><operator>)</operator> <name>set</name><operator>)</operator><operator>.</operator><call><name>add</name><argument_list>(<argument><expr><name>obj</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Add a new column to the set of columns.
+     * This is used for GET_COLUMNS visitors.
+     *
+     * @param column the additional column.
+     */</comment>
+    <function><type><name>void</name></type> <name>addColumn1</name><parameter_list>(<parameter><decl><type><name>Column</name></type> <name>column</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>columns1</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>column</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Add a new column to the set of columns.
+     * This is used for GET_COLUMNS2 visitors.
+     *
+     * @param column the additional column.
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unchecked"</literal></expr></argument>)</argument_list></annotation>
+    <type><name>void</name></type> <name>addColumn2</name><parameter_list>(<parameter><decl><type><name>Column</name></type> <name>column</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>table</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <name>table</name> <operator>==</operator> <call><name><name>column</name><operator>.</operator><name>getTable</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><operator>(</operator><operator>(</operator><name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>Column</name></argument>&gt;</argument_list></name><operator>)</operator> <name>set</name><operator>)</operator><operator>.</operator><call><name>add</name><argument_list>(<argument><expr><name>column</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the dependency set.
+     * This is used for GET_DEPENDENCIES visitors.
+     *
+     * @return the set
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unchecked"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>DbObject</name></argument>&gt;</argument_list></name></type> <name>getDependencies</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><operator>(</operator><name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>DbObject</name></argument>&gt;</argument_list></name><operator>)</operator> <name>set</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Increment or decrement the query level.
+     *
+     * @param offset 1 to increment, -1 to decrement
+     * @return this visitor or its clone with the changed query level
+     */</comment>
+    <function><type><specifier>public</specifier> <name>ExpressionVisitor</name></type> <name>incrementQueryLevel</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>offset</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>type</name> <operator>==</operator> <name>INDEPENDENT</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>offset</name> <operator>+=</operator> <name>queryLevel</name></expr>;</expr_stmt>
+            <return>return <expr><ternary><condition><expr><name>offset</name> <operator>&lt;</operator> <name>CACHED</name></expr> ?</condition><then> <expr><name><name>INDEPENDENT_VISITORS</name><index>[<expr><name>offset</name></expr>]</index></name></expr> </then><else>: <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>INDEPENDENT</name></expr></argument>, <argument><expr><name>offset</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>type</name> <operator>==</operator> <name>EVALUATABLE</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>offset</name> <operator>+=</operator> <name>queryLevel</name></expr>;</expr_stmt>
+            <return>return <expr><ternary><condition><expr><name>offset</name> <operator>&lt;</operator> <name>CACHED</name></expr> ?</condition><then> <expr><name><name>EVALUATABLE_VISITORS</name><index>[<expr><name>offset</name></expr>]</index></name></expr> </then><else>: <expr><operator>new</operator> <call><name>ExpressionVisitor</name><argument_list>(<argument><expr><name>EVALUATABLE</name></expr></argument>, <argument><expr><name>offset</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the column resolver.
+     * This is used for NOT_FROM_RESOLVER visitors.
+     *
+     * @return the column resolver
+     */</comment>
+    <function><type><specifier>public</specifier> <name>ColumnResolver</name></type> <name>getResolver</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>resolver</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the set of column resolvers.
+     * This is used for {@link #DECREMENT_QUERY_LEVEL} visitors.
+     *
+     * @return the set
+     */</comment>
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unchecked"</literal></expr></argument>)</argument_list></annotation>
+    <type><specifier>public</specifier> <name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>ColumnResolver</name></argument>&gt;</argument_list></name></type> <name>getColumnResolvers</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><operator>(</operator><name><name>HashSet</name><argument_list type="generic">&lt;<argument><name>ColumnResolver</name></argument>&gt;</argument_list></name><operator>)</operator> <name>set</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Update the field maxDataModificationId if this value is higher
+     * than the current value.
+     * This is used for SET_MAX_DATA_MODIFICATION_ID visitors.
+     *
+     * @param value the data modification id
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>addDataModificationId</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>value</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>m</name> <init>= <expr><name><name>maxDataModificationId</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>value</name> <operator>&gt;</operator> <name>m</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name><name>maxDataModificationId</name><index>[<expr><literal type="number">0</literal></expr>]</index></name> <operator>=</operator> <name>value</name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the last data modification.
+     * This is used for SET_MAX_DATA_MODIFICATION_ID visitors.
+     *
+     * @return the maximum modification id
+     */</comment>
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getMaxDataModificationId</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name><name>maxDataModificationId</name><index>[<expr><literal type="number">0</literal></expr>]</index></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><name>int</name></type> <name>getQueryLevel</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <assert>assert <expr><name>type</name> <operator>==</operator> <name>INDEPENDENT</name> <operator>||</operator> <name>type</name> <operator>==</operator> <name>EVALUATABLE</name> <operator>||</operator> <name>type</name> <operator>==</operator> <name>DECREMENT_QUERY_LEVEL</name></expr>;</assert>
+        <return>return <expr><name>queryLevel</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the table.
+     * This is used for OPTIMIZABLE_MIN_MAX_COUNT_ALL visitors.
+     *
+     * @return the table
+     */</comment>
+    <function><type><specifier>public</specifier> <name>Table</name></type> <name>getTable</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>table</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the visitor type.
+     *
+     * @return the type
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getType</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>type</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the set of columns of all tables.
+     *
+     * @param filters the filters
+     * @param allColumnsSet the on-demand all-columns set
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>allColumnsForTableFilters</name><parameter_list>(<parameter><decl><type><name><name>TableFilter</name><index>[]</index></name></type> <name>filters</name></decl></parameter>, <parameter><decl><type><name>AllColumnsForPlan</name></type> <name>allColumnsSet</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>TableFilter</name></type> <name>filter</name> <range>: <expr><name>filters</name></expr></range></decl></init>)</control> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>filter</name><operator>.</operator><name>getSelect</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>filter</name><operator>.</operator><name>getSelect</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isEverything</name><argument_list>(<argument><expr><call><name><name>ExpressionVisitor</name><operator>.</operator><name>getColumnsVisitor</name></name><argument_list>(<argument><expr><name>allColumnsSet</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

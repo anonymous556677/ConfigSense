@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/service/reads/repair/BlockingReadRepair.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>reads</name><operator>.</operator><name>repair</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Queue</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentLinkedQueue</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>DecoratedKey</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>codahale</name><operator>.</operator><name>metrics</name><operator>.</operator><name>Meter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Mutation</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ReadCommand</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>UnfilteredPartitionIterators</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>ReadTimeoutException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>Endpoints</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>Replica</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>ReplicaPlan</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>metrics</name><operator>.</operator><name>ReadRepairMetrics</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>tracing</name><operator>.</operator><name>Tracing</name></name>;</import>
+
+<import>import static <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * 'Classic' read repair. Doesn't allow the client read to return until
+ *  updates have been written to nodes needing correction. Breaks write
+ *  atomicity in some situations
+ */</comment>
+<class><specifier>public</specifier> class <name><name>BlockingReadRepair</name><parameter_list>&lt;<parameter><name>E</name> <extends>extends <name><name>Endpoints</name><parameter_list>&lt;<parameter><name>E</name></parameter>&gt;</parameter_list></name></extends></parameter>, <parameter><name>P</name> <extends>extends <name>ReplicaPlan</name><operator>.</operator><name><name>ForRead</name><parameter_list>&lt;<parameter><name>E</name></parameter>&gt;</parameter_list></name></extends></parameter>&gt;</parameter_list></name>
+        <super_list><extends>extends <super><name><name>AbstractReadRepair</name><argument_list type="generic">&lt;<argument><name>E</name></argument>, <argument><name>P</name></argument>&gt;</argument_list></name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>BlockingReadRepair</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name><name>Queue</name><argument_list type="generic">&lt;<argument><name>BlockingPartitionRepair</name></argument>&gt;</argument_list></name></type> <name>repairs</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentLinkedQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <constructor><name>BlockingReadRepair</name><parameter_list>(<parameter><decl><type><name>ReadCommand</name></type> <name>command</name></decl></parameter>, <parameter><decl><type><name><name>ReplicaPlan</name><operator>.</operator><name><name>Shared</name><argument_list type="generic">&lt;<argument><name>E</name></argument>, <argument><name>P</name></argument>&gt;</argument_list></name></name></type> <name>replicaPlan</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>command</name></expr></argument>, <argument><expr><name>replicaPlan</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name><name>UnfilteredPartitionIterators</name><operator>.</operator><name>MergeListener</name></name></type> <name>getMergeListener</name><parameter_list>(<parameter><decl><type><name>P</name></type> <name>replicaPlan</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name><name>PartitionIteratorMergeListener</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>replicaPlan</name></expr></argument>, <argument><expr><name>command</name></expr></argument>, <argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><name>Meter</name></type> <name>getRepairMeter</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name><name>ReadRepairMetrics</name><operator>.</operator><name>repairedBlocking</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>maybeSendAdditionalWrites</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>BlockingPartitionRepair</name></type> <name>repair</name><range>: <expr><name>repairs</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>repair</name><operator>.</operator><name>maybeSendAdditionalWrites</name></name><argument_list>(<argument><expr><name><name>cfs</name><operator>.</operator><name>additionalWriteLatencyNanos</name></name></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>awaitWrites</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>BlockingPartitionRepair</name></type> <name>timedOut</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>BlockingPartitionRepair</name></type> <name>repair</name> <range>: <expr><name>repairs</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>repair</name><operator>.</operator><name>awaitRepairsUntil</name></name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getReadRpcTimeout</name></name><argument_list>(<argument><expr><name>NANOSECONDS</name></expr></argument>)</argument_list></call> <operator>+</operator> <name>queryStartNanoTime</name></expr></argument>, <argument><expr><name>NANOSECONDS</name></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>timedOut</name> <operator>=</operator> <name>repair</name></expr>;</expr_stmt>
+                <break>break;</break>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+        <if_stmt><if>if <condition>(<expr><name>timedOut</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// We got all responses, but timed out while repairing;</comment>
+            <comment type="line">// pick one of the repairs to throw, as this is better than completely manufacturing the error message</comment>
+            <decl_stmt><decl><type><name>int</name></type> <name>blockFor</name> <init>= <expr><call><name><name>timedOut</name><operator>.</operator><name>blockFor</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>received</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>blockFor</name> <operator>-</operator> <call><name><name>timedOut</name><operator>.</operator><name>waitingOn</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>blockFor</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>Tracing</name><operator>.</operator><name>isTracing</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Timed out while read-repairing after receiving all {} data and digest responses"</literal></expr></argument>, <argument><expr><name>blockFor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Timeout while read-repairing after receiving all {} data and digest responses"</literal></expr></argument>, <argument><expr><name>blockFor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+
+            <throw>throw <expr><operator>new</operator> <call><name>ReadTimeoutException</name><argument_list>(<argument><expr><call><name>replicaPlan</name><argument_list>()</argument_list></call><operator>.</operator><call><name>consistencyLevel</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>received</name></expr></argument>, <argument><expr><name>blockFor</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>repairPartition</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>partitionKey</name></decl></parameter>, <parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>Replica</name></argument>, <argument><name>Mutation</name></argument>&gt;</argument_list></name></type> <name>mutations</name></decl></parameter>, <parameter><decl><type><name><name>ReplicaPlan</name><operator>.</operator><name>ForTokenWrite</name></name></type> <name>writePlan</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>BlockingPartitionRepair</name></type> <name>blockingRepair</name> <init>= <expr><operator>new</operator> <call><name>BlockingPartitionRepair</name><argument_list>(<argument><expr><name>partitionKey</name></expr></argument>, <argument><expr><name>mutations</name></expr></argument>, <argument><expr><name>writePlan</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>blockingRepair</name><operator>.</operator><name>sendInitialRepairs</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>repairs</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>blockingRepair</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

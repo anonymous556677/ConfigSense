@@ -1,0 +1,468 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/locator/InetAddressAndPort.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>Serializable</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>Inet4Address</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>Inet6Address</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>InetAddress</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>UnknownHostException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>regex</name><operator>.</operator><name>Pattern</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Preconditions</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>net</name><operator>.</operator><name>HostAndPort</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>IVersionedSerializer</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataInputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>MessagingService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ByteBufferUtil</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FastByteOperations</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A class to replace the usage of InetAddress to identify hosts in the cluster.
+ * Opting for a full replacement class so that in the future if we change the nature
+ * of the identifier the refactor will be easier in that we don't have to change the type
+ * just the methods.
+ *
+ * Because an IP might contain multiple C* instances the identification must be done
+ * using the IP + port. InetSocketAddress is undesirable for a couple of reasons. It's not comparable,
+ * it's toString() method doesn't correctly bracket IPv6, it doesn't handle optional default values,
+ * and a couple of other minor behaviors that are slightly less troublesome like handling the
+ * need to sometimes return a port and sometimes not.
+ *
+ */</comment>
+<class><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"UnstableApiUsage"</literal></expr></argument>)</argument_list></annotation>
+<specifier>public</specifier> <specifier>final</specifier> class <name>InetAddressAndPort</name> <super_list><implements>implements <super><name><name>Comparable</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></super>, <super><name>Serializable</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>serialVersionUID</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">//Store these here to avoid requiring DatabaseDescriptor to be loaded. DatabaseDescriptor will set</comment>
+    <comment type="line">//these when it loads the config. A lot of unit tests won't end up loading DatabaseDescriptor.</comment>
+    <comment type="line">//Tools that might use this class also might not load database descriptor. Those tools are expected</comment>
+    <comment type="line">//to always override the defaults.</comment>
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>volatile</specifier> <name>int</name></type> <name>defaultPort</name> <init>= <expr><literal type="number">7000</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>InetAddress</name></type> <name>address</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name><name>byte</name><index>[]</index></name></type> <name>addressBytes</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>int</name></type> <name>port</name></decl>;</decl_stmt>
+
+    <constructor><specifier>private</specifier> <name>InetAddressAndPort</name><parameter_list>(<parameter><decl><type><name>InetAddress</name></type> <name>address</name></decl></parameter>, <parameter><decl><type><name><name>byte</name><index>[]</index></name></type> <name>addressBytes</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>port</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkNotNull</name></name><argument_list>(<argument><expr><name>address</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkNotNull</name></name><argument_list>(<argument><expr><name>addressBytes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>validatePortRange</name><argument_list>(<argument><expr><name>port</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>address</name></name> <operator>=</operator> <name>address</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>port</name></name> <operator>=</operator> <name>port</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>addressBytes</name></name> <operator>=</operator> <name>addressBytes</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>InetAddressAndPort</name></type> <name>withPort</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>port</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>InetAddressAndPort</name><argument_list>(<argument><expr><name>address</name></expr></argument>, <argument><expr><name>addressBytes</name></expr></argument>, <argument><expr><name>port</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>void</name></type> <name>validatePortRange</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>port</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>port</name> <operator>&lt;</operator> <literal type="number">0</literal> <operator>|</operator> <name>port</name> <operator>&gt;</operator> <literal type="number">65535</literal></expr>)</condition>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Port "</literal> <operator>+</operator> <name>port</name> <operator>+</operator> <literal type="string">" is not a valid port number in the range 0-65535"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>o</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>this</name> <operator>==</operator> <name>o</name></expr>)</condition><block type="pseudo"><block_content> <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>o</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name>getClass</name><argument_list>()</argument_list></call> <operator>!=</operator> <call><name><name>o</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content> <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>that</name> <init>= <expr><operator>(</operator><name>InetAddressAndPort</name><operator>)</operator> <name>o</name></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>port</name> <operator>!=</operator> <name><name>that</name><operator>.</operator><name>port</name></name></expr>)</condition><block type="pseudo"><block_content> <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+        <return>return <expr><call><name><name>address</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>that</name><operator>.</operator><name>address</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>hashCode</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>result</name> <init>= <expr><call><name><name>address</name><operator>.</operator><name>hashCode</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name>result</name> <operator>=</operator> <literal type="number">31</literal> <operator>*</operator> <name>result</name> <operator>+</operator> <name>port</name></expr>;</expr_stmt>
+        <return>return <expr><name>result</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>compareTo</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>o</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>retval</name> <init>= <expr><call><name><name>FastByteOperations</name><operator>.</operator><name>compareUnsigned</name></name><argument_list>(<argument><expr><name>addressBytes</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name><name>addressBytes</name><operator>.</operator><name>length</name></name></expr></argument>, <argument><expr><name><name>o</name><operator>.</operator><name>addressBytes</name></name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name><name>o</name><operator>.</operator><name>addressBytes</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>retval</name> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition>
+        <block>{<block_content>
+            <return>return <expr><name>retval</name></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <return>return <expr><call><name><name>Integer</name><operator>.</operator><name>compare</name></name><argument_list>(<argument><expr><name>port</name></expr></argument>, <argument><expr><name><name>o</name><operator>.</operator><name>port</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getHostAddressAndPort</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>getHostAddress</name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Pattern</name></type> <name>JMX_INCOMPATIBLE_CHARS</name> <init>= <expr><call><name><name>Pattern</name><operator>.</operator><name>compile</name></name><argument_list>(<argument><expr><literal type="string">"[\\[\\]:]"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+
+    <comment type="block" format="javadoc">/**
+     * Return a version of getHostAddressAndPort suitable for use in JMX object names without
+     * requiring any escaping.  Replaces each character invalid for JMX names with an underscore.
+     *
+     * @return String with JMX-safe representation of the IP address and port
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getHostAddressAndPortForJMX</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>JMX_INCOMPATIBLE_CHARS</name><operator>.</operator><name>matcher</name></name><argument_list>(<argument><expr><call><name>getHostAddressAndPort</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>replaceAll</name><argument_list>(<argument><expr><literal type="string">"_"</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getHostAddress</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>withPort</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>withPort</name></expr>)</condition>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>HostAndPort</name><operator>.</operator><name>fromParts</name></name><argument_list>(<argument><expr><call><name><name>address</name><operator>.</operator><name>getHostAddress</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>port</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>toString</name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <return>return <expr><call><name><name>address</name><operator>.</operator><name>getHostAddress</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>toString</name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>withPort</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>withPort</name></expr>)</condition>
+        <block>{<block_content>
+            <return>return <expr><call><name>toString</name><argument_list>(<argument><expr><name>address</name></expr></argument>, <argument><expr><name>port</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <return>return <expr><call><name><name>address</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/** Format an InetAddressAndPort in the same style as InetAddress.toString.
+     *  The string returned is of the form: hostname / literal IP address : port
+     *  (without the whitespace). Literal IPv6 addresses will be wrapped with [ ]
+     *  to make the port number clear.
+     *
+     *  If the host name is unresolved, no reverse name service lookup
+     *  is performed. The hostname part will be represented by an empty string.
+     *
+     * @param address InetAddress to convert String
+     * @param port Port number to convert to String
+     * @return String representation of the IP address and port
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>String</name></type> <name>toString</name><parameter_list>(<parameter><decl><type><name>InetAddress</name></type> <name>address</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>port</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>String</name></type> <name>addressToString</name> <init>= <expr><call><name><name>address</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt> <comment type="line">// cannot use getHostName as it resolves</comment>
+        <decl_stmt><decl><type><name>int</name></type> <name>nameLength</name> <init>= <expr><call><name><name>addressToString</name><operator>.</operator><name>lastIndexOf</name></name><argument_list>(<argument><expr><literal type="char">'/'</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt> <comment type="line">// use last index to prevent ambiguity if host name contains /</comment>
+        <assert>assert <expr><name>nameLength</name> <operator>&gt;=</operator> <literal type="number">0</literal> <operator>:</operator> <literal type="string">"InetAddress.toString format may have changed, expecting /"</literal></expr>;</assert>
+
+        <comment type="line">// Check if need to wrap address with [ ] for IPv6 addresses</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>addressToString</name><operator>.</operator><name>indexOf</name></name><argument_list>(<argument><expr><literal type="char">':'</literal></expr></argument>, <argument><expr><name>nameLength</name></expr></argument>)</argument_list></call> <operator>&gt;=</operator> <literal type="number">0</literal></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>StringBuilder</name></type> <name>sb</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>(<argument><expr><call><name><name>addressToString</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="number">16</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name>addressToString</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>nameLength</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt> <comment type="line">// append optional host and / char</comment>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">'['</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name>addressToString</name></expr></argument>, <argument><expr><name>nameLength</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>, <argument><expr><call><name><name>addressToString</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"]:"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name>port</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><call><name><name>sb</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></if>
+        <else>else <comment type="line">// can just append :port</comment>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>StringBuilder</name></type> <name>sb</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>(<argument><expr><name>addressToString</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt> <comment type="line">// will have enough capacity for port</comment>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">":"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name>port</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><call><name><name>sb</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>InetAddressAndPort</name></type> <name>getByName</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>UnknownHostException</name></expr></argument></throws>
+    <block>{<block_content>
+        <return>return <expr><call><name>getByNameOverrideDefaults</name><argument_list>(<argument><expr><name>name</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     *
+     * @param name Hostname + optional ports string
+     * @param port Port to connect on, overridden by values in hostname string, defaults to DatabaseDescriptor default if not specified anywhere.
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>InetAddressAndPort</name></type> <name>getByNameOverrideDefaults</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>, <parameter><decl><type><name>Integer</name></type> <name>port</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>UnknownHostException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>HostAndPort</name></type> <name>hap</name> <init>= <expr><call><name><name>HostAndPort</name><operator>.</operator><name>fromString</name></name><argument_list>(<argument><expr><name>name</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>hap</name><operator>.</operator><name>hasPort</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>port</name> <operator>=</operator> <call><name><name>hap</name><operator>.</operator><name>getPort</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name>getByAddressOverrideDefaults</name><argument_list>(<argument><expr><call><name><name>InetAddress</name><operator>.</operator><name>getByName</name></name><argument_list>(<argument><expr><call><name><name>hap</name><operator>.</operator><name>getHost</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>port</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>InetAddressAndPort</name></type> <name>getByAddress</name><parameter_list>(<parameter><decl><type><name><name>byte</name><index>[]</index></name></type> <name>address</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>UnknownHostException</name></expr></argument></throws>
+    <block>{<block_content>
+        <return>return <expr><call><name>getByAddressOverrideDefaults</name><argument_list>(<argument><expr><call><name><name>InetAddress</name><operator>.</operator><name>getByAddress</name></name><argument_list>(<argument><expr><name>address</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>address</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>InetAddressAndPort</name></type> <name>getByAddress</name><parameter_list>(<parameter><decl><type><name>InetAddress</name></type> <name>address</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>getByAddressOverrideDefaults</name><argument_list>(<argument><expr><name>address</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>InetAddressAndPort</name></type> <name>getByAddressOverrideDefaults</name><parameter_list>(<parameter><decl><type><name>InetAddress</name></type> <name>address</name></decl></parameter>, <parameter><decl><type><name>Integer</name></type> <name>port</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>port</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>port</name> <operator>=</operator> <name>defaultPort</name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <return>return <expr><operator>new</operator> <call><name>InetAddressAndPort</name><argument_list>(<argument><expr><name>address</name></expr></argument>, <argument><expr><call><name><name>address</name><operator>.</operator><name>getAddress</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>port</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>InetAddressAndPort</name></type> <name>getByAddressOverrideDefaults</name><parameter_list>(<parameter><decl><type><name>InetAddress</name></type> <name>address</name></decl></parameter>, <parameter><decl><type><name><name>byte</name><index>[]</index></name></type> <name>addressBytes</name></decl></parameter>, <parameter><decl><type><name>Integer</name></type> <name>port</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>port</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>port</name> <operator>=</operator> <name>defaultPort</name></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <return>return <expr><operator>new</operator> <call><name>InetAddressAndPort</name><argument_list>(<argument><expr><name>address</name></expr></argument>, <argument><expr><name>addressBytes</name></expr></argument>, <argument><expr><name>port</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>InetAddressAndPort</name></type> <name>getLoopbackAddress</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>InetAddressAndPort</name><operator>.</operator><name>getByAddress</name></name><argument_list>(<argument><expr><call><name><name>InetAddress</name><operator>.</operator><name>getLoopbackAddress</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>InetAddressAndPort</name></type> <name>getLocalHost</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>FBUtilities</name><operator>.</operator><name>getLocalAddressAndPort</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>initializeDefaultPort</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>port</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>defaultPort</name> <operator>=</operator> <name>port</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name>int</name></type> <name>getDefaultPort</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>defaultPort</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * As of version 4.0 the endpoint description includes a port number as an unsigned short
+     * This serializer matches the 3.0 CompactEndpointSerializationHelper, encoding the number of address bytes
+     * in a single byte before the address itself.
+     */</comment>
+    <class><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>Serializer</name> <super_list><implements>implements <super><name><name>IVersionedSerializer</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MAXIMUM_SIZE</name> <init>= <expr><literal type="number">19</literal></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// We put the static instance here, to avoid complexity with dtests.</comment>
+        <comment type="line">// InetAddressAndPort is one of the only classes we share between instances, which is possible cleanly</comment>
+        <comment type="line">// because it has no type-dependencies in its public API, however Serializer requires DataOutputPlus, which requires...</comment>
+        <comment type="line">// and the chain becomes quite unwieldy</comment>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Serializer</name></type> <name>inetAddressAndPortSerializer</name> <init>= <expr><operator>new</operator> <call><name>Serializer</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>Serializer</name><parameter_list>()</parameter_list> <block>{<block_content/>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>byte</name><index>[]</index></name></type> <name>buf</name> <init>= <expr><name><name>endpoint</name><operator>.</operator><name>addressBytes</name></name></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>version</name> <operator>&gt;=</operator> <name><name>MessagingService</name><operator>.</operator><name>VERSION_40</name></name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeByte</name></name><argument_list>(<argument><expr><name><name>buf</name><operator>.</operator><name>length</name></name> <operator>+</operator> <literal type="number">2</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><name>buf</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeShort</name></name><argument_list>(<argument><expr><name><name>endpoint</name><operator>.</operator><name>port</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeByte</name></name><argument_list>(<argument><expr><name><name>buf</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><name>buf</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>InetAddressAndPort</name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readByte</name></name><argument_list>()</argument_list></call> <operator>&amp;</operator> <literal type="number">0xFF</literal></expr></init></decl>;</decl_stmt>
+            <switch>switch<condition>(<expr><name>size</name></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">//The original pre-4.0 serialiation of just an address</comment>
+                <case>case <expr><literal type="number">4</literal></expr>:</case>
+                <case>case <expr><literal type="number">16</literal></expr>:</case>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name><name>byte</name><index>[]</index></name></type> <name>bytes</name> <init>= <expr><operator>new</operator> <name><name>byte</name><index>[<expr><name>size</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readFully</name></name><argument_list>(<argument><expr><name>bytes</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name><name>bytes</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <return>return <expr><call><name>getByAddress</name><argument_list>(<argument><expr><name>bytes</name></expr></argument>)</argument_list></call></expr>;</return>
+                </block_content>}</block>
+                <comment type="line">//Address and one port</comment>
+                <case>case <expr><literal type="number">6</literal></expr>:</case>
+                <case>case <expr><literal type="number">18</literal></expr>:</case>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name><name>byte</name><index>[]</index></name></type> <name>bytes</name> <init>= <expr><operator>new</operator> <name><name>byte</name><index>[<expr><name>size</name> <operator>-</operator> <literal type="number">2</literal></expr>]</index></name></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readFully</name></name><argument_list>(<argument><expr><name>bytes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                    <decl_stmt><decl><type><name>int</name></type> <name>port</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readShort</name></name><argument_list>()</argument_list></call> <operator>&amp;</operator> <literal type="number">0xFFFF</literal></expr></init></decl>;</decl_stmt>
+                    <return>return <expr><call><name>getByAddressOverrideDefaults</name><argument_list>(<argument><expr><call><name><name>InetAddress</name><operator>.</operator><name>getByAddress</name></name><argument_list>(<argument><expr><name>bytes</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>bytes</name></expr></argument>, <argument><expr><name>port</name></expr></argument>)</argument_list></call></expr>;</return>
+                </block_content>}</block>
+                <default>default:</default>
+                    <throw>throw <expr><operator>new</operator> <call><name>AssertionError</name><argument_list>(<argument><expr><literal type="string">"Unexpected size "</literal> <operator>+</operator> <name>size</name></expr></argument>)</argument_list></call></expr>;</throw>
+
+            </block_content>}</block></switch>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Extract {@link InetAddressAndPort} from the provided {@link ByteBuffer} without altering its state.
+         */</comment>
+        <function><type><specifier>public</specifier> <name>InetAddressAndPort</name></type> <name>extract</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>buf</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>position</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><call><name><name>buf</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>position</name><operator>++</operator></expr></argument>)</argument_list></call> <operator>&amp;</operator> <literal type="number">0xFF</literal></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>size</name> <operator>==</operator> <literal type="number">4</literal> <operator>||</operator> <name>size</name> <operator>==</operator> <literal type="number">16</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name><name>byte</name><index>[]</index></name></type> <name>bytes</name> <init>= <expr><operator>new</operator> <name><name>byte</name><index>[<expr><name>size</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>ByteBufferUtil</name><operator>.</operator><name>copyBytes</name></name><argument_list>(<argument><expr><name>buf</name></expr></argument>, <argument><expr><name>position</name></expr></argument>, <argument><expr><name>bytes</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>size</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><call><name>getByAddress</name><argument_list>(<argument><expr><name>bytes</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></if>
+            <if type="elseif">else if <condition>(<expr><name>size</name> <operator>==</operator> <literal type="number">6</literal> <operator>||</operator> <name>size</name> <operator>==</operator> <literal type="number">18</literal></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name><name>byte</name><index>[]</index></name></type> <name>bytes</name> <init>= <expr><operator>new</operator> <name><name>byte</name><index>[<expr><name>size</name> <operator>-</operator> <literal type="number">2</literal></expr>]</index></name></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>ByteBufferUtil</name><operator>.</operator><name>copyBytes</name></name><argument_list>(<argument><expr><name>buf</name></expr></argument>, <argument><expr><name>position</name></expr></argument>, <argument><expr><name>bytes</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>size</name> <operator>-</operator> <literal type="number">2</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>position</name> <operator>+=</operator> <operator>(</operator><name>size</name> <operator>-</operator> <literal type="number">2</literal><operator>)</operator></expr>;</expr_stmt>
+                <decl_stmt><decl><type><name>int</name></type> <name>port</name> <init>= <expr><call><name><name>buf</name><operator>.</operator><name>getShort</name></name><argument_list>(<argument><expr><name>position</name></expr></argument>)</argument_list></call> <operator>&amp;</operator> <literal type="number">0xFFFF</literal></expr></init></decl>;</decl_stmt>
+                <return>return <expr><call><name>getByAddressOverrideDefaults</name><argument_list>(<argument><expr><call><name><name>InetAddress</name><operator>.</operator><name>getByAddress</name></name><argument_list>(<argument><expr><name>bytes</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>bytes</name></expr></argument>, <argument><expr><name>port</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <throw>throw <expr><operator>new</operator> <call><name>AssertionError</name><argument_list>(<argument><expr><literal type="string">"Unexpected pre-4.0 InetAddressAndPort size "</literal> <operator>+</operator> <name>size</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>serializedSize</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>from</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">//4.0 includes a port number</comment>
+            <if_stmt><if>if <condition>(<expr><name>version</name> <operator>&gt;=</operator> <name><name>MessagingService</name><operator>.</operator><name>VERSION_40</name></name></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name><name>from</name><operator>.</operator><name>address</name></name> <operator>instanceof</operator> <name>Inet4Address</name></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="number">1</literal> <operator>+</operator> <literal type="number">4</literal> <operator>+</operator> <literal type="number">2</literal></expr>;</return></block_content></block></if></if_stmt>
+                <assert>assert <expr><name><name>from</name><operator>.</operator><name>address</name></name> <operator>instanceof</operator> <name>Inet6Address</name></expr>;</assert>
+                <return>return <expr><literal type="number">1</literal> <operator>+</operator> <literal type="number">16</literal> <operator>+</operator> <literal type="number">2</literal></expr>;</return>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name><name>from</name><operator>.</operator><name>address</name></name> <operator>instanceof</operator> <name>Inet4Address</name></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="number">1</literal> <operator>+</operator> <literal type="number">4</literal></expr>;</return></block_content></block></if></if_stmt>
+                <assert>assert <expr><name><name>from</name><operator>.</operator><name>address</name></name> <operator>instanceof</operator> <name>Inet6Address</name></expr>;</assert>
+                <return>return <expr><literal type="number">1</literal> <operator>+</operator> <literal type="number">16</literal></expr>;</return>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/** Serializer for handling FWD_FRM message parameters. Pre-4.0 deserialization is a special
+     * case in the message
+     */</comment>
+    <class><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>FwdFrmSerializer</name> <super_list><implements>implements <super><name><name>IVersionedSerializer</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>FwdFrmSerializer</name></type> <name>fwdFrmSerializer</name> <init>= <expr><operator>new</operator> <call><name>FwdFrmSerializer</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <constructor><specifier>private</specifier> <name>FwdFrmSerializer</name><parameter_list>()</parameter_list> <block>{<block_content> </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>serialize</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>, <parameter><decl><type><name>DataOutputPlus</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>byte</name><index>[]</index></name></type> <name>buf</name> <init>= <expr><name><name>endpoint</name><operator>.</operator><name>addressBytes</name></name></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>version</name> <operator>&gt;=</operator> <name><name>MessagingService</name><operator>.</operator><name>VERSION_40</name></name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeByte</name></name><argument_list>(<argument><expr><name><name>buf</name><operator>.</operator><name>length</name></name> <operator>+</operator> <literal type="number">2</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><name>buf</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>writeShort</name></name><argument_list>(<argument><expr><name><name>endpoint</name><operator>.</operator><name>port</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>write</name></name><argument_list>(<argument><expr><name>buf</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>serializedSize</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>from</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <comment type="line">//4.0 includes a port number</comment>
+            <if_stmt><if>if <condition>(<expr><name>version</name> <operator>&gt;=</operator> <name><name>MessagingService</name><operator>.</operator><name>VERSION_40</name></name></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name><name>from</name><operator>.</operator><name>address</name></name> <operator>instanceof</operator> <name>Inet4Address</name></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="number">1</literal> <operator>+</operator> <literal type="number">4</literal> <operator>+</operator> <literal type="number">2</literal></expr>;</return></block_content></block></if></if_stmt>
+                <assert>assert <expr><name><name>from</name><operator>.</operator><name>address</name></name> <operator>instanceof</operator> <name>Inet6Address</name></expr>;</assert>
+                <return>return <expr><literal type="number">1</literal> <operator>+</operator> <literal type="number">16</literal> <operator>+</operator> <literal type="number">2</literal></expr>;</return>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name><name>from</name><operator>.</operator><name>address</name></name> <operator>instanceof</operator> <name>Inet4Address</name></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="number">4</literal></expr>;</return></block_content></block></if></if_stmt>
+                <assert>assert <expr><name><name>from</name><operator>.</operator><name>address</name></name> <operator>instanceof</operator> <name>Inet6Address</name></expr>;</assert>
+                <return>return <expr><literal type="number">16</literal></expr>;</return>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>InetAddressAndPort</name></type> <name>deserialize</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>version</name> <operator>&gt;=</operator> <name><name>MessagingService</name><operator>.</operator><name>VERSION_40</name></name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>size</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readByte</name></name><argument_list>()</argument_list></call> <operator>&amp;</operator> <literal type="number">0xFF</literal></expr></init></decl>;</decl_stmt>
+                <switch>switch <condition>(<expr><name>size</name></expr>)</condition>
+                <block>{<block_content>
+                    <comment type="line">//Address and one port</comment>
+                    <case>case <expr><literal type="number">6</literal></expr>:</case>
+                    <case>case <expr><literal type="number">18</literal></expr>:</case>
+                    <block>{<block_content>
+                        <decl_stmt><decl><type><name><name>byte</name><index>[]</index></name></type> <name>bytes</name> <init>= <expr><operator>new</operator> <name><name>byte</name><index>[<expr><name>size</name> <operator>-</operator> <literal type="number">2</literal></expr>]</index></name></expr></init></decl>;</decl_stmt>
+                        <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readFully</name></name><argument_list>(<argument><expr><name>bytes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                        <decl_stmt><decl><type><name>int</name></type> <name>port</name> <init>= <expr><call><name><name>in</name><operator>.</operator><name>readShort</name></name><argument_list>()</argument_list></call> <operator>&amp;</operator> <literal type="number">0xFFFF</literal></expr></init></decl>;</decl_stmt>
+                        <return>return <expr><call><name>getByAddressOverrideDefaults</name><argument_list>(<argument><expr><call><name><name>InetAddress</name><operator>.</operator><name>getByAddress</name></name><argument_list>(<argument><expr><name>bytes</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>bytes</name></expr></argument>, <argument><expr><name>port</name></expr></argument>)</argument_list></call></expr>;</return>
+                    </block_content>}</block>
+                    <default>default:</default>
+                        <throw>throw <expr><operator>new</operator> <call><name>AssertionError</name><argument_list>(<argument><expr><literal type="string">"Unexpected size "</literal> <operator>+</operator> <name>size</name></expr></argument>)</argument_list></call></expr>;</throw>
+                </block_content>}</block></switch>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"FWD_FRM deserializations should be special-cased pre-4.0"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>InetAddressAndPort</name></type> <name>pre40DeserializeWithLength</name><parameter_list>(<parameter><decl><type><name>DataInputPlus</name></type> <name>in</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>length</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+        <block>{<block_content>
+            <assert>assert <expr><name>length</name> <operator>==</operator> <literal type="number">4</literal> <operator>||</operator> <name>length</name> <operator>==</operator> <literal type="number">16</literal> <operator>:</operator> <literal type="string">"unexpected length "</literal> <operator>+</operator> <name>length</name></expr>;</assert>
+            <decl_stmt><decl><type><name><name>byte</name><index>[]</index></name></type> <name>from</name> <init>= <expr><operator>new</operator> <name><name>byte</name><index>[<expr><name>length</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>in</name><operator>.</operator><name>readFully</name></name><argument_list>(<argument><expr><name>from</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><call><name><name>InetAddressAndPort</name><operator>.</operator><name>getByAddress</name></name><argument_list>(<argument><expr><name>from</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

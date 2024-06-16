@@ -1,0 +1,453 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/partitions/AtomicBTreePartition.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>ArrayList</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Iterator</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>NavigableSet</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicIntegerFieldUpdater</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicReferenceFieldUpdater</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadataRef</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>filter</name><operator>.</operator><name>ColumnFilter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>index</name><operator>.</operator><name>transactions</name><operator>.</operator><name>UpdateTransaction</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>ObjectSizes</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>btree</name><operator>.</operator><name>BTree</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>btree</name><operator>.</operator><name>UpdateFunction</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>OpOrder</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>Cloner</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>HeapCloner</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>memory</name><operator>.</operator><name>MemtableAllocator</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A thread-safe and atomic Partition implementation.
+ *
+ * Operations (in particular addAll) on this implementation are atomic and
+ * isolated (in the sense of ACID). Typically a addAll is guaranteed that no
+ * other thread can see the state where only parts but not all rows have
+ * been added.
+ */</comment>
+<class><specifier>public</specifier> <specifier>final</specifier> class <name>AtomicBTreePartition</name> <super_list><extends>extends <super><name>AbstractBTreePartition</name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>EMPTY_SIZE</name> <init>= <expr><call><name><name>ObjectSizes</name><operator>.</operator><name>measure</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>AtomicBTreePartition</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>,
+                                                                                       <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getPartitioner</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>decorateKey</name><argument_list>(<argument><expr><call><name><name>ByteBuffer</name><operator>.</operator><name>allocate</name></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                                                       <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// Reserved values for wasteTracker field. These values must not be consecutive (see avoidReservedValues)</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>TRACKER_NEVER_WASTED</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>TRACKER_PESSIMISTIC_LOCKING</name> <init>= <expr><name><name>Integer</name><operator>.</operator><name>MAX_VALUE</name></name></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// The granularity with which we track wasted allocation/work; we round up</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>ALLOCATION_GRANULARITY_BYTES</name> <init>= <expr><literal type="number">1024</literal></expr></init></decl>;</decl_stmt>
+    <comment type="line">// The number of bytes we have to waste in excess of our acceptable realtime rate of waste (defined below)</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>EXCESS_WASTE_BYTES</name> <init>= <expr><literal type="number">10</literal> <operator>*</operator> <literal type="number">1024</literal> <operator>*</operator> <literal type="number">1024L</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>EXCESS_WASTE_OFFSET</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><name>EXCESS_WASTE_BYTES</name> <operator>/</operator> <name>ALLOCATION_GRANULARITY_BYTES</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+    <comment type="line">// Note this is a shift, because dividing a long time and then picking the low 32 bits doesn't give correct rollover behavior</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>CLOCK_SHIFT</name> <init>= <expr><literal type="number">17</literal></expr></init></decl>;</decl_stmt>
+    <comment type="line">// CLOCK_GRANULARITY = 1^9ns &gt;&gt; CLOCK_SHIFT == 132us == (1/7.63)ms</comment>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicIntegerFieldUpdater</name><argument_list type="generic">&lt;<argument><name>AtomicBTreePartition</name></argument>&gt;</argument_list></name></type> <name>wasteTrackerUpdater</name> <init>= <expr><call><name><name>AtomicIntegerFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>AtomicBTreePartition</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"wasteTracker"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicReferenceFieldUpdater</name><argument_list type="generic">&lt;<argument><name>AtomicBTreePartition</name></argument>, <argument><name>Holder</name></argument>&gt;</argument_list></name></type> <name>refUpdater</name> <init>= <expr><call><name><name>AtomicReferenceFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>AtomicBTreePartition</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><name><name>Holder</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"ref"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * (clock + allocation) granularity are combined to give us an acceptable (waste) allocation rate that is defined by
+     * the passage of real time of ALLOCATION_GRANULARITY_BYTES/CLOCK_GRANULARITY, or in this case 7.63Kb/ms, or 7.45Mb/s
+     *
+     * in wasteTracker we maintain within EXCESS_WASTE_OFFSET before the current time; whenever we waste bytes
+     * we increment the current value if it is within this window, and set it to the min of the window plus our waste
+     * otherwise.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>int</name></type> <name>wasteTracker</name> <init>= <expr><name>TRACKER_NEVER_WASTED</name></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>MemtableAllocator</name></type> <name>allocator</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>Holder</name></type> <name>ref</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>TableMetadataRef</name></type> <name>metadata</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>AtomicBTreePartition</name><parameter_list>(<parameter><decl><type><name>TableMetadataRef</name></type> <name>metadata</name></decl></parameter>, <parameter><decl><type><name>DecoratedKey</name></type> <name>partitionKey</name></decl></parameter>, <parameter><decl><type><name>MemtableAllocator</name></type> <name>allocator</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// involved in potential bug? partition columns may be a subset if we alter columns while it's in memtable</comment>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>partitionKey</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>metadata</name></name> <operator>=</operator> <name>metadata</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>allocator</name></name> <operator>=</operator> <name>allocator</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>ref</name></name> <operator>=</operator> <name>EMPTY</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>protected</specifier> <name>Holder</name></type> <name>holder</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>ref</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>TableMetadata</name></type> <name>metadata</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>metadata</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>boolean</name></type> <name>canHaveShadowedData</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name><name>long</name><index>[]</index></name></type> <name>addAllWithSizeDeltaInternal</name><parameter_list>(<parameter><decl><type><name>RowUpdater</name></type> <name>updater</name></decl></parameter>, <parameter><decl><type><name>PartitionUpdate</name></type> <name>update</name></decl></parameter>, <parameter><decl><type><name>UpdateTransaction</name></type> <name>indexer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Holder</name></type> <name>current</name> <init>= <expr><name>ref</name></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>updater</name><operator>.</operator><name>reset</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>update</name><operator>.</operator><name>deletionInfo</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getPartitionDeletion</name><argument_list>()</argument_list></call><operator>.</operator><call><name>isLive</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>indexer</name><operator>.</operator><name>onPartitionDeletion</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>deletionInfo</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getPartitionDeletion</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>update</name><operator>.</operator><name>deletionInfo</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>hasRanges</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>update</name><operator>.</operator><name>deletionInfo</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>rangeIterator</name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>forEachRemaining</name><argument_list>(<argument><expr><name>indexer</name><operator>::</operator><name>onRangeTombstone</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>DeletionInfo</name></type> <name>deletionInfo</name></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>update</name><operator>.</operator><name>deletionInfo</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>mayModify</name><argument_list>(<argument><expr><name><name>current</name><operator>.</operator><name>deletionInfo</name></name></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name><name>updater</name><operator>.</operator><name>inputDeletionInfoCopy</name></name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name><name>updater</name><operator>.</operator><name>inputDeletionInfoCopy</name></name> <operator>=</operator> <call><name><name>update</name><operator>.</operator><name>deletionInfo</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>clone</name><argument_list>(<argument><expr><name><name>HeapCloner</name><operator>.</operator><name>instance</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><name>deletionInfo</name> <operator>=</operator> <call><name><name>current</name><operator>.</operator><name>deletionInfo</name><operator>.</operator><name>mutableCopy</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>add</name><argument_list>(<argument><expr><name><name>updater</name><operator>.</operator><name>inputDeletionInfoCopy</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>updater</name><operator>.</operator><name>onAllocatedOnHeap</name></name><argument_list>(<argument><expr><call><name><name>deletionInfo</name><operator>.</operator><name>unsharedHeapSize</name></name><argument_list>()</argument_list></call> <operator>-</operator> <call><name><name>current</name><operator>.</operator><name>deletionInfo</name><operator>.</operator><name>unsharedHeapSize</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><name>deletionInfo</name> <operator>=</operator> <name><name>current</name><operator>.</operator><name>deletionInfo</name></name></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+
+        <decl_stmt><decl><type><name>RegularAndStaticColumns</name></type> <name>columns</name> <init>= <expr><call><name><name>update</name><operator>.</operator><name>columns</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>mergeTo</name><argument_list>(<argument><expr><name><name>current</name><operator>.</operator><name>columns</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>updater</name><operator>.</operator><name>onAllocatedOnHeap</name></name><argument_list>(<argument><expr><call><name><name>columns</name><operator>.</operator><name>unsharedHeapSize</name></name><argument_list>()</argument_list></call> <operator>-</operator> <call><name><name>current</name><operator>.</operator><name>columns</name><operator>.</operator><name>unsharedHeapSize</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>Row</name></type> <name>newStatic</name> <init>= <expr><call><name><name>update</name><operator>.</operator><name>staticRow</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Row</name></type> <name>staticRow</name> <init>= <expr><ternary><condition><expr><call><name><name>newStatic</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>
+                        ?</condition><then> <expr><name><name>current</name><operator>.</operator><name>staticRow</name></name></expr>
+                        </then><else>: <expr><operator>(</operator><ternary><condition><expr><call><name><name>current</name><operator>.</operator><name>staticRow</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr> ?</condition><then> <expr><call><name><name>updater</name><operator>.</operator><name>insert</name></name><argument_list>(<argument><expr><name>newStatic</name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><call><name><name>updater</name><operator>.</operator><name>merge</name></name><argument_list>(<argument><expr><name><name>current</name><operator>.</operator><name>staticRow</name></name></expr></argument>, <argument><expr><name>newStatic</name></expr></argument>)</argument_list></call></expr></else></ternary><operator>)</operator></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Object</name><index>[]</index></name></type> <name>tree</name> <init>= <expr><call><name><name>BTree</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name><name>current</name><operator>.</operator><name>tree</name></name></expr></argument>, <argument><expr><call><name><name>update</name><operator>.</operator><name>holder</name></name><argument_list>()</argument_list></call><operator>.</operator><name>tree</name></expr></argument>, <argument><expr><call><name><name>update</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>comparator</name></expr></argument>, <argument><expr><name>updater</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>EncodingStats</name></type> <name>newStats</name> <init>= <expr><call><name><name>current</name><operator>.</operator><name>stats</name><operator>.</operator><name>mergeWith</name></name><argument_list>(<argument><expr><call><name><name>update</name><operator>.</operator><name>stats</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>updater</name><operator>.</operator><name>onAllocatedOnHeap</name></name><argument_list>(<argument><expr><call><name><name>newStats</name><operator>.</operator><name>unsharedHeapSize</name></name><argument_list>()</argument_list></call> <operator>-</operator> <call><name><name>current</name><operator>.</operator><name>stats</name><operator>.</operator><name>unsharedHeapSize</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>tree</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>refUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>current</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>Holder</name><argument_list>(<argument><expr><name>columns</name></expr></argument>, <argument><expr><name>tree</name></expr></argument>, <argument><expr><name>deletionInfo</name></expr></argument>, <argument><expr><name>staticRow</name></expr></argument>, <argument><expr><name>newStats</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>updater</name><operator>.</operator><name>finish</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><operator>new</operator> <name><name>long</name><index>[]</index></name><block>{ <expr><name><name>updater</name><operator>.</operator><name>dataSize</name></name></expr>, <expr><name><name>updater</name><operator>.</operator><name>colUpdateTimeDelta</name></name></expr> }</block></expr>;</return>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+    <comment type="block" format="javadoc">/**
+     * Adds a given update to this in-memtable partition.
+     *
+     * @return an array containing first the difference in size seen after merging the updates, and second the minimum
+     * time detla between updates.
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>long</name><index>[]</index></name></type> <name>addAllWithSizeDelta</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>PartitionUpdate</name></type> <name>update</name></decl></parameter>,
+                                      <parameter><decl><type><name>Cloner</name></type> <name>cloner</name></decl></parameter>,
+                                      <parameter><decl><type><name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>writeOp</name></decl></parameter>,
+                                      <parameter><decl><type><name>UpdateTransaction</name></type> <name>indexer</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>RowUpdater</name></type> <name>updater</name> <init>= <expr><operator>new</operator> <call><name>RowUpdater</name><argument_list>(<argument><expr><name>allocator</name></expr></argument>, <argument><expr><name>cloner</name></expr></argument>, <argument><expr><name>writeOp</name></expr></argument>, <argument><expr><name>indexer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>shouldLock</name> <init>= <expr><call><name>shouldLock</name><argument_list>(<argument><expr><name>writeOp</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>indexer</name><operator>.</operator><name>start</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>shouldLock</name></expr>)</condition>
+                <block>{<block_content>
+                    <synchronized>synchronized <init>(<expr><name>this</name></expr>)</init>
+                    <block>{<block_content>
+                        <decl_stmt><decl><type><name><name>long</name><index>[]</index></name></type> <name>result</name> <init>= <expr><call><name>addAllWithSizeDeltaInternal</name><argument_list>(<argument><expr><name>updater</name></expr></argument>, <argument><expr><name>update</name></expr></argument>, <argument><expr><name>indexer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                        <if_stmt><if>if <condition>(<expr><name>result</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                            <return>return <expr><name>result</name></expr>;</return></block_content></block></if></if_stmt>
+                    </block_content>}</block></synchronized>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name><name>long</name><index>[]</index></name></type> <name>result</name> <init>= <expr><call><name>addAllWithSizeDeltaInternal</name><argument_list>(<argument><expr><name>updater</name></expr></argument>, <argument><expr><name>update</name></expr></argument>, <argument><expr><name>indexer</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>result</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                        <return>return <expr><name>result</name></expr>;</return></block_content></block></if></if_stmt>
+
+                    <expr_stmt><expr><name>shouldLock</name> <operator>=</operator> <call><name>shouldLock</name><argument_list>(<argument><expr><name><name>updater</name><operator>.</operator><name>heapSize</name></name></expr></argument>, <argument><expr><name>writeOp</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block>
+        <finally>finally
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>indexer</name><operator>.</operator><name>commit</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></finally></try>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>DeletionInfo</name></type> <name>deletionInfo</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>allocator</name><operator>.</operator><name>ensureOnHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>applyToDeletionInfo</name><argument_list>(<argument><expr><call><name><name>super</name><operator>.</operator><name>deletionInfo</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Row</name></type> <name>staticRow</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>allocator</name><operator>.</operator><name>ensureOnHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>applyToStatic</name><argument_list>(<argument><expr><call><name><name>super</name><operator>.</operator><name>staticRow</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>DecoratedKey</name></type> <name>partitionKey</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>allocator</name><operator>.</operator><name>ensureOnHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>applyToPartitionKey</name><argument_list>(<argument><expr><call><name><name>super</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Row</name></type> <name>getRow</name><parameter_list>(<parameter><decl><type><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>clustering</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>allocator</name><operator>.</operator><name>ensureOnHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>applyToRow</name><argument_list>(<argument><expr><call><name><name>super</name><operator>.</operator><name>getRow</name></name><argument_list>(<argument><expr><name>clustering</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Row</name></type> <name>lastRow</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>allocator</name><operator>.</operator><name>ensureOnHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>applyToRow</name><argument_list>(<argument><expr><call><name><name>super</name><operator>.</operator><name>lastRow</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>UnfilteredRowIterator</name></type> <name>unfilteredIterator</name><parameter_list>(<parameter><decl><type><name>ColumnFilter</name></type> <name>selection</name></decl></parameter>, <parameter><decl><type><name>Slices</name></type> <name>slices</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>reversed</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>allocator</name><operator>.</operator><name>ensureOnHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>applyToPartition</name><argument_list>(<argument><expr><call><name><name>super</name><operator>.</operator><name>unfilteredIterator</name></name><argument_list>(<argument><expr><name>selection</name></expr></argument>, <argument><expr><name>slices</name></expr></argument>, <argument><expr><name>reversed</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>UnfilteredRowIterator</name></type> <name>unfilteredIterator</name><parameter_list>(<parameter><decl><type><name>ColumnFilter</name></type> <name>selection</name></decl></parameter>, <parameter><decl><type><name><name>NavigableSet</name><argument_list type="generic">&lt;<argument><name><name>Clustering</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>clusteringsInQueryOrder</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>reversed</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>allocator</name><operator>.</operator><name>ensureOnHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>applyToPartition</name><argument_list>(<argument><expr><call><name><name>super</name><operator>.</operator><name>unfilteredIterator</name></name><argument_list>(<argument><expr><name>selection</name></expr></argument>, <argument><expr><name>clusteringsInQueryOrder</name></expr></argument>, <argument><expr><name>reversed</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>UnfilteredRowIterator</name></type> <name>unfilteredIterator</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>allocator</name><operator>.</operator><name>ensureOnHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>applyToPartition</name><argument_list>(<argument><expr><call><name><name>super</name><operator>.</operator><name>unfilteredIterator</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>UnfilteredRowIterator</name></type> <name>unfilteredIterator</name><parameter_list>(<parameter><decl><type><name>Holder</name></type> <name>current</name></decl></parameter>, <parameter><decl><type><name>ColumnFilter</name></type> <name>selection</name></decl></parameter>, <parameter><decl><type><name>Slices</name></type> <name>slices</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>reversed</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>allocator</name><operator>.</operator><name>ensureOnHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>applyToPartition</name><argument_list>(<argument><expr><call><name><name>super</name><operator>.</operator><name>unfilteredIterator</name></name><argument_list>(<argument><expr><name>current</name></expr></argument>, <argument><expr><name>selection</name></expr></argument>, <argument><expr><name>slices</name></expr></argument>, <argument><expr><name>reversed</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>Row</name></argument>&gt;</argument_list></name></type> <name>iterator</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>allocator</name><operator>.</operator><name>ensureOnHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>applyToPartition</name><argument_list>(<argument><expr><call><name><name>super</name><operator>.</operator><name>iterator</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>shouldLock</name><parameter_list>(<parameter><decl><type><name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>writeOp</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>useLock</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name>lockIfOldest</name><argument_list>(<argument><expr><name>writeOp</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>shouldLock</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>addWaste</name></decl></parameter>, <parameter><decl><type><name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>writeOp</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>updateWastedAllocationTracker</name><argument_list>(<argument><expr><name>addWaste</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <return>return <expr><call><name>lockIfOldest</name><argument_list>(<argument><expr><name>writeOp</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>lockIfOldest</name><parameter_list>(<parameter><decl><type><name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>writeOp</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>writeOp</name><operator>.</operator><name>isOldestLiveGroup</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>Thread</name><operator>.</operator><name>yield</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><call><name><name>writeOp</name><operator>.</operator><name>isOldestLiveGroup</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>useLock</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>wasteTracker</name> <operator>==</operator> <name>TRACKER_PESSIMISTIC_LOCKING</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Update the wasted allocation tracker state based on newly wasted allocation information
+     *
+     * @param wastedBytes the number of bytes wasted by this thread
+     * @return true if the caller should now proceed with pessimistic locking because the waste limit has been reached
+     */</comment>
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>updateWastedAllocationTracker</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>wastedBytes</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// Early check for huge allocation that exceeds the limit</comment>
+        <if_stmt><if>if <condition>(<expr><name>wastedBytes</name> <operator>&lt;</operator> <name>EXCESS_WASTE_BYTES</name></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// We round up to ensure work &lt; granularity are still accounted for</comment>
+            <decl_stmt><decl><type><name>int</name></type> <name>wastedAllocation</name> <init>= <expr><operator>(</operator><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><name>wastedBytes</name> <operator>+</operator> <name>ALLOCATION_GRANULARITY_BYTES</name> <operator>-</operator> <literal type="number">1</literal><operator>)</operator><operator>)</operator> <operator>/</operator> <name>ALLOCATION_GRANULARITY_BYTES</name></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>int</name></type> <name>oldTrackerValue</name></decl>;</decl_stmt>
+            <while>while <condition>(<expr><name>TRACKER_PESSIMISTIC_LOCKING</name> <operator>!=</operator> <operator>(</operator><name>oldTrackerValue</name> <operator>=</operator> <name>wasteTracker</name><operator>)</operator></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// Note this time value has an arbitrary offset, but is a constant rate 32 bit counter (that may wrap)</comment>
+                <decl_stmt><decl><type><name>int</name></type> <name>time</name> <init>= <expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>&gt;&gt;&gt;</operator> <name>CLOCK_SHIFT</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>int</name></type> <name>delta</name> <init>= <expr><name>oldTrackerValue</name> <operator>-</operator> <name>time</name></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>oldTrackerValue</name> <operator>==</operator> <name>TRACKER_NEVER_WASTED</name> <operator>||</operator> <name>delta</name> <operator>&gt;=</operator> <literal type="number">0</literal> <operator>||</operator> <name>delta</name> <operator>&lt;</operator> <operator>-</operator><name>EXCESS_WASTE_OFFSET</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>delta</name> <operator>=</operator> <operator>-</operator><name>EXCESS_WASTE_OFFSET</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <expr_stmt><expr><name>delta</name> <operator>+=</operator> <name>wastedAllocation</name></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>delta</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <break>break;</break></block_content></block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><call><name><name>wasteTrackerUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>oldTrackerValue</name></expr></argument>, <argument><expr><call><name>avoidReservedValues</name><argument_list>(<argument><expr><name>time</name> <operator>+</operator> <name>delta</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></if></if_stmt>
+        <comment type="line">// We have definitely reached our waste limit so set the state if it isn't already</comment>
+        <expr_stmt><expr><call><name><name>wasteTrackerUpdater</name><operator>.</operator><name>set</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>TRACKER_PESSIMISTIC_LOCKING</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// And tell the caller to proceed with pessimistic locking</comment>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>int</name></type> <name>avoidReservedValues</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>wasteTracker</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>wasteTracker</name> <operator>==</operator> <name>TRACKER_NEVER_WASTED</name> <operator>||</operator> <name>wasteTracker</name> <operator>==</operator> <name>TRACKER_PESSIMISTIC_LOCKING</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><name>wasteTracker</name> <operator>+</operator> <literal type="number">1</literal></expr>;</return></block_content></block></if></if_stmt>
+        <return>return <expr><name>wasteTracker</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>unsafeSetHolder</name><parameter_list>(<parameter><decl><type><name>Holder</name></type> <name>holder</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>ref</name> <operator>=</operator> <name>holder</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <name>Holder</name></type> <name>unsafeGetHolder</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>ref</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// the function we provide to the btree utilities to perform any column replacements</comment>
+    <class><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>RowUpdater</name> <super_list><implements>implements <super><name><name>UpdateFunction</name><argument_list type="generic">&lt;<argument><name>Row</name></argument>, <argument><name>Row</name></argument>&gt;</argument_list></name></super>, <super><name><name>ColumnData</name><operator>.</operator><name>PostReconciliationFunction</name></name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>final</specifier> <name>MemtableAllocator</name></type> <name>allocator</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>writeOp</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>UpdateTransaction</name></type> <name>indexer</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>Cloner</name></type> <name>cloner</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>dataSize</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>heapSize</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>colUpdateTimeDelta</name> <init>= <expr><name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>Row</name></argument>&gt;</argument_list></name></type> <name>inserted</name></decl>;</decl_stmt> <comment type="line">// TODO: replace with walk of aborted BTree</comment>
+
+        <decl_stmt><decl><type><name>DeletionInfo</name></type> <name>inputDeletionInfoCopy</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>RowUpdater</name><parameter_list>(<parameter><decl><type><name>MemtableAllocator</name></type> <name>allocator</name></decl></parameter>, <parameter><decl><type><name>Cloner</name></type> <name>cloner</name></decl></parameter>, <parameter><decl><type><name><name>OpOrder</name><operator>.</operator><name>Group</name></name></type> <name>writeOp</name></decl></parameter>, <parameter><decl><type><name>UpdateTransaction</name></type> <name>indexer</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>allocator</name></name> <operator>=</operator> <name>allocator</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>writeOp</name></name> <operator>=</operator> <name>writeOp</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>indexer</name></name> <operator>=</operator> <name>indexer</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cloner</name></name> <operator>=</operator> <name>cloner</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>Row</name></type> <name>insert</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>insert</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Row</name></type> <name>data</name> <init>= <expr><call><name><name>insert</name><operator>.</operator><name>clone</name></name><argument_list>(<argument><expr><name>cloner</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt> 
+            <expr_stmt><expr><call><name><name>indexer</name><operator>.</operator><name>onInserted</name></name><argument_list>(<argument><expr><name>insert</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>dataSize</name></name> <operator>+=</operator> <call><name><name>data</name><operator>.</operator><name>dataSize</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>onAllocatedOnHeap</name><argument_list>(<argument><expr><call><name><name>data</name><operator>.</operator><name>unsharedHeapSizeExcludingData</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>inserted</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>inserted</name> <operator>=</operator> <operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>inserted</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>data</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>data</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Row</name></type> <name>merge</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>existing</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>update</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Row</name></type> <name>reconciled</name> <init>= <expr><call><name><name>Rows</name><operator>.</operator><name>merge</name></name><argument_list>(<argument><expr><name>existing</name></expr></argument>, <argument><expr><name>update</name></expr></argument>, <argument><expr><name>this</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>indexer</name><operator>.</operator><name>onUpdated</name></name><argument_list>(<argument><expr><name>existing</name></expr></argument>, <argument><expr><name>reconciled</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>inserted</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>inserted</name> <operator>=</operator> <operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>inserted</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>reconciled</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <return>return <expr><name>reconciled</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Row</name></type> <name>retain</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>existing</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>existing</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>protected</specifier> <name>void</name></type> <name>reset</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>dataSize</name></name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>heapSize</name></name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>inserted</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>inserted</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>merge</name><parameter_list>(<parameter><decl><type><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>previous</name></decl></parameter>, <parameter><decl><type><name><name>Cell</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>insert</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>insert</name> <operator>!=</operator> <name>previous</name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>long</name></type> <name>timeDelta</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>abs</name></name><argument_list>(<argument><expr><call><name><name>insert</name><operator>.</operator><name>timestamp</name></name><argument_list>()</argument_list></call> <operator>-</operator> <call><name><name>previous</name><operator>.</operator><name>timestamp</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>timeDelta</name> <operator>&lt;</operator> <name>colUpdateTimeDelta</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>colUpdateTimeDelta</name> <operator>=</operator> <name>timeDelta</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><name>cloner</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>insert</name> <operator>=</operator> <call><name><name>cloner</name><operator>.</operator><name>clone</name></name><argument_list>(<argument><expr><name>insert</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <expr_stmt><expr><name>dataSize</name> <operator>+=</operator> <call><name><name>insert</name><operator>.</operator><name>dataSize</name></name><argument_list>()</argument_list></call> <operator>-</operator> <call><name><name>previous</name><operator>.</operator><name>dataSize</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>heapSize</name> <operator>+=</operator> <call><name><name>insert</name><operator>.</operator><name>unsharedHeapSizeExcludingData</name></name><argument_list>()</argument_list></call> <operator>-</operator> <call><name><name>previous</name><operator>.</operator><name>unsharedHeapSizeExcludingData</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>insert</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>ColumnData</name></type> <name>insert</name><parameter_list>(<parameter><decl><type><name>ColumnData</name></type> <name>insert</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>cloner</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>insert</name> <operator>=</operator> <call><name><name>insert</name><operator>.</operator><name>clone</name></name><argument_list>(<argument><expr><name>cloner</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            <expr_stmt><expr><name>dataSize</name> <operator>+=</operator> <call><name><name>insert</name><operator>.</operator><name>dataSize</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>heapSize</name> <operator>+=</operator> <call><name><name>insert</name><operator>.</operator><name>unsharedHeapSizeExcludingData</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>insert</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>delete</name><parameter_list>(<parameter><decl><type><name>ColumnData</name></type> <name>existing</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name>dataSize</name> <operator>-=</operator> <call><name><name>existing</name><operator>.</operator><name>dataSize</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>heapSize</name> <operator>-=</operator> <call><name><name>existing</name><operator>.</operator><name>unsharedHeapSizeExcludingData</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>onAllocatedOnHeap</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>heapSize</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>heapSize</name></name> <operator>+=</operator> <name>heapSize</name></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>protected</specifier> <name>void</name></type> <name>finish</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>allocator</name><operator>.</operator><name>onHeap</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>adjust</name><argument_list>(<argument><expr><name>heapSize</name></expr></argument>, <argument><expr><name>writeOp</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+}</block></class>
+</unit>

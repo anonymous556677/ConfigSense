@@ -1,0 +1,262 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/ConsistencyLevel.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name></name>;</package>
+
+
+<import>import <name><name>com</name><operator>.</operator><name>carrotsearch</name><operator>.</operator><name>hppc</name><operator>.</operator><name>ObjectIntHashMap</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>Endpoints</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>schema</name><operator>.</operator><name>TableMetadata</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>InvalidRequestException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>AbstractReplicationStrategy</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>NetworkTopologyStrategy</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name><operator>.</operator><name>ProtocolException</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>Replicas</name><operator>.</operator><name>addToCountPerDc</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>Replicas</name><operator>.</operator><name>countInOurDc</name></name>;</import>
+
+<enum><specifier>public</specifier> enum <name>ConsistencyLevel</name>
+<block>{
+    <decl><name>ANY</name>         <argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></decl>,
+    <decl><name>ONE</name>         <argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></decl>,
+    <decl><name>TWO</name>         <argument_list>(<argument><expr><literal type="number">2</literal></expr></argument>)</argument_list></decl>,
+    <decl><name>THREE</name>       <argument_list>(<argument><expr><literal type="number">3</literal></expr></argument>)</argument_list></decl>,
+    <decl><name>QUORUM</name>      <argument_list>(<argument><expr><literal type="number">4</literal></expr></argument>)</argument_list></decl>,
+    <decl><name>ALL</name>         <argument_list>(<argument><expr><literal type="number">5</literal></expr></argument>)</argument_list></decl>,
+    <decl><name>LOCAL_QUORUM</name><argument_list>(<argument><expr><literal type="number">6</literal></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></decl>,
+    <decl><name>EACH_QUORUM</name> <argument_list>(<argument><expr><literal type="number">7</literal></expr></argument>)</argument_list></decl>,
+    <decl><name>SERIAL</name>      <argument_list>(<argument><expr><literal type="number">8</literal></expr></argument>)</argument_list></decl>,
+    <decl><name>LOCAL_SERIAL</name><argument_list>(<argument><expr><literal type="number">9</literal></expr></argument>)</argument_list></decl>,
+    <decl><name>LOCAL_ONE</name>   <argument_list>(<argument><expr><literal type="number">10</literal></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></decl>,
+    <decl><name>NODE_LOCAL</name>  <argument_list>(<argument><expr><literal type="number">11</literal></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></decl>;
+
+    <comment type="line">// Used by the binary protocol</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>int</name></type> <name>code</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>isDCLocal</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>ConsistencyLevel</name><index>[]</index></name></type> <name>codeIdx</name></decl>;</decl_stmt>
+    <static>static
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>maxCode</name> <init>= <expr><operator>-</operator><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>ConsistencyLevel</name></type> <name>cl</name> <range>: <expr><call><name><name>ConsistencyLevel</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>maxCode</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>maxCode</name></expr></argument>, <argument><expr><name><name>cl</name><operator>.</operator><name>code</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <expr_stmt><expr><name>codeIdx</name> <operator>=</operator> <operator>new</operator> <name><name>ConsistencyLevel</name><index>[<expr><name>maxCode</name> <operator>+</operator> <literal type="number">1</literal></expr>]</index></name></expr>;</expr_stmt>
+        <for>for <control>(<init><decl><type><name>ConsistencyLevel</name></type> <name>cl</name> <range>: <expr><call><name><name>ConsistencyLevel</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name><name>codeIdx</name><index>[<expr><name><name>cl</name><operator>.</operator><name>code</name></name></expr>]</index></name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"Duplicate code"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+            <expr_stmt><expr><name><name>codeIdx</name><index>[<expr><name><name>cl</name><operator>.</operator><name>code</name></name></expr>]</index></name> <operator>=</operator> <name>cl</name></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></static>
+
+    <constructor><specifier>private</specifier> <name>ConsistencyLevel</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>code</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>code</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>private</specifier> <name>ConsistencyLevel</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>code</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isDCLocal</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>code</name></name> <operator>=</operator> <name>code</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>isDCLocal</name></name> <operator>=</operator> <name>isDCLocal</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>ConsistencyLevel</name></type> <name>fromCode</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>code</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>code</name> <operator>&lt;</operator> <literal type="number">0</literal> <operator>||</operator> <name>code</name> <operator>&gt;=</operator> <name><name>codeIdx</name><operator>.</operator><name>length</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>ProtocolException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Unknown code %d for a consistency level"</literal></expr></argument>, <argument><expr><name>code</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <return>return <expr><name><name>codeIdx</name><index>[<expr><name>code</name></expr>]</index></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>int</name></type> <name>quorumFor</name><parameter_list>(<parameter><decl><type><name>AbstractReplicationStrategy</name></type> <name>replicationStrategy</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>(</operator><call><name><name>replicationStrategy</name><operator>.</operator><name>getReplicationFactor</name></name><argument_list>()</argument_list></call><operator>.</operator><name>allReplicas</name> <operator>/</operator> <literal type="number">2</literal><operator>)</operator> <operator>+</operator> <literal type="number">1</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>int</name></type> <name>localQuorumFor</name><parameter_list>(<parameter><decl><type><name>AbstractReplicationStrategy</name></type> <name>replicationStrategy</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>dc</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><operator>(</operator><name>replicationStrategy</name> <operator>instanceof</operator> <name>NetworkTopologyStrategy</name><operator>)</operator></expr>
+             ?</condition><then> <expr><operator>(</operator><operator>(</operator><operator>(</operator><name>NetworkTopologyStrategy</name><operator>)</operator> <name>replicationStrategy</name><operator>)</operator><operator>.</operator><call><name>getReplicationFactor</name><argument_list>(<argument><expr><name>dc</name></expr></argument>)</argument_list></call><operator>.</operator><name>allReplicas</name> <operator>/</operator> <literal type="number">2</literal><operator>)</operator> <operator>+</operator> <literal type="number">1</literal></expr>
+             </then><else>: <expr><call><name>quorumFor</name><argument_list>(<argument><expr><name>replicationStrategy</name></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>int</name></type> <name>localQuorumForOurDc</name><parameter_list>(<parameter><decl><type><name>AbstractReplicationStrategy</name></type> <name>replicationStrategy</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>localQuorumFor</name><argument_list>(<argument><expr><name>replicationStrategy</name></expr></argument>, <argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getLocalDataCenter</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>ObjectIntHashMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>eachQuorumForRead</name><parameter_list>(<parameter><decl><type><name>AbstractReplicationStrategy</name></type> <name>replicationStrategy</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>replicationStrategy</name> <operator>instanceof</operator> <name>NetworkTopologyStrategy</name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>NetworkTopologyStrategy</name></type> <name>npStrategy</name> <init>= <expr><operator>(</operator><name>NetworkTopologyStrategy</name><operator>)</operator> <name>replicationStrategy</name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>ObjectIntHashMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>perDc</name> <init>= <expr><operator>new</operator> <call><name><name>ObjectIntHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><operator>(</operator><operator>(</operator><call><name><name>npStrategy</name><operator>.</operator><name>getDatacenters</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>size</name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="number">1</literal><operator>)</operator> <operator>*</operator> <literal type="number">4</literal><operator>)</operator> <operator>/</operator> <literal type="number">3</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>String</name></type> <name>dc</name> <range>: <expr><call><name><name>npStrategy</name><operator>.</operator><name>getDatacenters</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>perDc</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>dc</name></expr></argument>, <argument><expr><call><name><name>ConsistencyLevel</name><operator>.</operator><name>localQuorumFor</name></name><argument_list>(<argument><expr><name>replicationStrategy</name></expr></argument>, <argument><expr><name>dc</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            <return>return <expr><name>perDc</name></expr>;</return>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>ObjectIntHashMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>perDc</name> <init>= <expr><operator>new</operator> <call><name><name>ObjectIntHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>perDc</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getLocalDataCenter</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>quorumFor</name><argument_list>(<argument><expr><name>replicationStrategy</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>perDc</name></expr>;</return>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>ObjectIntHashMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>eachQuorumForWrite</name><parameter_list>(<parameter><decl><type><name>AbstractReplicationStrategy</name></type> <name>replicationStrategy</name></decl></parameter>, <parameter><decl><type><name><name>Endpoints</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>pendingWithDown</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>ObjectIntHashMap</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>perDc</name> <init>= <expr><call><name>eachQuorumForRead</name><argument_list>(<argument><expr><name>replicationStrategy</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>addToCountPerDc</name><argument_list>(<argument><expr><name>perDc</name></expr></argument>, <argument><expr><name>pendingWithDown</name></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>perDc</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>blockFor</name><parameter_list>(<parameter><decl><type><name>AbstractReplicationStrategy</name></type> <name>replicationStrategy</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <switch>switch <condition>(<expr><name>this</name></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><name>ONE</name></expr>:</case>
+            <case>case <expr><name>LOCAL_ONE</name></expr>:</case>
+                <return>return <expr><literal type="number">1</literal></expr>;</return>
+            <case>case <expr><name>ANY</name></expr>:</case>
+                <return>return <expr><literal type="number">1</literal></expr>;</return>
+            <case>case <expr><name>TWO</name></expr>:</case>
+                <return>return <expr><literal type="number">2</literal></expr>;</return>
+            <case>case <expr><name>THREE</name></expr>:</case>
+                <return>return <expr><literal type="number">3</literal></expr>;</return>
+            <case>case <expr><name>QUORUM</name></expr>:</case>
+            <case>case <expr><name>SERIAL</name></expr>:</case>
+                <return>return <expr><call><name>quorumFor</name><argument_list>(<argument><expr><name>replicationStrategy</name></expr></argument>)</argument_list></call></expr>;</return>
+            <case>case <expr><name>ALL</name></expr>:</case>
+                <return>return <expr><call><name><name>replicationStrategy</name><operator>.</operator><name>getReplicationFactor</name></name><argument_list>()</argument_list></call><operator>.</operator><name>allReplicas</name></expr>;</return>
+            <case>case <expr><name>LOCAL_QUORUM</name></expr>:</case>
+            <case>case <expr><name>LOCAL_SERIAL</name></expr>:</case>
+                <return>return <expr><call><name>localQuorumForOurDc</name><argument_list>(<argument><expr><name>replicationStrategy</name></expr></argument>)</argument_list></call></expr>;</return>
+            <case>case <expr><name>EACH_QUORUM</name></expr>:</case>
+                <if_stmt><if>if <condition>(<expr><name>replicationStrategy</name> <operator>instanceof</operator> <name>NetworkTopologyStrategy</name></expr>)</condition>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>NetworkTopologyStrategy</name></type> <name>strategy</name> <init>= <expr><operator>(</operator><name>NetworkTopologyStrategy</name><operator>)</operator> <name>replicationStrategy</name></expr></init></decl>;</decl_stmt>
+                    <decl_stmt><decl><type><name>int</name></type> <name>n</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+                    <for>for <control>(<init><decl><type><name>String</name></type> <name>dc</name> <range>: <expr><call><name><name>strategy</name><operator>.</operator><name>getDatacenters</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                        <expr_stmt><expr><name>n</name> <operator>+=</operator> <call><name>localQuorumFor</name><argument_list>(<argument><expr><name>replicationStrategy</name></expr></argument>, <argument><expr><name>dc</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+                    <return>return <expr><name>n</name></expr>;</return>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <return>return <expr><call><name>quorumFor</name><argument_list>(<argument><expr><name>replicationStrategy</name></expr></argument>)</argument_list></call></expr>;</return>
+                </block_content>}</block></else></if_stmt>
+            <default>default:</default>
+                <throw>throw <expr><operator>new</operator> <call><name>UnsupportedOperationException</name><argument_list>(<argument><expr><literal type="string">"Invalid consistency level: "</literal> <operator>+</operator> <call><name>toString</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>blockForWrite</name><parameter_list>(<parameter><decl><type><name>AbstractReplicationStrategy</name></type> <name>replicationStrategy</name></decl></parameter>, <parameter><decl><type><name><name>Endpoints</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>pending</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><name>pending</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</assert>
+
+        <decl_stmt><decl><type><name>int</name></type> <name>blockFor</name> <init>= <expr><call><name>blockFor</name><argument_list>(<argument><expr><name>replicationStrategy</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <switch>switch <condition>(<expr><name>this</name></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><name>ANY</name></expr>:</case>
+                <break>break;</break>
+            <case>case <expr><name>LOCAL_ONE</name></expr>:</case> <case>case <expr><name>LOCAL_QUORUM</name></expr>:</case> <case>case <expr><name>LOCAL_SERIAL</name></expr>:</case>
+                <comment type="line">// we will only count local replicas towards our response count, as these queries only care about local guarantees</comment>
+                <expr_stmt><expr><name>blockFor</name> <operator>+=</operator> <call><name>countInOurDc</name><argument_list>(<argument><expr><name>pending</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>allReplicas</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <break>break;</break>
+            <case>case <expr><name>ONE</name></expr>:</case> <case>case <expr><name>TWO</name></expr>:</case> <case>case <expr><name>THREE</name></expr>:</case>
+            <case>case <expr><name>QUORUM</name></expr>:</case> <case>case <expr><name>EACH_QUORUM</name></expr>:</case>
+            <case>case <expr><name>SERIAL</name></expr>:</case>
+            <case>case <expr><name>ALL</name></expr>:</case>
+                <expr_stmt><expr><name>blockFor</name> <operator>+=</operator> <call><name><name>pending</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></switch>
+        <return>return <expr><name>blockFor</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Determine if this consistency level meets or exceeds the consistency requirements of the given cl for the given keyspace
+     * WARNING: this is not locality aware; you cannot safely use this with mixed locality consistency levels (e.g. LOCAL_QUORUM and QUORUM)
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>satisfies</name><parameter_list>(<parameter><decl><type><name>ConsistencyLevel</name></type> <name>other</name></decl></parameter>, <parameter><decl><type><name>AbstractReplicationStrategy</name></type> <name>replicationStrategy</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>blockFor</name><argument_list>(<argument><expr><name>replicationStrategy</name></expr></argument>)</argument_list></call> <operator>&gt;=</operator> <call><name><name>other</name><operator>.</operator><name>blockFor</name></name><argument_list>(<argument><expr><name>replicationStrategy</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isDatacenterLocal</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>isDCLocal</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>validateForRead</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+    <block>{<block_content>
+        <switch>switch <condition>(<expr><name>this</name></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><name>ANY</name></expr>:</case>
+                <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"ANY ConsistencyLevel is only supported for writes"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>validateForWrite</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+    <block>{<block_content>
+        <switch>switch <condition>(<expr><name>this</name></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><name>SERIAL</name></expr>:</case>
+            <case>case <expr><name>LOCAL_SERIAL</name></expr>:</case>
+                <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"You must use conditional updates for serializable writes"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <comment type="line">// This is the same than validateForWrite really, but we include a slightly different error message for SERIAL/LOCAL_SERIAL</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>validateForCasCommit</name><parameter_list>(<parameter><decl><type><name>AbstractReplicationStrategy</name></type> <name>replicationStrategy</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+    <block>{<block_content>
+        <switch>switch <condition>(<expr><name>this</name></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><name>EACH_QUORUM</name></expr>:</case>
+                <expr_stmt><expr><call><name>requireNetworkTopologyStrategy</name><argument_list>(<argument><expr><name>replicationStrategy</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <break>break;</break>
+            <case>case <expr><name>SERIAL</name></expr>:</case>
+            <case>case <expr><name>LOCAL_SERIAL</name></expr>:</case>
+                <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><name>this</name> <operator>+</operator> <literal type="string">" is not supported as conditional update commit consistency. Use ANY if you mean \"make sure it is accepted but I don't care how many replicas commit it for non-SERIAL reads\""</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>validateForCas</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>isSerialConsistency</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Invalid consistency for conditional update. Must be one of SERIAL or LOCAL_SERIAL"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isSerialConsistency</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>this</name> <operator>==</operator> <name>SERIAL</name> <operator>||</operator> <name>this</name> <operator>==</operator> <name>LOCAL_SERIAL</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>validateCounterForWrite</name><parameter_list>(<parameter><decl><type><name>TableMetadata</name></type> <name>metadata</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>this</name> <operator>==</operator> <name><name>ConsistencyLevel</name><operator>.</operator><name>ANY</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Consistency level ANY is not yet supported for counter table "</literal> <operator>+</operator> <name><name>metadata</name><operator>.</operator><name>name</name></name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name>isSerialConsistency</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><literal type="string">"Counter operations are inherently non-serializable"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>requireNetworkTopologyStrategy</name><parameter_list>(<parameter><decl><type><name>AbstractReplicationStrategy</name></type> <name>replicationStrategy</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>InvalidRequestException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><operator>(</operator><name>replicationStrategy</name> <operator>instanceof</operator> <name>NetworkTopologyStrategy</name><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>InvalidRequestException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"consistency level %s not compatible with replication strategy (%s)"</literal></expr></argument>,
+                                                            <argument><expr><name>this</name></expr></argument>, <argument><expr><call><name><name>replicationStrategy</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getName</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+}</block></enum>
+</unit>

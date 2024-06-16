@@ -1,0 +1,330 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/commitlog/AbstractCommitLogService.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicLong</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>locks</name><operator>.</operator><name>LockSupport</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>codahale</name><operator>.</operator><name>metrics</name><operator>.</operator><name>Timer</name><operator>.</operator><name>Context</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>NamedThreadFactory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>Config</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name><operator>.</operator><name>CommitLogSegment</name><operator>.</operator><name>Allocation</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>MonotonicClock</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>NoSpamLogger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>WaitQueue</name></name>;</import>
+
+<class><specifier>public</specifier> <specifier>abstract</specifier> class <name>AbstractCommitLogService</name>
+<block>{
+    <comment type="block" format="javadoc">/**
+     * When in {@link Config.CommitLogSync#periodic} mode, the default number of milliseconds to wait between updating
+     * the commit log chained markers.
+     */</comment>
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>DEFAULT_MARKER_INTERVAL_MILLIS</name> <init>= <expr><literal type="number">100</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>Thread</name></type> <name>thread</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>boolean</name></type> <name>shutdown</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// all Allocations written before this time will be synced</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>volatile</specifier> <name>long</name></type> <name>lastSyncedAt</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>currentTimeMillis</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// counts of total written, and pending, log messages</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>AtomicLong</name></type> <name>written</name> <init>= <expr><operator>new</operator> <call><name>AtomicLong</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>AtomicLong</name></type> <name>pending</name> <init>= <expr><operator>new</operator> <call><name>AtomicLong</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// signal that writers can wait on to be notified of a completed sync</comment>
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>WaitQueue</name></type> <name>syncComplete</name> <init>= <expr><operator>new</operator> <call><name>WaitQueue</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>final</specifier> <name>CommitLog</name></type> <name>commitLog</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>String</name></type> <name>name</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The duration between syncs to disk.
+     */</comment>
+    <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>syncIntervalNanos</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * The duration between updating the chained markers in the the commit log file. This value should be
+     * 0 &lt; {@link #markerIntervalNanos} &lt;= {@link #syncIntervalNanos}.
+     */</comment>
+    <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>markerIntervalNanos</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * A flag that callers outside of the sync thread can use to signal they want the commitlog segments
+     * to be flushed to disk. Note: this flag is primarily to support commit log's batch mode, which requires
+     * an immediate flush to disk on every mutation; see {@link BatchCommitLogService#maybeWaitForSync(Allocation)}.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>boolean</name></type> <name>syncRequested</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>AbstractCommitLogService</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * CommitLogService provides a fsync service for Allocations, fulfilling either the
+     * Batch or Periodic contract.
+     *
+     * Subclasses may be notified when a sync finishes by using the syncComplete WaitQueue.
+     */</comment>
+    <constructor><name>AbstractCommitLogService</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>CommitLog</name></type> <name>commitLog</name></decl></parameter>, <parameter><decl><type><specifier>final</specifier> <name>String</name></type> <name>name</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>syncIntervalMillis</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name> <argument_list>(<argument><expr><name>commitLog</name></expr></argument>, <argument><expr><name>name</name></expr></argument>, <argument><expr><name>syncIntervalMillis</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * CommitLogService provides a fsync service for Allocations, fulfilling either the
+     * Batch or Periodic contract.
+     *
+     * Subclasses may be notified when a sync finishes by using the syncComplete WaitQueue.
+     *
+     * @param markHeadersFaster true if the chained markers should be updated more frequently than on the disk sync bounds.
+     */</comment>
+    <constructor><name>AbstractCommitLogService</name><parameter_list>(<parameter><decl><type><specifier>final</specifier> <name>CommitLog</name></type> <name>commitLog</name></decl></parameter>, <parameter><decl><type><specifier>final</specifier> <name>String</name></type> <name>name</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>syncIntervalMillis</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>markHeadersFaster</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>commitLog</name></name> <operator>=</operator> <name>commitLog</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>name</name></name> <operator>=</operator> <name>name</name></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>markerIntervalMillis</name></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>markHeadersFaster</name> <operator>&amp;&amp;</operator> <name>syncIntervalMillis</name> <operator>&gt;</operator> <name>DEFAULT_MARKER_INTERVAL_MILLIS</name></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>markerIntervalMillis</name> <operator>=</operator> <name>DEFAULT_MARKER_INTERVAL_MILLIS</name></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>modulo</name> <init>= <expr><name>syncIntervalMillis</name> <operator>%</operator> <name>markerIntervalMillis</name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>modulo</name> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// quantize syncIntervalMillis to a multiple of markerIntervalMillis</comment>
+                <expr_stmt><expr><name>syncIntervalMillis</name> <operator>-=</operator> <name>modulo</name></expr>;</expr_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>modulo</name> <operator>&gt;=</operator> <name>markerIntervalMillis</name> <operator>/</operator> <literal type="number">2</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>syncIntervalMillis</name> <operator>+=</operator> <name>markerIntervalMillis</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Will update the commitlog markers every {}ms and flush every {}ms"</literal></expr></argument>, <argument><expr><name>markerIntervalMillis</name></expr></argument>, <argument><expr><name>syncIntervalMillis</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if>
+        <else>else
+        <block>{<block_content>
+            <expr_stmt><expr><name>markerIntervalMillis</name> <operator>=</operator> <name>syncIntervalMillis</name></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <assert>assert <expr><name>syncIntervalMillis</name> <operator>%</operator> <name>markerIntervalMillis</name> <operator>==</operator> <literal type="number">0</literal></expr>;</assert>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>markerIntervalNanos</name></name> <operator>=</operator> <call><name><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name><operator>.</operator><name>convert</name></name><argument_list>(<argument><expr><name>markerIntervalMillis</name></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>syncIntervalNanos</name></name> <operator>=</operator> <call><name><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name><operator>.</operator><name>convert</name></name><argument_list>(<argument><expr><name>syncIntervalMillis</name></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="line">// Separated into individual method to ensure relevant objects are constructed before this is started.</comment>
+    <function><type><name>void</name></type> <name>start</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>syncIntervalNanos</name> <operator>&lt;</operator> <literal type="number">1</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Commit log flush interval must be positive: %fms"</literal></expr></argument>,
+                                                             <argument><expr><name>syncIntervalNanos</name> <operator>*</operator> <literal type="number">1e-6</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <expr_stmt><expr><name>shutdown</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>thread</name> <operator>=</operator> <call><name><name>NamedThreadFactory</name><operator>.</operator><name>createThread</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>SyncRunnable</name><argument_list>(<argument><expr><name><name>MonotonicClock</name><operator>.</operator><name>preciseTime</name></name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>name</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>thread</name><operator>.</operator><name>start</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <class>class <name>SyncRunnable</name> <super_list><implements>implements <super><name>Runnable</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>MonotonicClock</name></type> <name>clock</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>firstLagAt</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>totalSyncDuration</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt> <comment type="line">// total time spent syncing since firstLagAt</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>syncExceededIntervalBy</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt> <comment type="line">// time that syncs exceeded pollInterval since firstLagAt</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>lagCount</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>syncCount</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+
+        <constructor><name>SyncRunnable</name><parameter_list>(<parameter><decl><type><name>MonotonicClock</name></type> <name>clock</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>clock</name></name> <operator>=</operator> <name>clock</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>sync</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <break>break;</break></block_content></block></if></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <function><type><name>boolean</name></type> <name>sync</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// always run once after shutdown signalled</comment>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>shutdownRequested</name> <init>= <expr><name>shutdown</name></expr></init></decl>;</decl_stmt>
+
+            <try>try
+            <block>{<block_content>
+                <comment type="line">// sync and signal</comment>
+                <decl_stmt><decl><type><name>long</name></type> <name>pollStarted</name> <init>= <expr><call><name><name>clock</name><operator>.</operator><name>now</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>boolean</name></type> <name>flushToDisk</name> <init>= <expr><name>lastSyncedAt</name> <operator>+</operator> <name>syncIntervalNanos</name> <operator>&lt;=</operator> <name>pollStarted</name> <operator>||</operator> <name>shutdownRequested</name> <operator>||</operator> <name>syncRequested</name></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>flushToDisk</name></expr>)</condition>
+                <block>{<block_content>
+                    <comment type="line">// in this branch, we want to flush the commit log to disk</comment>
+                    <expr_stmt><expr><name>syncRequested</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>commitLog</name><operator>.</operator><name>sync</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>lastSyncedAt</name> <operator>=</operator> <name>pollStarted</name></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>syncComplete</name><operator>.</operator><name>signalAll</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>syncCount</name><operator>++</operator></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <comment type="line">// in this branch, just update the commit log sync headers</comment>
+                    <expr_stmt><expr><call><name><name>commitLog</name><operator>.</operator><name>sync</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></else></if_stmt>
+
+                <decl_stmt><decl><type><name>long</name></type> <name>now</name> <init>= <expr><call><name><name>clock</name><operator>.</operator><name>now</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>flushToDisk</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name>maybeLogFlushLag</name><argument_list>(<argument><expr><name>pollStarted</name></expr></argument>, <argument><expr><name>now</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>shutdownRequested</name></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+                <decl_stmt><decl><type><name>long</name></type> <name>wakeUpAt</name> <init>= <expr><name>pollStarted</name> <operator>+</operator> <name>markerIntervalNanos</name></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>wakeUpAt</name> <operator>&gt;</operator> <name>now</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>LockSupport</name><operator>.</operator><name>parkNanos</name></name><argument_list>(<argument><expr><name>wakeUpAt</name> <operator>-</operator> <name>now</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>CommitLog</name><operator>.</operator><name>handleCommitError</name></name><argument_list>(<argument><expr><literal type="string">"Failed to persist commits to disk"</literal></expr></argument>, <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+                <comment type="line">// sleep for full poll-interval after an error, so we don't spam the log file</comment>
+                <expr_stmt><expr><call><name><name>LockSupport</name><operator>.</operator><name>parkNanos</name></name><argument_list>(<argument><expr><name>markerIntervalNanos</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch></try>
+
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * Add a log entry whenever the time to flush the commit log to disk exceeds {@link #syncIntervalNanos}.
+         */</comment>
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <type><name>boolean</name></type> <name>maybeLogFlushLag</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>pollStarted</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>now</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>flushDuration</name> <init>= <expr><name>now</name> <operator>-</operator> <name>pollStarted</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>totalSyncDuration</name> <operator>+=</operator> <name>flushDuration</name></expr>;</expr_stmt>
+
+            <comment type="line">// this is the timestamp by which we should have completed the flush</comment>
+            <decl_stmt><decl><type><name>long</name></type> <name>maxFlushTimestamp</name> <init>= <expr><name>pollStarted</name> <operator>+</operator> <name>syncIntervalNanos</name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>maxFlushTimestamp</name> <operator>&gt;</operator> <name>now</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <comment type="line">// if we have lagged noticeably, update our lag counter</comment>
+            <if_stmt><if>if <condition>(<expr><name>firstLagAt</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>firstLagAt</name> <operator>=</operator> <name>now</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name>syncExceededIntervalBy</name> <operator>=</operator> <name>lagCount</name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+                <expr_stmt><expr><name>syncCount</name> <operator>=</operator> <literal type="number">1</literal></expr>;</expr_stmt>
+                <expr_stmt><expr><name>totalSyncDuration</name> <operator>=</operator> <name>flushDuration</name></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>syncExceededIntervalBy</name> <operator>+=</operator> <name>now</name> <operator>-</operator> <name>maxFlushTimestamp</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name>lagCount</name><operator>++</operator></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>firstLagAt</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">//Only reset the lag tracking if it actually logged this time</comment>
+                <decl_stmt><decl><type><name>boolean</name></type> <name>logged</name> <init>= <expr><call><name><name>NoSpamLogger</name><operator>.</operator><name>log</name></name><argument_list>(<argument><expr><name>logger</name></expr></argument>,
+                                                  <argument><expr><name><name>NoSpamLogger</name><operator>.</operator><name>Level</name><operator>.</operator><name>WARN</name></name></expr></argument>,
+                                                  <argument><expr><literal type="number">5</literal></expr></argument>,
+                                                  <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MINUTES</name></name></expr></argument>,
+                                                  <argument><expr><literal type="string">"Out of {} commit log syncs over the past {}s with average duration of {}ms, {} have exceeded the configured commit interval by an average of {}ms"</literal></expr></argument>,
+                                                  <argument><expr><name>syncCount</name></expr></argument>,
+                                                  <argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%.2f"</literal></expr></argument>, <argument><expr><operator>(</operator><name>now</name> <operator>-</operator> <name>firstLagAt</name><operator>)</operator> <operator>*</operator> <literal type="number">1e-9d</literal></expr></argument>)</argument_list></call></expr></argument>,
+                                                  <argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%.2f"</literal></expr></argument>, <argument><expr><name>totalSyncDuration</name> <operator>*</operator> <literal type="number">1e-6d</literal> <operator>/</operator> <name>syncCount</name></expr></argument>)</argument_list></call></expr></argument>,
+                                                  <argument><expr><name>lagCount</name></expr></argument>,
+                                                  <argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%.2f"</literal></expr></argument>, <argument><expr><name>syncExceededIntervalBy</name> <operator>*</operator> <literal type="number">1e-6d</literal> <operator>/</operator> <name>lagCount</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>logged</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>firstLagAt</name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <type><name>long</name></type> <name>getTotalSyncDuration</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>totalSyncDuration</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * Block for @param alloc to be sync'd as necessary, and handle bookkeeping
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>finishWriteFor</name><parameter_list>(<parameter><decl><type><name>Allocation</name></type> <name>alloc</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>maybeWaitForSync</name><argument_list>(<argument><expr><name>alloc</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>written</name><operator>.</operator><name>incrementAndGet</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function_decl><type><specifier>protected</specifier> <specifier>abstract</specifier> <name>void</name></type> <name>maybeWaitForSync</name><parameter_list>(<parameter><decl><type><name>Allocation</name></type> <name>alloc</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * Request an additional sync cycle without blocking.
+     */</comment>
+    <function><type><name>void</name></type> <name>requestExtraSync</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>syncRequested</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>LockSupport</name><operator>.</operator><name>unpark</name></name><argument_list>(<argument><expr><name>thread</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>shutdown</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>shutdown</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>requestExtraSync</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Request sync and wait until the current state is synced.
+     *
+     * Note: If a sync is in progress at the time of this request, the call will return after both it and a cycle
+     * initiated immediately afterwards complete.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>syncBlocking</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>requestTime</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>requestExtraSync</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>awaitSyncAt</name><argument_list>(<argument><expr><name>requestTime</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>awaitSyncAt</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>syncTime</name></decl></parameter>, <parameter><decl><type><name>Context</name></type> <name>context</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <do>do
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>WaitQueue</name><operator>.</operator><name>Signal</name></name></type> <name>signal</name> <init>= <expr><ternary><condition><expr><name>context</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name><name>syncComplete</name><operator>.</operator><name>register</name></name><argument_list>(<argument><expr><name>context</name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><call><name><name>syncComplete</name><operator>.</operator><name>register</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>lastSyncedAt</name> <operator>&lt;</operator> <name>syncTime</name></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>signal</name><operator>.</operator><name>awaitUninterruptibly</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if>
+            <else>else<block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>signal</name><operator>.</operator><name>cancel</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></else></if_stmt>
+        </block_content>}</block>
+        while <condition>(<expr><name>lastSyncedAt</name> <operator>&lt;</operator> <name>syncTime</name></expr>)</condition>;</do>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>awaitTermination</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>InterruptedException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>thread</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>thread</name><operator>.</operator><name>join</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getCompletedTasks</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>written</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>long</name></type> <name>getPendingTasks</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>pending</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

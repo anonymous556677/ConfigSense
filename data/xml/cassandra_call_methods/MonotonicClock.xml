@@ -1,0 +1,351 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/utils/MonotonicClock.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>reflect</name><operator>.</operator><name>Constructor</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Future</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>function</name><operator>.</operator><name>LongSupplier</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ScheduledExecutors</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>Config</name></name>;</import>
+
+<import>import static <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Wrapper around time related functions that are either implemented by using the default JVM calls
+ * or by using a custom implementation for testing purposes.
+ *
+ * See {@link #preciseTime} for how to use a custom implementation.
+ *
+ * Please note that {@link java.time.Clock} wasn't used, as it would not be possible to provide an
+ * implementation for {@link #now()} with the exact same properties of {@link System#nanoTime()}.
+ */</comment>
+<interface><specifier>public</specifier> interface <name>MonotonicClock</name>
+<block>{
+    <comment type="block" format="javadoc">/**
+     * Static singleton object that will be instantiated by default with a system clock
+     * implementation. Set &lt;code&gt;cassandra.clock&lt;/code&gt; system property to a FQCN to use a
+     * different implementation instead.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>MonotonicClock</name></type> <name>preciseTime</name> <init>= <expr><call><name><name>Defaults</name><operator>.</operator><name>precise</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>MonotonicClock</name></type> <name>approxTime</name> <init>= <expr><call><name><name>Defaults</name><operator>.</operator><name>approx</name></name><argument_list>(<argument><expr><name>preciseTime</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * @see System#nanoTime()
+     *
+     * Provides a monotonic time that can be compared with any other such value produced by the same clock
+     * since the application started only; these times cannot be persisted or serialized to other nodes.
+     *
+     * Nanosecond precision.
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <name>long</name></type> <name>now</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <comment type="block" format="javadoc">/**
+     * @return nanoseconds of potential error
+     */</comment>
+    <function_decl><type><specifier>public</specifier> <name>long</name></type> <name>error</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <function_decl><type><specifier>public</specifier> <name>MonotonicClockTranslation</name></type> <name>translate</name><parameter_list>()</parameter_list>;</function_decl>
+
+    <function_decl><type><specifier>public</specifier> <name>boolean</name></type> <name>isAfter</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>instant</name></decl></parameter>)</parameter_list>;</function_decl>
+    <function_decl><type><specifier>public</specifier> <name>boolean</name></type> <name>isAfter</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>now</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>instant</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <class><specifier>static</specifier> class <name>Defaults</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>MonotonicClock</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>MonotonicClock</name></type> <name>precise</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>sclock</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>getProperty</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.clock"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>sclock</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>sclock</name> <operator>=</operator> <call><name><name>System</name><operator>.</operator><name>getProperty</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.monotonic_clock.precise"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>sclock</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <try>try
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Using custom clock implementation: {}"</literal></expr></argument>, <argument><expr><name>sclock</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <return>return <expr><operator>(</operator><name>MonotonicClock</name><operator>)</operator> <call><name><name>Class</name><operator>.</operator><name>forName</name></name><argument_list>(<argument><expr><name>sclock</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>newInstance</name><argument_list>()</argument_list></call></expr>;</return>
+                </block_content>}</block>
+                <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><call><name><name>e</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></catch></try>
+            </block_content>}</block></if></if_stmt>
+
+            <return>return <expr><operator>new</operator> <call><name>SystemClock</name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <specifier>static</specifier> <name>MonotonicClock</name></type> <name>approx</name><parameter_list>(<parameter><decl><type><name>MonotonicClock</name></type> <name>precise</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>sclock</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>getProperty</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.monotonic_clock.approx"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>sclock</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <try>try
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Using custom clock implementation: {}"</literal></expr></argument>, <argument><expr><name>sclock</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <decl_stmt><decl><type><name><name>Class</name><argument_list type="generic">&lt;<argument><name>?</name> <extends>extends <name>MonotonicClock</name></extends></argument>&gt;</argument_list></name></type> <name>clazz</name> <init>= <expr><operator>(</operator><name><name>Class</name><argument_list type="generic">&lt;<argument><name>?</name> <extends>extends <name>MonotonicClock</name></extends></argument>&gt;</argument_list></name><operator>)</operator> <call><name><name>Class</name><operator>.</operator><name>forName</name></name><argument_list>(<argument><expr><name>sclock</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+                    <if_stmt><if>if <condition>(<expr><call><name><name>SystemClock</name><operator>.</operator><name><name>class</name><operator>.</operator><name>equals</name></name></name><argument_list>(<argument><expr><name>clazz</name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>SystemClock</name><operator>.</operator><name><name>class</name><operator>.</operator><name>equals</name></name></name><argument_list>(<argument><expr><call><name><name>precise</name><operator>.</operator><name>getClass</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <return>return <expr><name>precise</name></expr>;</return></block_content></block></if></if_stmt>
+
+                    <try>try
+                    <block>{<block_content>
+                        <decl_stmt><decl><type><name><name>Constructor</name><argument_list type="generic">&lt;<argument><name>?</name> <extends>extends <name>MonotonicClock</name></extends></argument>&gt;</argument_list></name></type> <name>withPrecise</name> <init>= <expr><call><name><name>clazz</name><operator>.</operator><name>getConstructor</name></name><argument_list>(<argument><expr><name><name>MonotonicClock</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                        <return>return <expr><call><name><name>withPrecise</name><operator>.</operator><name>newInstance</name></name><argument_list>(<argument><expr><name>precise</name></expr></argument>)</argument_list></call></expr>;</return>
+                    </block_content>}</block>
+                    <catch>catch <parameter_list>(<parameter><decl><type><name>NoSuchMethodException</name></type> <name>nme</name></decl></parameter>)</parameter_list>
+                    <block>{<block_content>
+                    </block_content>}</block></catch></try>
+
+                    <return>return <expr><call><name><name>clazz</name><operator>.</operator><name>newInstance</name></name><argument_list>()</argument_list></call></expr>;</return>
+                </block_content>}</block>
+                <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><call><name><name>e</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></catch></try>
+            </block_content>}</block></if></if_stmt>
+
+            <return>return <expr><operator>new</operator> <call><name>SampledClock</name><argument_list>(<argument><expr><name>precise</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>static</specifier> <specifier>abstract</specifier> class <name>AbstractEpochSamplingClock</name> <super_list><implements>implements <super><name>MonotonicClock</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>AbstractEpochSamplingClock</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>UPDATE_INTERVAL_PROPERTY</name> <init>= <expr><name><name>Config</name><operator>.</operator><name>PROPERTY_PREFIX</name></name> <operator>+</operator> <literal type="string">"NANOTIMETOMILLIS_TIMESTAMP_UPDATE_INTERVAL"</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>UPDATE_INTERVAL_MS</name> <init>= <expr><call><name><name>Long</name><operator>.</operator><name>getLong</name></name><argument_list>(<argument><expr><name>UPDATE_INTERVAL_PROPERTY</name></expr></argument>, <argument><expr><literal type="number">10000</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <class><annotation>@<name>VisibleForTesting</name></annotation>
+        <specifier>static</specifier> class <name>AlmostSameTime</name> <super_list><implements>implements <super><name>MonotonicClockTranslation</name></super></implements></super_list>
+        <block>{
+            <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>millisSinceEpoch</name></decl>;</decl_stmt>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>monotonicNanos</name></decl>;</decl_stmt>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>long</name></type> <name>error</name></decl>;</decl_stmt> <comment type="line">// maximum error of millis measurement (in nanos)</comment>
+
+            <constructor><annotation>@<name>VisibleForTesting</name></annotation>
+            <name>AlmostSameTime</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>millisSinceEpoch</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>monotonicNanos</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>errorNanos</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><name><name>this</name><operator>.</operator><name>millisSinceEpoch</name></name> <operator>=</operator> <name>millisSinceEpoch</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name><name>this</name><operator>.</operator><name>monotonicNanos</name></name> <operator>=</operator> <name>monotonicNanos</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name><name>this</name><operator>.</operator><name>error</name></name> <operator>=</operator> <name>errorNanos</name></expr>;</expr_stmt>
+            </block_content>}</block></constructor>
+
+            <function><type><specifier>public</specifier> <name>long</name></type> <name>fromMillisSinceEpoch</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>currentTimeMillis</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>monotonicNanos</name> <operator>+</operator> <call><name><name>MILLISECONDS</name><operator>.</operator><name>toNanos</name></name><argument_list>(<argument><expr><name>currentTimeMillis</name> <operator>-</operator> <name>millisSinceEpoch</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><type><specifier>public</specifier> <name>long</name></type> <name>toMillisSinceEpoch</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>nanoTime</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>millisSinceEpoch</name> <operator>+</operator> <call><name><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name><operator>.</operator><name>toMillis</name></name><argument_list>(<argument><expr><name>nanoTime</name> <operator>-</operator> <name>monotonicNanos</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></function>
+
+            <function><type><specifier>public</specifier> <name>long</name></type> <name>error</name><parameter_list>()</parameter_list>
+            <block>{<block_content>
+                <return>return <expr><name>error</name></expr>;</return>
+            </block_content>}</block></function>
+        }</block></class>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name>LongSupplier</name></type> <name>millisSinceEpoch</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>AlmostSameTime</name></type> <name>almostSameTime</name> <init>= <expr><operator>new</operator> <call><name>AlmostSameTime</name><argument_list>(<argument><expr><literal type="number">0L</literal></expr></argument>, <argument><expr><literal type="number">0L</literal></expr></argument>, <argument><expr><name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>almostSameTimeUpdater</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <name>double</name></type> <name>failedAlmostSameTimeUpdateModifier</name> <init>= <expr><literal type="number">1.0</literal></expr></init></decl>;</decl_stmt>
+
+        <constructor><name>AbstractEpochSamplingClock</name><parameter_list>(<parameter><decl><type><name>LongSupplier</name></type> <name>millisSinceEpoch</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>millisSinceEpoch</name></name> <operator>=</operator> <name>millisSinceEpoch</name></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>resumeEpochSampling</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>MonotonicClockTranslation</name></type> <name>translate</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>almostSameTime</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>pauseEpochSampling</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>almostSameTimeUpdater</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>almostSameTimeUpdater</name><operator>.</operator><name>cancel</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <try>try <block>{<block_content> <expr_stmt><expr><call><name><name>almostSameTimeUpdater</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt> </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list> <block>{<block_content> </block_content>}</block></catch></try>
+            <expr_stmt><expr><name>almostSameTimeUpdater</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>resumeEpochSampling</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>almostSameTimeUpdater</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"Already running"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+            <expr_stmt><expr><call><name>updateAlmostSameTime</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Scheduling approximate time conversion task with an interval of {} milliseconds"</literal></expr></argument>, <argument><expr><name>UPDATE_INTERVAL_MS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>almostSameTimeUpdater</name> <operator>=</operator> <call><name><name>ScheduledExecutors</name><operator>.</operator><name>scheduledFastTasks</name><operator>.</operator><name>scheduleWithFixedDelay</name></name><argument_list>(<argument><expr><name>this</name><operator>::</operator><name>updateAlmostSameTime</name></expr></argument>, <argument><expr><name>UPDATE_INTERVAL_MS</name></expr></argument>, <argument><expr><name>UPDATE_INTERVAL_MS</name></expr></argument>, <argument><expr><name>MILLISECONDS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>updateAlmostSameTime</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>tries</name> <init>= <expr><literal type="number">3</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>long</name><index>[]</index></name></type> <name>samples</name> <init>= <expr><operator>new</operator> <name><name>long</name><index>[<expr><literal type="number">2</literal> <operator>*</operator> <name>tries</name> <operator>+</operator> <literal type="number">1</literal></expr>]</index></name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name><name>samples</name><index>[<expr><literal type="number">0</literal></expr>]</index></name> <operator>=</operator> <call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">1</literal></expr></init></decl> ;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>samples</name><operator>.</operator><name>length</name></name></expr> ;</condition> <incr><expr><name>i</name> <operator>+=</operator> <literal type="number">2</literal></expr></incr>)</control>
+            <block>{<block_content>
+                <expr_stmt><expr><name><name>samples</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <call><name><name>millisSinceEpoch</name><operator>.</operator><name>getAsLong</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name><name>samples</name><index>[<expr><name>i</name> <operator>+</operator> <literal type="number">1</literal></expr>]</index></name> <operator>=</operator> <call><name>now</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+
+            <decl_stmt><decl><type><name>int</name></type> <name>best</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+            <comment type="line">// take sample with minimum delta between calls</comment>
+            <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">3</literal></expr></init></decl> ;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>samples</name><operator>.</operator><name>length</name></name> <operator>-</operator> <literal type="number">1</literal></expr> ;</condition> <incr><expr><name>i</name> <operator>+=</operator> <literal type="number">2</literal></expr></incr>)</control>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><operator>(</operator><name><name>samples</name><index>[<expr><name>i</name><operator>+</operator><literal type="number">1</literal></expr>]</index></name> <operator>-</operator> <name><name>samples</name><index>[<expr><name>i</name><operator>-</operator><literal type="number">1</literal></expr>]</index></name><operator>)</operator> <operator>&lt;</operator> <operator>(</operator><name><name>samples</name><index>[<expr><name>best</name><operator>+</operator><literal type="number">1</literal></expr>]</index></name><operator>-</operator><name><name>samples</name><index>[<expr><name>best</name><operator>-</operator><literal type="number">1</literal></expr>]</index></name><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>best</name> <operator>=</operator> <name>i</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></for>
+
+            <decl_stmt><decl><type><name>long</name></type> <name>millis</name> <init>= <expr><name><name>samples</name><index>[<expr><name>best</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>nanos</name> <init>= <expr><operator>(</operator><name><name>samples</name><index>[<expr><name>best</name><operator>+</operator><literal type="number">1</literal></expr>]</index></name> <operator>/</operator> <literal type="number">2</literal><operator>)</operator> <operator>+</operator> <operator>(</operator><name><name>samples</name><index>[<expr><name>best</name><operator>-</operator><literal type="number">1</literal></expr>]</index></name> <operator>/</operator> <literal type="number">2</literal><operator>)</operator></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>error</name> <init>= <expr><operator>(</operator><name><name>samples</name><index>[<expr><name>best</name><operator>+</operator><literal type="number">1</literal></expr>]</index></name> <operator>/</operator> <literal type="number">2</literal><operator>)</operator> <operator>-</operator> <operator>(</operator><name><name>samples</name><index>[<expr><name>best</name><operator>-</operator><literal type="number">1</literal></expr>]</index></name> <operator>/</operator> <literal type="number">2</literal><operator>)</operator></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>AlmostSameTime</name></type> <name>prev</name> <init>= <expr><name>almostSameTime</name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>AlmostSameTime</name></type> <name>next</name> <init>= <expr><operator>new</operator> <call><name>AlmostSameTime</name><argument_list>(<argument><expr><name>millis</name></expr></argument>, <argument><expr><name>nanos</name></expr></argument>, <argument><expr><name>error</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name><name>next</name><operator>.</operator><name>error</name></name> <operator>&gt;</operator> <name><name>prev</name><operator>.</operator><name>error</name></name> <operator>&amp;&amp;</operator> <name><name>next</name><operator>.</operator><name>error</name></name> <operator>&gt;</operator> <name><name>prev</name><operator>.</operator><name>error</name></name> <operator>*</operator> <name>failedAlmostSameTimeUpdateModifier</name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><name>failedAlmostSameTimeUpdateModifier</name> <operator>*=</operator> <literal type="number">1.1</literal></expr>;</expr_stmt>
+                <return>return;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <expr_stmt><expr><name>failedAlmostSameTimeUpdateModifier</name> <operator>=</operator> <literal type="number">1.0</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><name>almostSameTime</name> <operator>=</operator> <name>next</name></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>SystemClock</name> <super_list><extends>extends <super><name>AbstractEpochSamplingClock</name></super></extends></super_list>
+    <block>{
+        <constructor><specifier>private</specifier> <name>SystemClock</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>System</name><operator>::</operator><name>currentTimeMillis</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>long</name></type> <name>now</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>long</name></type> <name>error</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="number">1</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>isAfter</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>instant</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>now</name><argument_list>()</argument_list></call> <operator>&gt;</operator> <name>instant</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>isAfter</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>now</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>instant</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>now</name> <operator>&gt;</operator> <name>instant</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>SampledClock</name> <super_list><implements>implements <super><name>MonotonicClock</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>SampledClock</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>UPDATE_INTERVAL_MS</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><call><name><name>Integer</name><operator>.</operator><name>parseInt</name></name><argument_list>(<argument><expr><call><name><name>System</name><operator>.</operator><name>getProperty</name></name><argument_list>(<argument><expr><name><name>Config</name><operator>.</operator><name>PROPERTY_PREFIX</name></name> <operator>+</operator> <literal type="string">"approximate_time_precision_ms"</literal></expr></argument>, <argument><expr><literal type="string">"2"</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>ERROR_NANOS</name> <init>= <expr><call><name><name>MILLISECONDS</name><operator>.</operator><name>toNanos</name></name><argument_list>(<argument><expr><name>UPDATE_INTERVAL_MS</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>MonotonicClock</name></type> <name>precise</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>long</name></type> <name>almostNow</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>almostNowUpdater</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>SampledClock</name><parameter_list>(<parameter><decl><type><name>MonotonicClock</name></type> <name>precise</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>precise</name></name> <operator>=</operator> <name>precise</name></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>resumeNowSampling</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>long</name></type> <name>now</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>almostNow</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>long</name></type> <name>error</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>ERROR_NANOS</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>MonotonicClockTranslation</name></type> <name>translate</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name><name>precise</name><operator>.</operator><name>translate</name></name><argument_list>()</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>isAfter</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>instant</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>isAfter</name><argument_list>(<argument><expr><name>almostNow</name></expr></argument>, <argument><expr><name>instant</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>boolean</name></type> <name>isAfter</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>now</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>instant</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>now</name> <operator>-</operator> <name>ERROR_NANOS</name> <operator>&gt;</operator> <name>instant</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>pauseNowSampling</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>almostNowUpdater</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>almostNowUpdater</name><operator>.</operator><name>cancel</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <try>try <block>{<block_content> <expr_stmt><expr><call><name><name>almostNowUpdater</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt> </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list> <block>{<block_content> </block_content>}</block></catch></try>
+            <expr_stmt><expr><name>almostNowUpdater</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>resumeNowSampling</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>almostNowUpdater</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"Already running"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><name>almostNow</name> <operator>=</operator> <call><name><name>precise</name><operator>.</operator><name>now</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"Scheduling approximate time-check task with a precision of {} milliseconds"</literal></expr></argument>, <argument><expr><name>UPDATE_INTERVAL_MS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><name>almostNowUpdater</name> <operator>=</operator> <call><name><name>ScheduledExecutors</name><operator>.</operator><name>scheduledFastTasks</name><operator>.</operator><name>scheduleWithFixedDelay</name></name><argument_list>(<argument><expr><lambda><parameter_list>()</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><name>almostNow</name> <operator>=</operator> <call><name><name>precise</name><operator>.</operator><name>now</name></name><argument_list>()</argument_list></call></expr></block_content></block></lambda></expr></argument>, <argument><expr><name>UPDATE_INTERVAL_MS</name></expr></argument>, <argument><expr><name>UPDATE_INTERVAL_MS</name></expr></argument>, <argument><expr><name>MILLISECONDS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>refreshNow</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>pauseNowSampling</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>resumeNowSampling</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+}</block></interface>
+</unit>

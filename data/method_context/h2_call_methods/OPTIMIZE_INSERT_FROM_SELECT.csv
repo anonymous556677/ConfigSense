@@ -1,0 +1,1026 @@
+function,Method_body,option,Method,Method_short,class_name,xml_path
+org.h2.engine.Database:getSettings(),not found,OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.command.query.SelectUnion:getOffsetFetch(long),getOffsetFetch,SelectUnion,../data/xml/h2_call_methods/SelectUnion.xml
+org.h2.engine.Database:getSettings(),"
+public Database getDatabase() {
+        return database;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.engine.SessionLocal:getDatabase(),getDatabase,SessionLocal,../data/xml/h2_call_methods/SessionLocal.xml
+org.h2.engine.Database:getSettings(),"
+public DbSettings getSettings() {
+        return dbSettings;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.engine.Database:getSettings(),getSettings,Database,../data/xml/h2_call_methods/Database.xml
+org.h2.engine.Database:getSettings(),"
+@Override
+    public final ResultInterface query(long maxrows) {
+        return query(maxrows, null);
+    }
+
+    
+/**
+     * Execute the query, writing the result to the target result.
+     *
+     * @param limit the maximum number of rows to return
+     * @param target the target result (null will return the result)
+     * @return the result set (if the target is not set).
+     */
+public final ResultInterface query(long limit, ResultTarget target) {
+        if (isUnion()) {
+            // union doesn't always know the parameter list of the left and
+            // right queries
+            return queryWithoutCacheLazyCheck(limit, target);
+        }
+        fireBeforeSelectTriggers();
+        if (noCache || !session.getDatabase().getOptimizeReuseResults() ||
+                (session.isLazyQueryExecution() && !neverLazy)) {
+            return queryWithoutCacheLazyCheck(limit, target);
+        }
+        Value[] params = getParameterValues();
+        long now = session.getDatabase().getModificationDataId();
+        if (isEverything(ExpressionVisitor.DETERMINISTIC_VISITOR)) {
+            if (lastResult != null && !lastResult.isClosed() &&
+                    limit == lastLimit) {
+                if (sameResultAsLast(params, lastParameters, lastEvaluated)) {
+                    lastResult = lastResult.createShallowCopy(session);
+                    if (lastResult != null) {
+                        lastResult.reset();
+                        return lastResult;
+                    }
+                }
+            }
+        }
+        lastParameters = params;
+        closeLastResult();
+        ResultInterface r = queryWithoutCacheLazyCheck(limit, target);
+        lastResult = r;
+        lastExists = null;
+        lastEvaluated = now;
+        lastLimit = limit;
+        return r;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,"(M)org.h2.command.query.Query:query(long,org.h2.result.ResultTarget)",query,Query,../data/xml/h2_call_methods/Query.xml
+org.h2.engine.Database:getSettings(),"/**
+     * Get the column count of this query.
+     *
+     * @return the column count
+     */
+public int getColumnCount() {
+        return visibleColumnCount;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.command.query.Query:getColumnCount(),getColumnCount,Query,../data/xml/h2_call_methods/Query.xml
+org.h2.engine.Database:getSettings(),"
+public boolean isLazyQueryExecution() {
+        return lazyQueryExecution;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.engine.SessionLocal:isLazyQueryExecution(),isLazyQueryExecution,SessionLocal,../data/xml/h2_call_methods/SessionLocal.xml
+org.h2.engine.Database:getSettings(),not found,OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.command.query.SelectUnion:isReadOnly(),isReadOnly,SelectUnion,../data/xml/h2_call_methods/SelectUnion.xml
+org.h2.engine.Database:getSettings(),"/**
+ * Represents a union SELECT statement.
+ */
+public class SelectUnion extends Query {
+
+    public enum UnionType {
+        /**
+         * The type of a UNION statement.
+         */
+        UNION,
+
+        /**
+         * The type of a UNION ALL statement.
+         */
+        UNION_ALL,
+
+        /**
+         * The type of an EXCEPT statement.
+         */
+        EXCEPT,
+
+        /**
+         * The type of an INTERSECT statement.
+         */
+        INTERSECT
+    }
+
+    private final UnionType unionType;
+
+    /**
+     * The left hand side of the union (the first subquery).
+     */
+    final Query left;
+
+    /**
+     * The right hand side of the union (the second subquery).
+     */
+    final Query right;
+
+    private boolean isForUpdate;
+
+    public SelectUnion(SessionLocal session, UnionType unionType, Query query, Query right) {
+        super(session);
+        this.unionType = unionType;
+        this.left = query;
+        this.right = right;
+    }
+
+    @Override
+    public boolean isUnion() {
+        return true;
+    }
+
+    public UnionType getUnionType() {
+        return unionType;
+    }
+
+    public Query getLeft() {
+        return left;
+    }
+
+    public Query getRight() {
+        return right;
+    }
+
+    private Value[] convert(Value[] values, int columnCount) {
+        Value[] newValues;
+        if (columnCount == values.length) {
+            // re-use the array if possible
+            newValues = values;
+        } else {
+            // create a new array if needed,
+            // for the value hash set
+            newValues = new Value[columnCount];
+        }
+        for (int i = 0; i < columnCount; i++) {
+            Expression e = expressions.get(i);
+            newValues[i] = values[i].convertTo(e.getType(), session);
+        }
+        return newValues;
+    }
+
+    public LocalResult getEmptyResult() {
+        int columnCount = left.getColumnCount();
+        return createLocalResult(columnCount);
+    }
+
+    @Override
+    protected ResultInterface queryWithoutCache(long maxRows, ResultTarget target) {
+        OffsetFetch offsetFetch = getOffsetFetch(maxRows);
+        long offset = offsetFetch.offset;
+        long fetch = offsetFetch.fetch;
+        boolean fetchPercent = offsetFetch.fetchPercent;
+        Database db = session.getDatabase();
+        if (db.getSettings().optimizeInsertFromSelect) {
+            if (unionType == UnionType.UNION_ALL && target != null) {
+                if (sort == null && !distinct && fetch < 0 && offset == 0) {
+                    left.query(0, target);
+                    right.query(0, target);
+                    return null;
+                }
+            }
+        }
+        int columnCount = left.getColumnCount();
+        if (session.isLazyQueryExecution() && unionType == UnionType.UNION_ALL && !distinct &&
+                sort == null && !randomAccessResult && !isForUpdate &&
+                offset == 0 && !fetchPercent && !withTies && isReadOnly()) {
+            // limit 0 means no rows
+            if (fetch != 0) {
+                LazyResultUnion lazyResult = new LazyResultUnion(expressionArray, columnCount);
+                if (fetch > 0) {
+                    lazyResult.setLimit(fetch);
+                }
+                return lazyResult;
+            }
+        }
+        LocalResult result = createLocalResult(columnCount);
+        if (sort != null) {
+            result.setSortOrder(sort);
+        }
+        if (distinct) {
+            left.setDistinctIfPossible();
+            right.setDistinctIfPossible();
+            result.setDistinct();
+        }
+        switch (unionType) {
+        case UNION:
+        case EXCEPT:
+            left.setDistinctIfPossible();
+            right.setDistinctIfPossible();
+            result.setDistinct();
+            break;
+        case UNION_ALL:
+            break;
+        case INTERSECT:
+            left.setDistinctIfPossible();
+            right.setDistinctIfPossible();
+            break;
+        default:
+            throw DbException.getInternalError(""type="" + unionType);
+        }
+        ResultInterface l = left.query(0);
+        ResultInterface r = right.query(0);
+        l.reset();
+        r.reset();
+        switch (unionType) {
+        case UNION_ALL:
+        case UNION: {
+            while (l.next()) {
+                result.addRow(convert(l.currentRow(), columnCount));
+            }
+            while (r.next()) {
+                result.addRow(convert(r.currentRow(), columnCount));
+            }
+            break;
+        }
+        case EXCEPT: {
+            while (l.next()) {
+                result.addRow(convert(l.currentRow(), columnCount));
+            }
+            while (r.next()) {
+                result.removeDistinct(convert(r.currentRow(), columnCount));
+            }
+            break;
+        }
+        case INTERSECT: {
+            LocalResult temp = createLocalResult(columnCount);
+            temp.setDistinct();
+            while (l.next()) {
+                temp.addRow(convert(l.currentRow(), columnCount));
+            }
+            while (r.next()) {
+                Value[] values = convert(r.currentRow(), columnCount);
+                if (temp.containsDistinct(values)) {
+                    result.addRow(values);
+                }
+            }
+            temp.close();
+            break;
+        }
+        default:
+            throw DbException.getInternalError(""type="" + unionType);
+        }
+        l.close();
+        r.close();
+        return finishResult(result, offset, fetch, fetchPercent, target);
+    }
+
+    private LocalResult createLocalResult(int columnCount) {
+        return new LocalResult(session, expressionArray, columnCount, columnCount);
+    }
+
+    @Override
+    public void init() {
+        if (checkInit) {
+            throw DbException.getInternalError();
+        }
+        checkInit = true;
+        left.init();
+        right.init();
+        int len = left.getColumnCount();
+        if (len != right.getColumnCount()) {
+            throw DbException.get(ErrorCode.COLUMN_COUNT_DOES_NOT_MATCH);
+        }
+        ArrayList<Expression> le = left.getExpressions();
+        // set the expressions to get the right column count and names,
+        // but can't validate at this time
+        expressions = new ArrayList<>(len);
+        for (int i = 0; i < len; i++) {
+            Expression l = le.get(i);
+            expressions.add(l);
+        }
+        visibleColumnCount = len;
+        if (withTies && !hasOrder()) {
+            throw DbException.get(ErrorCode.WITH_TIES_WITHOUT_ORDER_BY);
+        }
+    }
+
+    @Override
+    public void prepare() {
+        if (isPrepared) {
+            // sometimes a subquery is prepared twice (CREATE TABLE AS SELECT)
+            return;
+        }
+        if (!checkInit) {
+            throw DbException.getInternalError(""not initialized"");
+        }
+        isPrepared = true;
+        left.prepare();
+        right.prepare();
+        int len = left.getColumnCount();
+        // set the correct expressions now
+        expressions = new ArrayList<>(len);
+        ArrayList<Expression> le = left.getExpressions();
+        ArrayList<Expression> re = right.getExpressions();
+        for (int i = 0; i < len; i++) {
+            Expression l = le.get(i);
+            Expression r = re.get(i);
+            Column col = new Column(l.getAlias(session, i), TypeInfo.getHigherType(l.getType(), r.getType()));
+            Expression e = new ExpressionColumn(session.getDatabase(), col);
+            expressions.add(e);
+        }
+        if (orderList != null) {
+            if (initOrder(null, true, null)) {
+                prepareOrder(orderList, expressions.size());
+                cleanupOrder();
+            }
+        }
+        resultColumnCount = expressions.size();
+        expressionArray = expressions.toArray(new Expression[0]);
+    }
+
+    @Override
+    public double getCost() {
+        return left.getCost() + right.getCost();
+    }
+
+    @Override
+    public HashSet<Table> getTables() {
+        HashSet<Table> set = left.getTables();
+        set.addAll(right.getTables());
+        return set;
+    }
+
+    @Override
+    public void setForUpdate(boolean forUpdate) {
+        left.setForUpdate(forUpdate);
+        right.setForUpdate(forUpdate);
+        isForUpdate = forUpdate;
+    }
+
+    @Override
+    public void mapColumns(ColumnResolver resolver, int level) {
+        left.mapColumns(resolver, level);
+        right.mapColumns(resolver, level);
+    }
+
+    @Override
+    public void setEvaluatable(TableFilter tableFilter, boolean b) {
+        left.setEvaluatable(tableFilter, b);
+        right.setEvaluatable(tableFilter, b);
+    }
+
+    @Override
+    public void addGlobalCondition(Parameter param, int columnId,
+            int comparisonType) {
+        addParameter(param);
+        switch (unionType) {
+        case UNION_ALL:
+        case UNION:
+        case INTERSECT: {
+            left.addGlobalCondition(param, columnId, comparisonType);
+            right.addGlobalCondition(param, columnId, comparisonType);
+            break;
+        }
+        case EXCEPT: {
+            left.addGlobalCondition(param, columnId, comparisonType);
+            break;
+        }
+        default:
+            throw DbException.getInternalError(""type="" + unionType);
+        }
+    }
+
+    @Override
+    public String getPlanSQL(int sqlFlags) {
+        StringBuilder buff = new StringBuilder();
+        buff.append('(').append(left.getPlanSQL(sqlFlags)).append(')');
+        switch (unionType) {
+        case UNION_ALL:
+            buff.append(""\nUNION ALL\n"");
+            break;
+        case UNION:
+            buff.append(""\nUNION\n"");
+            break;
+        case INTERSECT:
+            buff.append(""\nINTERSECT\n"");
+            break;
+        case EXCEPT:
+            buff.append(""\nEXCEPT\n"");
+            break;
+        default:
+            throw DbException.getInternalError(""type="" + unionType);
+        }
+        buff.append('(').append(right.getPlanSQL(sqlFlags)).append(')');
+        appendEndOfQueryToSQL(buff, sqlFlags, expressions.toArray(new Expression[0]));
+        if (isForUpdate) {
+            buff.append(""\nFOR UPDATE"");
+        }
+        return buff.toString();
+    }
+
+    @Override
+    public boolean isEverything(ExpressionVisitor visitor) {
+        return left.isEverything(visitor) && right.isEverything(visitor);
+    }
+
+    @Override
+    public void updateAggregate(SessionLocal s, int stage) {
+        left.updateAggregate(s, stage);
+        right.updateAggregate(s, stage);
+    }
+
+    @Override
+    public void fireBeforeSelectTriggers() {
+        left.fireBeforeSelectTriggers();
+        right.fireBeforeSelectTriggers();
+    }
+
+    @Override
+    public boolean allowGlobalConditions() {
+        return left.allowGlobalConditions() && right.allowGlobalConditions();
+    }
+
+    @Override
+    public boolean isConstantQuery() {
+        return super.isConstantQuery() && left.isConstantQuery() && right.isConstantQuery();
+    }
+
+    /**
+     * Lazy execution for this union.
+     */
+    private final class LazyResultUnion extends LazyResult {
+
+        int columnCount;
+        ResultInterface l;
+        ResultInterface r;
+        boolean leftDone;
+        boolean rightDone;
+
+        LazyResultUnion(Expression[] expressions, int columnCount) {
+            super(getSession(), expressions);
+            this.columnCount = columnCount;
+        }
+
+        @Override
+        public int getVisibleColumnCount() {
+            return columnCount;
+        }
+
+        @Override
+        protected Value[] fetchNextRow() {
+            if (rightDone) {
+                return null;
+            }
+            if (!leftDone) {
+                if (l == null) {
+                    l = left.query(0);
+                    l.reset();
+                }
+                if (l.next()) {
+                    return l.currentRow();
+                }
+                leftDone = true;
+            }
+            if (r == null) {
+                r = right.query(0);
+                r.reset();
+            }
+            if (r.next()) {
+                return r.currentRow();
+            }
+            rightDone = true;
+            return null;
+        }
+
+        @Override
+        public void close() {
+            super.close();
+            if (l != null) {
+                l.close();
+            }
+            if (r != null) {
+                r.close();
+            }
+        }
+
+        @Override
+        public void reset() {
+            super.reset();
+            if (l != null) {
+                l.reset();
+            }
+            if (r != null) {
+                r.reset();
+            }
+            leftDone = false;
+            rightDone = false;
+        }
+    }
+}
+
+
+public SelectUnion(SessionLocal session, UnionType unionType, Query query, Query right) {
+        super(session);
+        this.unionType = unionType;
+        this.left = query;
+        this.right = right;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,"(O)org.h2.command.query.SelectUnion$LazyResultUnion:<init>(org.h2.command.query.SelectUnion,org.h2.expression.Expression[],int)",<init>,SelectUnion$LazyResultUnion,../data/xml/h2_call_methods/SelectUnion.xml
+org.h2.engine.Database:getSettings(),not found,OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.command.query.SelectUnion$LazyResultUnion:setLimit(long),setLimit,SelectUnion$LazyResultUnion,../data/xml/h2_call_methods/SelectUnion.xml
+org.h2.engine.Database:getSettings(),"
+private LocalResult createLocalResult(int columnCount) {
+        return new LocalResult(session, expressionArray, columnCount, columnCount);
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(O)org.h2.command.query.SelectUnion:createLocalResult(int),createLocalResult,SelectUnion,../data/xml/h2_call_methods/SelectUnion.xml
+org.h2.engine.Database:getSettings(),"/**
+     * Sets sort order to be used by this result. When rows are presorted by the
+     * query this method should not be used.
+     *
+     * @param sort the sort order
+     */
+public void setSortOrder(SortOrder sort) {
+        this.sort = sort;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.result.LocalResult:setSortOrder(org.h2.result.SortOrder),setSortOrder,LocalResult,../data/xml/h2_call_methods/LocalResult.xml
+org.h2.engine.Database:getSettings(),"/**
+     * Set the distinct flag only if it is possible, may be used as a possible
+     * optimization only.
+     */
+public void setDistinctIfPossible() {
+        if (!isAnyDistinct() && offsetExpr == null && fetchExpr == null) {
+            distinct = true;
+        }
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.command.query.Query:setDistinctIfPossible(),setDistinctIfPossible,Query,../data/xml/h2_call_methods/Query.xml
+org.h2.engine.Database:getSettings(),"/**
+     * Remove duplicate rows.
+     */
+public void setDistinct() {
+        assert distinctIndexes == null;
+        distinct = true;
+        distinctRows = new TreeMap<>(session.getDatabase().getCompareMode());
+    }
+
+    
+/**
+     * Remove rows with duplicates in columns with specified indexes.
+     *
+     * @param distinctIndexes distinct indexes
+     */
+public void setDistinct(int[] distinctIndexes) {
+        assert !distinct;
+        this.distinctIndexes = distinctIndexes;
+        distinctRows = new TreeMap<>(session.getDatabase().getCompareMode());
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.result.LocalResult:setDistinct(),setDistinct,LocalResult,../data/xml/h2_call_methods/LocalResult.xml
+org.h2.engine.Database:getSettings(),not found,OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.command.query.SelectUnion$UnionType:ordinal(),ordinal,SelectUnion$UnionType,../data/xml/h2_call_methods/SelectUnion.xml
+org.h2.engine.Database:getSettings(),"
+@Override
+    public final ResultInterface query(long maxrows) {
+        return query(maxrows, null);
+    }
+
+    
+/**
+     * Execute the query, writing the result to the target result.
+     *
+     * @param limit the maximum number of rows to return
+     * @param target the target result (null will return the result)
+     * @return the result set (if the target is not set).
+     */
+public final ResultInterface query(long limit, ResultTarget target) {
+        if (isUnion()) {
+            // union doesn't always know the parameter list of the left and
+            // right queries
+            return queryWithoutCacheLazyCheck(limit, target);
+        }
+        fireBeforeSelectTriggers();
+        if (noCache || !session.getDatabase().getOptimizeReuseResults() ||
+                (session.isLazyQueryExecution() && !neverLazy)) {
+            return queryWithoutCacheLazyCheck(limit, target);
+        }
+        Value[] params = getParameterValues();
+        long now = session.getDatabase().getModificationDataId();
+        if (isEverything(ExpressionVisitor.DETERMINISTIC_VISITOR)) {
+            if (lastResult != null && !lastResult.isClosed() &&
+                    limit == lastLimit) {
+                if (sameResultAsLast(params, lastParameters, lastEvaluated)) {
+                    lastResult = lastResult.createShallowCopy(session);
+                    if (lastResult != null) {
+                        lastResult.reset();
+                        return lastResult;
+                    }
+                }
+            }
+        }
+        lastParameters = params;
+        closeLastResult();
+        ResultInterface r = queryWithoutCacheLazyCheck(limit, target);
+        lastResult = r;
+        lastExists = null;
+        lastEvaluated = now;
+        lastLimit = limit;
+        return r;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.command.query.Query:query(long),query,Query,../data/xml/h2_call_methods/Query.xml
+org.h2.engine.Database:getSettings(),not found,OPTIMIZE_INSERT_FROM_SELECT,(I)org.h2.result.ResultInterface:reset(),reset,ResultInterface,../data/xml/h2_call_methods/ResultInterface.xml
+org.h2.engine.Database:getSettings(),not found,OPTIMIZE_INSERT_FROM_SELECT,(I)org.h2.result.ResultInterface:next(),next,ResultInterface,../data/xml/h2_call_methods/ResultInterface.xml
+org.h2.engine.Database:getSettings(),not found,OPTIMIZE_INSERT_FROM_SELECT,(I)org.h2.result.ResultInterface:currentRow(),currentRow,ResultInterface,../data/xml/h2_call_methods/ResultInterface.xml
+org.h2.engine.Database:getSettings(),"
+private Value[] convert(Value[] values, int columnCount) {
+        Value[] newValues;
+        if (columnCount == values.length) {
+            // re-use the array if possible
+            newValues = values;
+        } else {
+            // create a new array if needed,
+            // for the value hash set
+            newValues = new Value[columnCount];
+        }
+        for (int i = 0; i < columnCount; i++) {
+            Expression e = expressions.get(i);
+            newValues[i] = values[i].convertTo(e.getType(), session);
+        }
+        return newValues;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,"(O)org.h2.command.query.SelectUnion:convert(org.h2.value.Value[],int)",convert,SelectUnion,../data/xml/h2_call_methods/SelectUnion.xml
+org.h2.engine.Database:getSettings(),"/**
+     * Add a row to this object.
+     *
+     * @param values the row to add
+     */
+@Override
+    public void addRow(Value... values) {
+        assert values.length == resultColumnCount;
+        cloneLobs(values);
+        addRowInternal(values);
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.result.LocalResult:addRow(org.h2.value.Value[]),addRow,LocalResult,../data/xml/h2_call_methods/LocalResult.xml
+org.h2.engine.Database:getSettings(),"/**
+     * Remove the row from the result set if it exists.
+     *
+     * @param values the row
+     */
+public void removeDistinct(Value[] values) {
+        if (!distinct) {
+            throw DbException.getInternalError();
+        }
+        assert values.length == visibleColumnCount;
+        if (distinctRows != null) {
+            distinctRows.remove(ValueRow.get(values));
+            rowCount = distinctRows.size();
+        } else {
+            rowCount = external.removeRow(values);
+        }
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.result.LocalResult:removeDistinct(org.h2.value.Value[]),removeDistinct,LocalResult,../data/xml/h2_call_methods/LocalResult.xml
+org.h2.engine.Database:getSettings(),"/**
+     * Check if this result set contains the given row.
+     *
+     * @param values the row
+     * @return true if the row exists
+     */
+public boolean containsDistinct(Value[] values) {
+        assert values.length == visibleColumnCount;
+        if (external != null) {
+            return external.contains(values);
+        }
+        if (distinctRows == null) {
+            distinctRows = new TreeMap<>(session.getDatabase().getCompareMode());
+            for (Value[] row : rows) {
+                ValueRow array = getDistinctRow(row);
+                distinctRows.put(array, array.getList());
+            }
+        }
+        ValueRow array = ValueRow.get(values);
+        return distinctRows.get(array) != null;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.result.LocalResult:containsDistinct(org.h2.value.Value[]),containsDistinct,LocalResult,../data/xml/h2_call_methods/LocalResult.xml
+org.h2.engine.Database:getSettings(),"
+@Override
+    public void close() {
+        if (external != null) {
+            external.close();
+            external = null;
+            closed = true;
+        }
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.result.LocalResult:close(),close,LocalResult,../data/xml/h2_call_methods/LocalResult.xml
+org.h2.engine.Database:getSettings(),not found,OPTIMIZE_INSERT_FROM_SELECT,(I)org.h2.result.ResultInterface:close(),close,ResultInterface,../data/xml/h2_call_methods/ResultInterface.xml
+org.h2.engine.Database:getSettings(),not found,OPTIMIZE_INSERT_FROM_SELECT,"(M)org.h2.command.query.SelectUnion:finishResult(org.h2.result.LocalResult,long,long,boolean,org.h2.result.ResultTarget)",finishResult,SelectUnion,../data/xml/h2_call_methods/SelectUnion.xml
+org.h2.engine.Database:getSettings(),"
+private void disableLazyForJoinSubqueries(final TableFilter top) {
+        if (session.isLazyQueryExecution()) {
+            top.visit(f -> {
+                if (f != top && f.getTable().getTableType() == TableType.VIEW) {
+                    ViewIndex idx = (ViewIndex) f.getIndex();
+                    if (idx != null && idx.getQuery() != null) {
+                        idx.getQuery().setNeverLazy(true);
+                    }
+                }
+            });
+        }
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(O)org.h2.command.query.Select:disableLazyForJoinSubqueries(org.h2.table.TableFilter),disableLazyForJoinSubqueries,Select,../data/xml/h2_call_methods/Select.xml
+org.h2.engine.Database:getSettings(),not found,OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.command.query.Select:getOffsetFetch(long),getOffsetFetch,Select,../data/xml/h2_call_methods/Select.xml
+org.h2.engine.Database:getSettings(),"
+public boolean isLazyQueryExecution() {
+        return lazyQueryExecution;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.engine.SessionLocal:isLazyQueryExecution(),isLazyQueryExecution,SessionLocal,../data/xml/h2_call_methods/SessionLocal.xml
+org.h2.engine.Database:getSettings(),not found,OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.command.query.Select:isReadOnly(),isReadOnly,Select,../data/xml/h2_call_methods/Select.xml
+org.h2.engine.Database:getSettings(),"
+public Database getDatabase() {
+        return database;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.engine.SessionLocal:getDatabase(),getDatabase,SessionLocal,../data/xml/h2_call_methods/SessionLocal.xml
+org.h2.engine.Database:getSettings(),"
+public DbSettings getSettings() {
+        return dbSettings;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.engine.Database:getSettings(),getSettings,Database,../data/xml/h2_call_methods/Database.xml
+org.h2.engine.Database:getSettings(),"
+private LocalResult createLocalResult(LocalResult old) {
+        return old != null ? old : new LocalResult(session, expressionArray, visibleColumnCount, resultColumnCount);
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(O)org.h2.command.query.Select:createLocalResult(org.h2.result.LocalResult),createLocalResult,Select,../data/xml/h2_call_methods/Select.xml
+org.h2.engine.Database:getSettings(),"
+@Override
+    public boolean isAnyDistinct() {
+        return distinct || distinctExpressions != null;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.command.query.Select:isAnyDistinct(),isAnyDistinct,Select,../data/xml/h2_call_methods/Select.xml
+org.h2.engine.Database:getSettings(),"/**
+     * Sets sort order to be used by this result. When rows are presorted by the
+     * query this method should not be used.
+     *
+     * @param sort the sort order
+     */
+public void setSortOrder(SortOrder sort) {
+        this.sort = sort;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.result.LocalResult:setSortOrder(org.h2.result.SortOrder),setSortOrder,LocalResult,../data/xml/h2_call_methods/LocalResult.xml
+org.h2.engine.Database:getSettings(),"/**
+     * Remove duplicate rows.
+     */
+public void setDistinct() {
+        assert distinctIndexes == null;
+        distinct = true;
+        distinctRows = new TreeMap<>(session.getDatabase().getCompareMode());
+    }
+
+    
+/**
+     * Remove rows with duplicates in columns with specified indexes.
+     *
+     * @param distinctIndexes distinct indexes
+     */
+public void setDistinct(int[] distinctIndexes) {
+        assert !distinct;
+        this.distinctIndexes = distinctIndexes;
+        distinctRows = new TreeMap<>(session.getDatabase().getCompareMode());
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.result.LocalResult:setDistinct(),setDistinct,LocalResult,../data/xml/h2_call_methods/LocalResult.xml
+org.h2.engine.Database:getSettings(),"/**
+     * Remove duplicate rows.
+     */
+public void setDistinct() {
+        assert distinctIndexes == null;
+        distinct = true;
+        distinctRows = new TreeMap<>(session.getDatabase().getCompareMode());
+    }
+
+    
+/**
+     * Remove rows with duplicates in columns with specified indexes.
+     *
+     * @param distinctIndexes distinct indexes
+     */
+public void setDistinct(int[] distinctIndexes) {
+        assert !distinct;
+        this.distinctIndexes = distinctIndexes;
+        distinctRows = new TreeMap<>(session.getDatabase().getCompareMode());
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.result.LocalResult:setDistinct(int[]),setDistinct,LocalResult,../data/xml/h2_call_methods/LocalResult.xml
+org.h2.engine.Database:getSettings(),"/**
+     * Start the query. This will reset the scan counts.
+     *
+     * @param s the session
+     */
+public void startQuery(SessionLocal s) {
+        this.session = s;
+        scanCount = 0;
+        if (nestedJoin != null) {
+            nestedJoin.startQuery(s);
+        }
+        if (join != null) {
+            join.startQuery(s);
+        }
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.table.TableFilter:startQuery(org.h2.engine.SessionLocal),startQuery,TableFilter,../data/xml/h2_call_methods/TableFilter.xml
+org.h2.engine.Database:getSettings(),"/**
+     * Reset to the current position.
+     */
+public void reset() {
+        if (nestedJoin != null) {
+            nestedJoin.reset();
+        }
+        if (join != null) {
+            join.reset();
+        }
+        state = BEFORE_FIRST;
+        foundOne = false;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.table.TableFilter:reset(),reset,TableFilter,../data/xml/h2_call_methods/TableFilter.xml
+org.h2.engine.Database:getSettings(),"/**
+     * Lock the table. This will also lock joined tables.
+     *
+     * @param s the session
+     */
+public void lock(SessionLocal s) {
+        table.lock(s, Table.READ_LOCK);
+        if (join != null) {
+            join.lock(s);
+        }
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.table.TableFilter:lock(org.h2.engine.SessionLocal),lock,TableFilter,../data/xml/h2_call_methods/TableFilter.xml
+org.h2.engine.Database:getSettings(),"
+private void queryQuick(int columnCount, ResultTarget result, boolean skipResult) {
+        Value[] row = new Value[columnCount];
+        for (int i = 0; i < columnCount; i++) {
+            Expression expr = expressions.get(i);
+            row[i] = expr.getValue(session);
+        }
+        if (!skipResult) {
+            result.addRow(row);
+        }
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,"(O)org.h2.command.query.Select:queryQuick(int,org.h2.result.ResultTarget,boolean)",queryQuick,Select,../data/xml/h2_call_methods/Select.xml
+org.h2.engine.Database:getSettings(),"
+private void queryGroupWindow(int columnCount, LocalResult result, long offset, boolean quickOffset) {
+        initGroupData(columnCount);
+        try {
+            gatherGroup(columnCount, DataAnalysisOperation.STAGE_GROUP);
+            try {
+                isGroupWindowStage2 = true;
+                while (groupData.next() != null) {
+                    if (havingIndex < 0 || expressions.get(havingIndex).getBooleanValue(session)) {
+                        updateAgg(columnCount, DataAnalysisOperation.STAGE_WINDOW);
+                    } else {
+                        groupData.remove();
+                    }
+                }
+                groupData.done();
+                processGroupResult(columnCount, result, offset, quickOffset, /* Having was performed earlier */ false);
+            } finally {
+                isGroupWindowStage2 = false;
+            }
+        } finally {
+            groupData.reset();
+        }
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,"(O)org.h2.command.query.Select:queryGroupWindow(int,org.h2.result.LocalResult,long,boolean)",queryGroupWindow,Select,../data/xml/h2_call_methods/Select.xml
+org.h2.engine.Database:getSettings(),"
+private void queryWindow(int columnCount, LocalResult result, long offset, boolean quickOffset) {
+        initGroupData(columnCount);
+        try {
+            gatherGroup(columnCount, DataAnalysisOperation.STAGE_WINDOW);
+            processGroupResult(columnCount, result, offset, quickOffset, false);
+        } finally {
+            groupData.reset();
+        }
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,"(O)org.h2.command.query.Select:queryWindow(int,org.h2.result.LocalResult,long,boolean)",queryWindow,Select,../data/xml/h2_call_methods/Select.xml
+org.h2.engine.Database:getSettings(),"
+private LazyResult queryGroupSorted(int columnCount, ResultTarget result, long offset, boolean quickOffset) {
+        LazyResultGroupSorted lazyResult = new LazyResultGroupSorted(expressionArray, columnCount);
+        skipOffset(lazyResult, offset, quickOffset);
+        if (result == null) {
+            return lazyResult;
+        }
+        while (lazyResult.next()) {
+            result.addRow(lazyResult.currentRow());
+        }
+        return null;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,"(O)org.h2.command.query.Select:queryGroupSorted(int,org.h2.result.ResultTarget,long,boolean)",queryGroupSorted,Select,../data/xml/h2_call_methods/Select.xml
+org.h2.engine.Database:getSettings(),"
+private void queryGroup(int columnCount, LocalResult result, long offset, boolean quickOffset) {
+        initGroupData(columnCount);
+        try {
+            gatherGroup(columnCount, DataAnalysisOperation.STAGE_GROUP);
+            processGroupResult(columnCount, result, offset, quickOffset, true);
+        } finally {
+            groupData.reset();
+        }
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,"(O)org.h2.command.query.Select:queryGroup(int,org.h2.result.LocalResult,long,boolean)",queryGroup,Select,../data/xml/h2_call_methods/Select.xml
+org.h2.engine.Database:getSettings(),"
+private void queryDistinct(ResultTarget result, long offset, long limitRows, boolean withTies,
+            boolean quickOffset) {
+        if (limitRows > 0 && offset > 0) {
+            limitRows += offset;
+            if (limitRows < 0) {
+                // Overflow
+                limitRows = Long.MAX_VALUE;
+            }
+        }
+        long rowNumber = 0;
+        setCurrentRowNumber(0);
+        Index index = topTableFilter.getIndex();
+        SearchRow first = null;
+        int columnIndex = index.getColumns()[0].getColumnId();
+        if (!quickOffset) {
+            offset = 0;
+        }
+        while (true) {
+            setCurrentRowNumber(++rowNumber);
+            Cursor cursor = index.findNext(session, first, null);
+            if (!cursor.next()) {
+                break;
+            }
+            SearchRow found = cursor.getSearchRow();
+            Value value = found.getValue(columnIndex);
+            if (first == null) {
+                first = index.getRowFactory().createRow();
+            }
+            first.setValue(columnIndex, value);
+            if (offset > 0) {
+                offset--;
+                continue;
+            }
+            result.addRow(value);
+            if ((sort == null || sortUsingIndex) && limitRows > 0 && rowNumber >= limitRows && !withTies) {
+                break;
+            }
+        }
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,"(O)org.h2.command.query.Select:queryDistinct(org.h2.result.ResultTarget,long,long,boolean,boolean)",queryDistinct,Select,../data/xml/h2_call_methods/Select.xml
+org.h2.engine.Database:getSettings(),"
+private LazyResult queryFlat(int columnCount, ResultTarget result, long offset, long limitRows, boolean withTies,
+            boolean quickOffset) {
+        if (limitRows > 0 && offset > 0 && !quickOffset) {
+            limitRows += offset;
+            if (limitRows < 0) {
+                // Overflow
+                limitRows = Long.MAX_VALUE;
+            }
+        }
+        LazyResultQueryFlat lazyResult = new LazyResultQueryFlat(expressionArray, columnCount, isForUpdate);
+        skipOffset(lazyResult, offset, quickOffset);
+        if (result == null) {
+            return lazyResult;
+        }
+        if (limitRows < 0 || sort != null && !sortUsingIndex || withTies && !quickOffset) {
+            limitRows = Long.MAX_VALUE;
+        }
+        Value[] row = null;
+        while (result.getRowCount() < limitRows && lazyResult.next()) {
+            row = lazyResult.currentRow();
+            result.addRow(row);
+        }
+        if (limitRows != Long.MAX_VALUE && withTies && sort != null && row != null) {
+            Value[] expected = row;
+            while (lazyResult.next()) {
+                row = lazyResult.currentRow();
+                if (sort.compare(expected, row) != 0) {
+                    break;
+                }
+                result.addRow(row);
+            }
+            result.limitsWereApplied();
+        }
+        return null;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,"(O)org.h2.command.query.Select:queryFlat(int,org.h2.result.ResultTarget,long,long,boolean,boolean)",queryFlat,Select,../data/xml/h2_call_methods/Select.xml
+org.h2.engine.Database:getSettings(),"
+public void setLimit(long limit) {
+        this.limit = limit;
+    }
+
+    ",OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.result.LazyResult:setLimit(long),setLimit,LazyResult,../data/xml/h2_call_methods/LazyResult.xml
+org.h2.engine.Database:getSettings(),not found,OPTIMIZE_INSERT_FROM_SELECT,(M)org.h2.command.query.Select:convertToDistinct(org.h2.result.ResultInterface),convertToDistinct,Select,../data/xml/h2_call_methods/Select.xml
+org.h2.engine.Database:getSettings(),not found,OPTIMIZE_INSERT_FROM_SELECT,"(M)org.h2.command.query.Select:finishResult(org.h2.result.LocalResult,long,long,boolean,org.h2.result.ResultTarget)",finishResult,Select,../data/xml/h2_call_methods/Select.xml

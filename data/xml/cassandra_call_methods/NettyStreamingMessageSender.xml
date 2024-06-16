@@ -1,0 +1,570 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/streaming/async/NettyStreamingMessageSender.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>streaming</name><operator>.</operator><name>async</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOError</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>channels</name><operator>.</operator><name>ClosedByInterruptException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Collection</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentHashMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ConcurrentMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>LinkedBlockingQueue</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ScheduledFuture</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Semaphore</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>ThreadPoolExecutor</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Throwables</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>buffer</name><operator>.</operator><name>ByteBuf</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>Channel</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>ChannelFuture</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>ChannelPipeline</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>AttributeKey</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Future</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>GenericFutureListener</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>DebuggableThreadPoolExecutor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>NamedThreadFactory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>Config</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputBufferFixed</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>util</name><operator>.</operator><name>DataOutputStreamPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>AsyncChannelPromise</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>OutboundConnectionSettings</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>AsyncStreamingOutputPlus</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>streaming</name><operator>.</operator><name>StreamConnectionFactory</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>streaming</name><operator>.</operator><name>StreamSession</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>streaming</name><operator>.</operator><name>StreamingMessageSender</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>streaming</name><operator>.</operator><name>messages</name><operator>.</operator><name>IncomingStreamMessage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>streaming</name><operator>.</operator><name>messages</name><operator>.</operator><name>KeepAliveMessage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>streaming</name><operator>.</operator><name>messages</name><operator>.</operator><name>OutgoingStreamMessage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>streaming</name><operator>.</operator><name>messages</name><operator>.</operator><name>StreamInitMessage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>streaming</name><operator>.</operator><name>messages</name><operator>.</operator><name>StreamMessage</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>JVMStabilityInspector</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Responsible for sending {@link StreamMessage}s to a given peer. We manage an array of netty {@link Channel}s
+ * for sending {@link OutgoingStreamMessage} instances; all other {@link StreamMessage} types are sent via
+ * a special control channel. The reason for this is to treat those messages carefully and not let them get stuck
+ * behind a stream transfer.
+ *
+ * One of the challenges when sending streams is we might need to delay shipping the stream if:
+ *
+ * - we've exceeded our network I/O use due to rate limiting (at the cassandra level)
+ * - the receiver isn't keeping up, which causes the local TCP socket buffer to not empty, which causes epoll writes to not
+ * move any bytes to the socket, which causes buffers to stick around in user-land (a/k/a cassandra) memory.
+ *
+ * When those conditions occur, it's easy enough to reschedule processing the stream once the resources pick up
+ * (we acquire the permits from the rate limiter, or the socket drains). However, we need to ensure that
+ * no other messages are submitted to the same channel while the current stream is still being processed.
+ */</comment>
+<class><specifier>public</specifier> class <name>NettyStreamingMessageSender</name> <super_list><implements>implements <super><name>StreamingMessageSender</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>NettyStreamingMessageSender</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>DEFAULT_MAX_PARALLEL_TRANSFERS</name> <init>= <expr><call><name><name>FBUtilities</name><operator>.</operator><name>getAvailableProcessors</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MAX_PARALLEL_TRANSFERS</name> <init>= <expr><call><name><name>Integer</name><operator>.</operator><name>parseInt</name></name><argument_list>(<argument><expr><call><name><name>System</name><operator>.</operator><name>getProperty</name></name><argument_list>(<argument><expr><name><name>Config</name><operator>.</operator><name>PROPERTY_PREFIX</name></name> <operator>+</operator> <literal type="string">"streaming.session.parallelTransfers"</literal></expr></argument>, <argument><expr><call><name><name>Integer</name><operator>.</operator><name>toString</name></name><argument_list>(<argument><expr><name>DEFAULT_MAX_PARALLEL_TRANSFERS</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>long</name></type> <name>DEFAULT_CLOSE_WAIT_IN_MILLIS</name> <init>= <expr><call><name><name>TimeUnit</name><operator>.</operator><name>MINUTES</name><operator>.</operator><name>toMillis</name></name><argument_list>(<argument><expr><literal type="number">5</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// a simple mechansim for allowing a degree of fairnes across multiple sessions</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Semaphore</name></type> <name>fileTransferSemaphore</name> <init>= <expr><operator>new</operator> <call><name>Semaphore</name><argument_list>(<argument><expr><name>DEFAULT_MAX_PARALLEL_TRANSFERS</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>StreamSession</name></type> <name>session</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>isPreview</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>streamingVersion</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>OutboundConnectionSettings</name></type> <name>template</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>StreamConnectionFactory</name></type> <name>factory</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>boolean</name></type> <name>closed</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * A special {@link Channel} for sending non-stream streaming messages, basically anything that isn't an
+     * {@link OutgoingStreamMessage} (or an {@link IncomingStreamMessage}, but a node doesn't send that, it's only received).
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>Channel</name></type> <name>controlMessageChannel</name></decl>;</decl_stmt>
+
+    <comment type="line">// note: this really doesn't need to be a LBQ, just something that's thread safe</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>ScheduledFuture</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>channelKeepAlives</name> <init>= <expr><operator>new</operator> <call><name><name>LinkedBlockingQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ThreadPoolExecutor</name></type> <name>fileTransferExecutor</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * A mapping of each {@link #fileTransferExecutor} thread to a channel that can be written to (on that thread).
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>ConcurrentMap</name><argument_list type="generic">&lt;<argument><name>Thread</name></argument>, <argument><name>Channel</name></argument>&gt;</argument_list></name></type> <name>threadToChannelMap</name> <init>= <expr><operator>new</operator> <call><name><name>ConcurrentHashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * A netty channel attribute used to indicate if a channel is currently transferring a stream. This is primarily used
+     * to indicate to the {@link KeepAliveTask} if it is safe to send a {@link KeepAliveMessage}, as sending the
+     * (application level) keep-alive in the middle of a stream would be bad news.
+     */</comment>
+    <decl_stmt><decl><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>static</specifier> <specifier>final</specifier> <name><name>AttributeKey</name><argument_list type="generic">&lt;<argument><name>Boolean</name></argument>&gt;</argument_list></name></type> <name>TRANSFERRING_FILE_ATTR</name> <init>= <expr><call><name><name>AttributeKey</name><operator>.</operator><name>valueOf</name></name><argument_list>(<argument><expr><literal type="string">"transferringFile"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>NettyStreamingMessageSender</name><parameter_list>(<parameter><decl><type><name>StreamSession</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>OutboundConnectionSettings</name></type> <name>template</name></decl></parameter>, <parameter><decl><type><name>StreamConnectionFactory</name></type> <name>factory</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>streamingVersion</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isPreview</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>session</name></name> <operator>=</operator> <name>session</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>streamingVersion</name></name> <operator>=</operator> <name>streamingVersion</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>template</name></name> <operator>=</operator> <name>template</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>factory</name></name> <operator>=</operator> <name>factory</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>isPreview</name></name> <operator>=</operator> <name>isPreview</name></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>String</name></type> <name>name</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>peer</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>replace</name><argument_list>(<argument><expr><literal type="char">':'</literal></expr></argument>, <argument><expr><literal type="char">'.'</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name>fileTransferExecutor</name> <operator>=</operator> <operator>new</operator> <call><name>DebuggableThreadPoolExecutor</name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><name>MAX_PARALLEL_TRANSFERS</name></expr></argument>, <argument><expr><literal type="number">1L</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>SECONDS</name></name></expr></argument>, <argument><expr><operator>new</operator> <call><name><name>LinkedBlockingQueue</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></argument>,
+                                                                <argument><expr><operator>new</operator> <call><name>NamedThreadFactory</name><argument_list>(<argument><expr><literal type="string">"NettyStreaming-Outbound-"</literal> <operator>+</operator> <name>name</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>fileTransferExecutor</name><operator>.</operator><name>allowCoreThreadTimeOut</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>initialize</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>StreamInitMessage</name></type> <name>message</name> <init>= <expr><operator>new</operator> <call><name>StreamInitMessage</name><argument_list>(<argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getBroadcastAddressAndPort</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                          <argument><expr><call><name><name>session</name><operator>.</operator><name>sessionIndex</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                          <argument><expr><call><name><name>session</name><operator>.</operator><name>planId</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                          <argument><expr><call><name><name>session</name><operator>.</operator><name>streamOperation</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                          <argument><expr><call><name><name>session</name><operator>.</operator><name>getPendingRepair</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                          <argument><expr><call><name><name>session</name><operator>.</operator><name>getPreviewKind</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>sendMessage</name><argument_list>(<argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>hasControlChannel</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>controlMessageChannel</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Used by follower to setup control message channel created by initiator
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>injectControlMessageChannel</name><parameter_list>(<parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>controlMessageChannel</name></name> <operator>=</operator> <name>channel</name></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>channel</name><operator>.</operator><name>attr</name></name><argument_list>(<argument><expr><name>TRANSFERRING_FILE_ATTR</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>set</name><argument_list>(<argument><expr><name><name>Boolean</name><operator>.</operator><name>FALSE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>scheduleKeepAliveTask</name><argument_list>(<argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Used by initiator to setup control message channel connecting to follower
+     */</comment>
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>setupControlMessageChannel</name><parameter_list>(<parameter><decl><type><name>OutboundConnectionSettings</name></type> <name>templateWithConnectTo</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>controlMessageChannel</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <comment type="block">/*
+             * Inbound handlers are needed:
+             *  a) for initiator's control channel(the first outbound channel) to receive follower's message.
+             *  b) for streaming receiver (note: both initiator and follower can receive streaming files) to reveive files,
+             *     in {@link Handler#setupStreamingPipeline}
+             */</comment>
+            <expr_stmt><expr><name>controlMessageChannel</name> <operator>=</operator> <call><name>createChannel</name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><name>templateWithConnectTo</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>scheduleKeepAliveTask</name><argument_list>(<argument><expr><name>controlMessageChannel</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>scheduleKeepAliveTask</name><parameter_list>(<parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>keepAlivePeriod</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getStreamingKeepAlivePeriod</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isDebugEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"{} Scheduling keep-alive task with {}s period."</literal></expr></argument>, <argument><expr><call><name>createLogTag</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>keepAlivePeriod</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>KeepAliveTask</name></type> <name>task</name> <init>= <expr><operator>new</operator> <call><name>KeepAliveTask</name><argument_list>(<argument><expr><name>channel</name></expr></argument>, <argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>ScheduledFuture</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>scheduledFuture</name> <init>= <expr><call><name><name>channel</name><operator>.</operator><name>eventLoop</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>scheduleAtFixedRate</name><argument_list>(<argument><expr><name>task</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>keepAlivePeriod</name></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>SECONDS</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>channelKeepAlives</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>scheduledFuture</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>task</name><operator>.</operator><name>future</name></name> <operator>=</operator> <name>scheduledFuture</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+    
+    <function><type><specifier>private</specifier> <name>Channel</name></type> <name>createChannel</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>isInboundHandlerNeeded</name></decl></parameter>, <parameter><decl><type><name>OutboundConnectionSettings</name></type> <name>templateWithConnectTo</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Channel</name></type> <name>channel</name> <init>= <expr><call><name><name>factory</name><operator>.</operator><name>createConnection</name></name><argument_list>(<argument><expr><name>templateWithConnectTo</name></expr></argument>, <argument><expr><name>streamingVersion</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>attachOutbound</name></name><argument_list>(<argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>isInboundHandlerNeeded</name></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>ChannelPipeline</name></type> <name>pipeline</name> <init>= <expr><call><name><name>channel</name><operator>.</operator><name>pipeline</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>pipeline</name><operator>.</operator><name>addLast</name></name><argument_list>(<argument><expr><literal type="string">"stream"</literal></expr></argument>, <argument><expr><operator>new</operator> <call><name>StreamingInboundHandler</name><argument_list>(<argument><expr><name><name>template</name><operator>.</operator><name>to</name></name></expr></argument>, <argument><expr><name>streamingVersion</name></expr></argument>, <argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>channel</name><operator>.</operator><name>attr</name></name><argument_list>(<argument><expr><name>TRANSFERRING_FILE_ATTR</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>set</name><argument_list>(<argument><expr><name><name>Boolean</name><operator>.</operator><name>FALSE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"Creating channel id {} local {} remote {}"</literal></expr></argument>, <argument><expr><call><name><name>channel</name><operator>.</operator><name>id</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>channel</name><operator>.</operator><name>localAddress</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>channel</name><operator>.</operator><name>remoteAddress</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>channel</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name>String</name></type> <name>createLogTag</name><parameter_list>(<parameter><decl><type><name>StreamSession</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>sb</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>(<argument><expr><literal type="number">64</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"[Stream"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>session</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" #"</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><call><name><name>session</name><operator>.</operator><name>planId</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>channel</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" channel: "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><call><name><name>channel</name><operator>.</operator><name>id</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>sb</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="char">']'</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name><name>sb</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>sendMessage</name><parameter_list>(<parameter><decl><type><name>StreamMessage</name></type> <name>message</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>closed</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><literal type="string">"stream has been closed, cannot send "</literal> <operator>+</operator> <name>message</name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>message</name> <operator>instanceof</operator> <name>OutgoingStreamMessage</name></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>isPreview</name></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><literal type="string">"Cannot send stream data messages for preview streaming sessions"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isDebugEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"{} Sending {}"</literal></expr></argument>, <argument><expr><call><name>createLogTag</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <comment type="line">// Supply a preferred IP up-front to avoid trying to get it in the executor thread, which can be interrupted.</comment>
+            <decl_stmt><decl><type><name>OutboundConnectionSettings</name></type> <name>templateWithConnectTo</name> <init>= <expr><call><name><name>template</name><operator>.</operator><name>withConnectTo</name></name><argument_list>(<argument><expr><call><name><name>template</name><operator>.</operator><name>connectTo</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>fileTransferExecutor</name><operator>.</operator><name>submit</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>FileStreamTask</name><argument_list>(<argument><expr><operator>(</operator><name>OutgoingStreamMessage</name><operator>)</operator> <name>message</name></expr></argument>, <argument><expr><name>templateWithConnectTo</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>setupControlMessageChannel</name><argument_list>(<argument><expr><name>template</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>sendControlMessage</name><argument_list>(<argument><expr><name>controlMessageChannel</name></expr></argument>, <argument><expr><name>message</name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>future</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name>onControlMessageComplete</name><argument_list>(<argument><expr><name>future</name></expr></argument>, <argument><expr><name>message</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>close</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>onError</name></name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>sendControlMessage</name><parameter_list>(<parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>, <parameter><decl><type><name>StreamMessage</name></type> <name>message</name></decl></parameter>, <parameter><decl><type><name>GenericFutureListener</name></type> <name>listener</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isDebugEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"{} Sending {}"</literal></expr></argument>, <argument><expr><call><name>createLogTag</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>message</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <comment type="line">// we anticipate that the control messages are rather small, so allocating a ByteBuf shouldn't  blow out of memory.</comment>
+        <decl_stmt><decl><type><name>long</name></type> <name>messageSize</name> <init>= <expr><call><name><name>StreamMessage</name><operator>.</operator><name>serializedSize</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><name>streamingVersion</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>messageSize</name> <operator>&gt;</operator> <literal type="number">1</literal> <operator>&lt;&lt;</operator> <literal type="number">30</literal></expr>)</condition>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"%s something is seriously wrong with the calculated stream control message's size: %d bytes, type is %s"</literal></expr></argument>,
+                                                          <argument><expr><call><name>createLogTag</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>messageSize</name></expr></argument>, <argument><expr><name><name>message</name><operator>.</operator><name>type</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+
+        <comment type="line">// as control messages are (expected to be) small, we can simply allocate a ByteBuf here, wrap it, and send via the channel</comment>
+        <decl_stmt><decl><type><name>ByteBuf</name></type> <name>buf</name> <init>= <expr><call><name><name>channel</name><operator>.</operator><name>alloc</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>directBuffer</name><argument_list>(<argument><expr><operator>(</operator><name>int</name><operator>)</operator> <name>messageSize</name></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator> <name>messageSize</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ByteBuffer</name></type> <name>nioBuf</name> <init>= <expr><call><name><name>buf</name><operator>.</operator><name>nioBuffer</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator> <name>messageSize</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation>
+        <type><name>DataOutputBufferFixed</name></type> <name>out</name> <init>= <expr><operator>new</operator> <call><name>DataOutputBufferFixed</name><argument_list>(<argument><expr><name>nioBuf</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>StreamMessage</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>message</name></expr></argument>, <argument><expr><name>out</name></expr></argument>, <argument><expr><name>streamingVersion</name></expr></argument>, <argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <assert>assert <expr><call><name><name>nioBuf</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call> <operator>==</operator> <call><name><name>nioBuf</name><operator>.</operator><name>limit</name></name><argument_list>()</argument_list></call></expr>;</assert>
+        <expr_stmt><expr><call><name><name>buf</name><operator>.</operator><name>writerIndex</name></name><argument_list>(<argument><expr><call><name><name>nioBuf</name><operator>.</operator><name>position</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>AsyncChannelPromise</name><operator>.</operator><name>writeAndFlush</name></name><argument_list>(<argument><expr><name>channel</name></expr></argument>, <argument><expr><name>buf</name></expr></argument>, <argument><expr><name>listener</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Decides what to do after a {@link StreamMessage} is processed.
+     *
+     * Note: this is called from the netty event loop.
+     *
+     * @return null if the message was processed sucessfully; else, a {@link java.util.concurrent.Future} to indicate
+     * the status of aborting any remaining tasks in the session.
+     */</comment>
+    <function><type><name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Future</name></name></type> <name>onControlMessageComplete</name><parameter_list>(<parameter><decl><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>future</name></decl></parameter>, <parameter><decl><type><name>StreamMessage</name></type> <name>msg</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ChannelFuture</name></type> <name>channelFuture</name> <init>= <expr><operator>(</operator><name>ChannelFuture</name><operator>)</operator><name>future</name></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Throwable</name></type> <name>cause</name> <init>= <expr><call><name><name>future</name><operator>.</operator><name>cause</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>cause</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>Channel</name></type> <name>channel</name> <init>= <expr><call><name><name>channelFuture</name><operator>.</operator><name>channel</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>error</name></name><argument_list>(<argument><expr><literal type="string">"{} failed to send a stream message/data to peer {}: msg = {}"</literal></expr></argument>,
+                     <argument><expr><call><name>createLogTag</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>template</name><operator>.</operator><name>to</name></name></expr></argument>, <argument><expr><name>msg</name></expr></argument>, <argument><expr><call><name><name>future</name><operator>.</operator><name>cause</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// StreamSession will invoke close(), but we have to mark this sender as closed so the session doesn't try</comment>
+        <comment type="line">// to send any failure messages</comment>
+        <return>return <expr><call><name><name>session</name><operator>.</operator><name>onError</name></name><argument_list>(<argument><expr><name>cause</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <class>class <name>FileStreamTask</name> <super_list><implements>implements <super><name>Runnable</name></super></implements></super_list>
+    <block>{
+        <comment type="block" format="javadoc">/**
+         * Time interval, in minutes, to wait between logging a message indicating that we're waiting on a semaphore
+         * permit to become available.
+         */</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>SEMAPHORE_UNAVAILABLE_LOG_INTERVAL</name> <init>= <expr><literal type="number">3</literal></expr></init></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+         * Even though we expect only an {@link OutgoingStreamMessage} at runtime, the type here is {@link StreamMessage}
+         * to facilitate simpler testing.
+         */</comment>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>StreamMessage</name></type> <name>msg</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>OutboundConnectionSettings</name></type> <name>templateWithConnectTo</name></decl>;</decl_stmt>
+
+        <constructor><name>FileStreamTask</name><parameter_list>(<parameter><decl><type><name>OutgoingStreamMessage</name></type> <name>ofm</name></decl></parameter>, <parameter><decl><type><name>OutboundConnectionSettings</name></type> <name>templateWithConnectTo</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>msg</name></name> <operator>=</operator> <name>ofm</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>templateWithConnectTo</name></name> <operator>=</operator> <name>templateWithConnectTo</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <comment type="block" format="javadoc">/**
+         * For testing purposes
+         */</comment>
+        <constructor><name>FileStreamTask</name><parameter_list>(<parameter><decl><type><name>StreamMessage</name></type> <name>msg</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>msg</name></name> <operator>=</operator> <name>msg</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>templateWithConnectTo</name></name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name>acquirePermit</name><argument_list>(<argument><expr><name>SEMAPHORE_UNAVAILABLE_LOG_INTERVAL</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>Channel</name></type> <name>channel</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><name>channel</name> <operator>=</operator> <call><name>getOrCreateChannel</name><argument_list>(<argument><expr><name>templateWithConnectTo</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>channel</name><operator>.</operator><name>attr</name></name><argument_list>(<argument><expr><name>TRANSFERRING_FILE_ATTR</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>compareAndSet</name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"channel's transferring state is currently set to true. refusing to start new stream"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+                <comment type="line">// close the DataOutputStreamPlus as we're done with it - but don't close the channel</comment>
+                <try>try <init>(<decl><type><name>DataOutputStreamPlus</name></type> <name>outPlus</name> <init>= <expr><operator>new</operator> <call><name>AsyncStreamingOutputPlus</name><argument_list>(<argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>StreamMessage</name><operator>.</operator><name>serialize</name></name><argument_list>(<argument><expr><name>msg</name></expr></argument>, <argument><expr><name>outPlus</name></expr></argument>, <argument><expr><name>streamingVersion</name></expr></argument>, <argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block>
+                <finally>finally
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>channel</name><operator>.</operator><name>attr</name></name><argument_list>(<argument><expr><name>TRANSFERRING_FILE_ATTR</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>set</name><argument_list>(<argument><expr><name><name>Boolean</name><operator>.</operator><name>FALSE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></finally></try>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>onError</name></name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>closed</name> <operator>&amp;&amp;</operator> <call><name><name>Throwables</name><operator>.</operator><name>getRootCause</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call> <operator>instanceof</operator> <name>ClosedByInterruptException</name> <operator>&amp;&amp;</operator> <call><name><name>fileTransferExecutor</name><operator>.</operator><name>isShutdown</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"{} Streaming channel was closed due to the executor pool being shutdown"</literal></expr></argument>, <argument><expr><call><name>createLogTag</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>JVMStabilityInspector</name><operator>.</operator><name>inspectThrowable</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>session</name><operator>.</operator><name>state</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isFinalState</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>onError</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block></catch>
+            <finally>finally
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>fileTransferSemaphore</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></finally></try>
+        </block_content>}</block></function>
+
+        <function><type><name>boolean</name></type> <name>acquirePermit</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>logInterval</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>logIntervalNanos</name> <init>= <expr><call><name><name>TimeUnit</name><operator>.</operator><name>MINUTES</name><operator>.</operator><name>toNanos</name></name><argument_list>(<argument><expr><name>logInterval</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>long</name></type> <name>timeOfLastLogging</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <while>while <condition>(<expr><literal type="boolean">true</literal></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>closed</name></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+                <try>try
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>fileTransferSemaphore</name><operator>.</operator><name>tryAcquire</name></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>SECONDS</name></name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <return>return <expr><literal type="boolean">true</literal></expr>;</return></block_content></block></if></if_stmt>
+
+                    <comment type="line">// log a helpful message to operators in case they are wondering why a given session might not be making progress.</comment>
+                    <decl_stmt><decl><type><name>long</name></type> <name>now</name> <init>= <expr><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>now</name> <operator>-</operator> <name>timeOfLastLogging</name> <operator>&gt;</operator> <name>logIntervalNanos</name></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><name>timeOfLastLogging</name> <operator>=</operator> <name>now</name></expr>;</expr_stmt>
+                        <decl_stmt><decl><type><name>OutgoingStreamMessage</name></type> <name>ofm</name> <init>= <expr><operator>(</operator><name>OutgoingStreamMessage</name><operator>)</operator><name>msg</name></expr></init></decl>;</decl_stmt>
+
+                        <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isInfoEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>info</name></name><argument_list>(<argument><expr><literal type="string">"{} waiting to acquire a permit to begin streaming {}. This message logs every {} minutes"</literal></expr></argument>,
+                                        <argument><expr><call><name>createLogTag</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>ofm</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>logInterval</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block>
+                <catch>catch <parameter_list>(<parameter><decl><type><name>InterruptedException</name></type> <name>ie</name></decl></parameter>)</parameter_list>
+                <block>{<block_content>
+                    <comment type="line">//ignore</comment>
+                </block_content>}</block></catch></try>
+            </block_content>}</block></while>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>Channel</name></type> <name>getOrCreateChannel</name><parameter_list>(<parameter><decl><type><name>OutboundConnectionSettings</name></type> <name>templateWithConnectTo</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Thread</name></type> <name>currentThread</name> <init>= <expr><call><name><name>Thread</name><operator>.</operator><name>currentThread</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <try>try
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>Channel</name></type> <name>channel</name> <init>= <expr><call><name><name>threadToChannelMap</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>currentThread</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>channel</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><name>channel</name></expr>;</return></block_content></block></if></if_stmt>
+
+                <expr_stmt><expr><name>channel</name> <operator>=</operator> <call><name>createChannel</name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><name>templateWithConnectTo</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>threadToChannelMap</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>currentThread</name></expr></argument>, <argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return <expr><name>channel</name></expr>;</return>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IOError</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>onError</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>onError</name></name><argument_list>(<argument><expr><name>t</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><name>DEFAULT_CLOSE_WAIT_IN_MILLIS</name></expr></argument>, <argument><expr><name><name>TimeUnit</name><operator>.</operator><name>MILLISECONDS</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <comment type="line">// nop - let the Throwable param be the main failure point here, and let session handle it</comment>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * For testing purposes
+         */</comment>
+        <function><type><name>void</name></type> <name>injectChannel</name><parameter_list>(<parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Thread</name></type> <name>currentThread</name> <init>= <expr><call><name><name>Thread</name><operator>.</operator><name>currentThread</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>threadToChannelMap</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>currentThread</name></expr></argument>)</argument_list></call> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"previous channel already set"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>threadToChannelMap</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>currentThread</name></expr></argument>, <argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * For testing purposes
+         */</comment>
+        <function><type><name>void</name></type> <name>unsetChannel</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>threadToChannelMap</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><call><name><name>Thread</name><operator>.</operator><name>currentThread</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * Periodically sends the {@link KeepAliveMessage}.
+     *
+     * NOTE: this task, and the callback function {@link #keepAliveListener(Future)} is executed in the netty event loop.
+     */</comment>
+    <class>class <name>KeepAliveTask</name> <super_list><implements>implements <super><name>Runnable</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>Channel</name></type> <name>channel</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>StreamSession</name></type> <name>session</name></decl>;</decl_stmt>
+
+        <comment type="block" format="javadoc">/**
+         * A reference to the scheduled task for this instance so that it may be cancelled.
+         */</comment>
+        <decl_stmt><decl><type><name><name>ScheduledFuture</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>future</name></decl>;</decl_stmt>
+
+        <constructor><name>KeepAliveTask</name><parameter_list>(<parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>, <parameter><decl><type><name>StreamSession</name></type> <name>session</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>channel</name></name> <operator>=</operator> <name>channel</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>session</name></name> <operator>=</operator> <name>session</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <comment type="line">// if the channel has been closed, cancel the scheduled task and return</comment>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>channel</name><operator>.</operator><name>isOpen</name></name><argument_list>()</argument_list></call> <operator>||</operator> <name>closed</name></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>future</name><operator>.</operator><name>cancel</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <return>return;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <comment type="line">// if the channel is currently processing streaming, skip this execution. As this task executes</comment>
+            <comment type="line">// on the event loop, even if there is a race with a FileStreamTask which changes the channel attribute</comment>
+            <comment type="line">// after we check it, the FileStreamTask cannot send out any bytes as this KeepAliveTask is executing</comment>
+            <comment type="line">// on the event loop (and FileStreamTask publishes it's buffer to the channel, consumed after we're done here).</comment>
+            <if_stmt><if>if <condition>(<expr><call><name><name>channel</name><operator>.</operator><name>attr</name></name><argument_list>(<argument><expr><name>TRANSFERRING_FILE_ATTR</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>get</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+
+            <try>try
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isTraceEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"{} Sending keep-alive to {}."</literal></expr></argument>, <argument><expr><call><name>createLogTag</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>session</name><operator>.</operator><name>peer</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <expr_stmt><expr><call><name>sendControlMessage</name><argument_list>(<argument><expr><name>channel</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>KeepAliveMessage</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>this</name><operator>::</operator><name>keepAliveListener</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>ioe</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>future</name><operator>.</operator><name>cancel</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></function>
+
+        <function><type><specifier>private</specifier> <name>void</name></type> <name>keepAliveListener</name><parameter_list>(<parameter><decl><type><name><name>Future</name><argument_list type="generic">&lt;<argument><name>?</name> <super>super <name>Void</name></super></argument>&gt;</argument_list></name></type> <name>future</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>future</name><operator>.</operator><name>isSuccess</name></name><argument_list>()</argument_list></call> <operator>||</operator> <call><name><name>future</name><operator>.</operator><name>isCancelled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return;</return></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isDebugEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"{} Could not send keep-alive message (perhaps stream session is finished?)."</literal></expr></argument>,
+                             <argument><expr><call><name>createLogTag</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>channel</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>future</name><operator>.</operator><name>cause</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * For testing purposes only.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setClosed</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>closed</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>void</name></type> <name>setControlMessageChannel</name><parameter_list>(<parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name>controlMessageChannel</name> <operator>=</operator> <name>channel</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><name>int</name></type> <name>semaphoreAvailablePermits</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>fileTransferSemaphore</name><operator>.</operator><name>availablePermits</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>connected</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>!</operator><name>closed</name> <operator>&amp;&amp;</operator> <operator>(</operator><name>controlMessageChannel</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>controlMessageChannel</name><operator>.</operator><name>isOpen</name></name><argument_list>()</argument_list></call><operator>)</operator></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>closed</name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><name>closed</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>logger</name><operator>.</operator><name>isDebugEnabled</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>debug</name></name><argument_list>(<argument><expr><literal type="string">"{} Closing stream connection channels on {}"</literal></expr></argument>, <argument><expr><call><name>createLogTag</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name><name>template</name><operator>.</operator><name>to</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <for>for <control>(<init><decl><type><name><name>ScheduledFuture</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>future</name> <range>: <expr><name>channelKeepAlives</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>future</name><operator>.</operator><name>cancel</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <expr_stmt><expr><call><name><name>channelKeepAlives</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <expr_stmt><expr><call><name><name>threadToChannelMap</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>fileTransferExecutor</name><operator>.</operator><name>shutdownNow</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

@@ -1,0 +1,636 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/h2database/h2/src/main/org/h2/expression/condition/CompareLike.java"><comment type="block">/*
+ * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Initial Developer: H2 Group
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>condition</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>regex</name><operator>.</operator><name>Pattern</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>regex</name><operator>.</operator><name>PatternSyntaxException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>api</name><operator>.</operator><name>ErrorCode</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>Database</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>SessionLocal</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>Expression</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>ExpressionColumn</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>ExpressionVisitor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>SearchedCase</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>TypedValueExpression</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>expression</name><operator>.</operator><name>ValueExpression</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>index</name><operator>.</operator><name>IndexCondition</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>message</name><operator>.</operator><name>DbException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>ColumnResolver</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>TableFilter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>CompareMode</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>DataType</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>TypeInfo</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>Value</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>ValueBoolean</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>ValueNull</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>ValueVarchar</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>ValueVarcharIgnoreCase</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Pattern matching comparison expression: WHERE NAME LIKE ?
+ */</comment>
+<class><specifier>public</specifier> <specifier>final</specifier> class <name>CompareLike</name> <super_list><extends>extends <super><name>Condition</name></super></extends></super_list> <block>{
+
+    <comment type="block" format="javadoc">/**
+     * The type of comparison.
+     */</comment>
+    <enum><specifier>public</specifier> enum <name>LikeType</name> <block>{
+        <comment type="block" format="javadoc">/**
+         * LIKE.
+         */</comment>
+        <decl><name>LIKE</name></decl>,
+
+        <comment type="block" format="javadoc">/**
+         * ILIKE (case-insensitive LIKE).
+         */</comment>
+        <decl><name>ILIKE</name></decl>,
+
+        <comment type="block" format="javadoc">/**
+         * REGEXP
+         */</comment>
+        <decl><name>REGEXP</name></decl>
+    }</block></enum>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MATCH</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>ONE</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>, <decl><type ref="prev"/><name>ANY</name> <init>= <expr><literal type="number">2</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>CompareMode</name></type> <name>compareMode</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>String</name></type> <name>defaultEscape</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>LikeType</name></type> <name>likeType</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Expression</name></type> <name>left</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>not</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>whenOperand</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Expression</name></type> <name>right</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Expression</name></type> <name>escape</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>isInit</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>char</name><index>[]</index></name></type> <name>patternChars</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>String</name></type> <name>patternString</name></decl>;</decl_stmt>
+    <comment type="block" format="javadoc">/** one of MATCH / ONE / ANY */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>int</name><index>[]</index></name></type> <name>patternTypes</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>patternLength</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Pattern</name></type> <name>patternRegexp</name></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>ignoreCase</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>fastCompare</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>invalidPattern</name></decl>;</decl_stmt>
+    <comment type="block" format="javadoc">/** indicates that we can shortcut the comparison and use startsWith */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>shortcutToStartsWith</name></decl>;</decl_stmt>
+    <comment type="block" format="javadoc">/** indicates that we can shortcut the comparison and use endsWith */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>shortcutToEndsWith</name></decl>;</decl_stmt>
+    <comment type="block" format="javadoc">/** indicates that we can shortcut the comparison and use contains */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>shortcutToContains</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>CompareLike</name><parameter_list>(<parameter><decl><type><name>Database</name></type> <name>db</name></decl></parameter>, <parameter><decl><type><name>Expression</name></type> <name>left</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>not</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>whenOperand</name></decl></parameter>, <parameter><decl><type><name>Expression</name></type> <name>right</name></decl></parameter>,
+            <parameter><decl><type><name>Expression</name></type> <name>escape</name></decl></parameter>, <parameter><decl><type><name>LikeType</name></type> <name>likeType</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><call><name><name>db</name><operator>.</operator><name>getCompareMode</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>db</name><operator>.</operator><name>getSettings</name></name><argument_list>()</argument_list></call><operator>.</operator><name>defaultEscape</name></expr></argument>, <argument><expr><name>left</name></expr></argument>, <argument><expr><name>not</name></expr></argument>, <argument><expr><name>whenOperand</name></expr></argument>, <argument><expr><name>right</name></expr></argument>, <argument><expr><name>escape</name></expr></argument>, <argument><expr><name>likeType</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>public</specifier> <name>CompareLike</name><parameter_list>(<parameter><decl><type><name>CompareMode</name></type> <name>compareMode</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>defaultEscape</name></decl></parameter>, <parameter><decl><type><name>Expression</name></type> <name>left</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>not</name></decl></parameter>,
+            <parameter><decl><type><name>boolean</name></type> <name>whenOperand</name></decl></parameter>, <parameter><decl><type><name>Expression</name></type> <name>right</name></decl></parameter>, <parameter><decl><type><name>Expression</name></type> <name>escape</name></decl></parameter>, <parameter><decl><type><name>LikeType</name></type> <name>likeType</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>compareMode</name></name> <operator>=</operator> <name>compareMode</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>defaultEscape</name></name> <operator>=</operator> <name>defaultEscape</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>likeType</name></name> <operator>=</operator> <name>likeType</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>left</name></name> <operator>=</operator> <name>left</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>not</name></name> <operator>=</operator> <name>not</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>whenOperand</name></name> <operator>=</operator> <name>whenOperand</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>right</name></name> <operator>=</operator> <name>right</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>escape</name></name> <operator>=</operator> <name>escape</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>Character</name></type> <name>getEscapeChar</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>s</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>s</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>s</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>s</name><operator>.</operator><name>charAt</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>needParentheses</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>StringBuilder</name></type> <name>getUnenclosedSQL</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>sqlFlags</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getWhenSQL</name><argument_list>(<argument><expr><call><name><name>left</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>, <argument><expr><name>AUTO_PARENTHESES</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>StringBuilder</name></type> <name>getWhenSQL</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>sqlFlags</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>not</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" NOT"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <switch>switch <condition>(<expr><name>likeType</name></expr>)</condition> <block>{<block_content>
+        <case>case <expr><name>LIKE</name></expr>:</case>
+        <case>case <expr><name>ILIKE</name></expr>:</case>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><ternary><condition><expr><name>likeType</name> <operator>==</operator> <name><name>LikeType</name><operator>.</operator><name>LIKE</name></name></expr> ?</condition><then> <expr><literal type="string">" LIKE "</literal></expr> </then><else>: <expr><literal type="string">" ILIKE "</literal></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>right</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>, <argument><expr><name>AUTO_PARENTHESES</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>escape</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>escape</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" ESCAPE "</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>, <argument><expr><name>AUTO_PARENTHESES</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <break>break;</break>
+        <case>case <expr><name>REGEXP</name></expr>:</case>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" REGEXP "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>right</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>sqlFlags</name></expr></argument>, <argument><expr><name>AUTO_PARENTHESES</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <break>break;</break>
+        <default>default:</default>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getUnsupportedException</name></name><argument_list>(<argument><expr><call><name><name>likeType</name><operator>.</operator><name>name</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></switch>
+        <return>return <expr><name>builder</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Expression</name></type> <name>optimize</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name>left</name> <operator>=</operator> <call><name><name>left</name><operator>.</operator><name>optimize</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name>right</name> <operator>=</operator> <call><name><name>right</name><operator>.</operator><name>optimize</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>likeType</name> <operator>==</operator> <name><name>LikeType</name><operator>.</operator><name>ILIKE</name></name> <operator>||</operator> <call><name><name>left</name><operator>.</operator><name>getType</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getValueType</name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>Value</name><operator>.</operator><name>VARCHAR_IGNORECASE</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>ignoreCase</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>escape</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>escape</name> <operator>=</operator> <call><name><name>escape</name><operator>.</operator><name>optimize</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>whenOperand</name></expr>)</condition> <block>{<block_content>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>left</name><operator>.</operator><name>isValueSet</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>Value</name></type> <name>l</name> <init>= <expr><call><name><name>left</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>l</name> <operator>==</operator> <name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>)</condition> <block>{<block_content>
+                <comment type="line">// NULL LIKE something &gt; NULL</comment>
+                <return>return <expr><name><name>TypedValueExpression</name><operator>.</operator><name>UNKNOWN</name></name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>right</name><operator>.</operator><name>isValueSet</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <operator>(</operator><name>escape</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>escape</name><operator>.</operator><name>isValueSet</name></name><argument_list>()</argument_list></call><operator>)</operator></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>left</name><operator>.</operator><name>isValueSet</name></name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                <return>return <expr><call><name><name>ValueExpression</name><operator>.</operator><name>getBoolean</name></name><argument_list>(<argument><expr><call><name>getValue</name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <decl_stmt><decl><type><name>Value</name></type> <name>r</name> <init>= <expr><call><name><name>right</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>r</name> <operator>==</operator> <name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>)</condition> <block>{<block_content>
+                <comment type="line">// something LIKE NULL &gt; NULL</comment>
+                <return>return <expr><name><name>TypedValueExpression</name><operator>.</operator><name>UNKNOWN</name></name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <decl_stmt><decl><type><name>Value</name></type> <name>e</name> <init>= <expr><ternary><condition><expr><name>escape</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>escape</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>e</name> <operator>==</operator> <name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>)</condition> <block>{<block_content>
+                <return>return <expr><name><name>TypedValueExpression</name><operator>.</operator><name>UNKNOWN</name></name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <decl_stmt><decl><type><name>String</name></type> <name>p</name> <init>= <expr><call><name><name>r</name><operator>.</operator><name>getString</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name>initPattern</name><argument_list>(<argument><expr><name>p</name></expr></argument>, <argument><expr><call><name>getEscapeChar</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>invalidPattern</name></expr>)</condition> <block>{<block_content>
+                <return>return <expr><name><name>TypedValueExpression</name><operator>.</operator><name>UNKNOWN</name></name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><name>likeType</name> <operator>!=</operator> <name><name>LikeType</name><operator>.</operator><name>REGEXP</name></name> <operator>&amp;&amp;</operator> <literal type="string">"%"</literal><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name>p</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+                <comment type="line">// optimization for X LIKE '%'</comment>
+                <return>return <expr><operator>new</operator> <call><name>SearchedCase</name><argument_list>(<argument><expr><operator>new</operator> <name><name>Expression</name><index>[]</index></name> <block>{ <expr><operator>new</operator> <call><name>NullPredicate</name><argument_list>(<argument><expr><name>left</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>,
+                        <expr><call><name><name>ValueExpression</name><operator>.</operator><name>getBoolean</name></name><argument_list>(<argument><expr><operator>!</operator><name>not</name></expr></argument>)</argument_list></call></expr>, <expr><name><name>TypedValueExpression</name><operator>.</operator><name>UNKNOWN</name></name></expr> }</block></expr></argument>)</argument_list></call><operator>.</operator><call><name>optimize</name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name>isFullMatch</name><argument_list>()</argument_list></call></expr>)</condition> <block>{<block_content>
+                <comment type="line">// optimization for X LIKE 'Hello': convert to X = 'Hello'</comment>
+                <decl_stmt><decl><type><name>Value</name></type> <name>value</name> <init>= <expr><ternary><condition><expr><name>ignoreCase</name></expr> ?</condition><then> <expr><call><name><name>ValueVarcharIgnoreCase</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>patternString</name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><call><name><name>ValueVarchar</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>patternString</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>Expression</name></type> <name>expr</name> <init>= <expr><call><name><name>ValueExpression</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>value</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <return>return <expr><operator>new</operator> <call><name>Comparison</name><argument_list>(<argument><expr><ternary><condition><expr><name>not</name></expr> ?</condition><then> <expr><name><name>Comparison</name><operator>.</operator><name>NOT_EQUAL</name></name></expr> </then><else>: <expr><name><name>Comparison</name><operator>.</operator><name>EQUAL</name></name></expr></else></ternary></expr></argument>, <argument><expr><name>left</name></expr></argument>, <argument><expr><name>expr</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call>
+                        <operator>.</operator><call><name>optimize</name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>isInit</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>this</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>Character</name></type> <name>getEscapeChar</name><parameter_list>(<parameter><decl><type><name>Value</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>e</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <return>return <expr><call><name>getEscapeChar</name><argument_list>(<argument><expr><name>defaultEscape</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>String</name></type> <name>es</name> <init>= <expr><call><name><name>e</name><operator>.</operator><name>getString</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Character</name></type> <name>esc</name></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>es</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>esc</name> <operator>=</operator> <call><name>getEscapeChar</name><argument_list>(<argument><expr><name>defaultEscape</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><call><name><name>es</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>esc</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><call><name><name>es</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">1</literal></expr>)</condition> <block>{<block_content>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>LIKE_ESCAPE_ERROR_1</name></name></expr></argument>, <argument><expr><name>es</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><name>esc</name> <operator>=</operator> <call><name><name>es</name><operator>.</operator><name>charAt</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <return>return <expr><name>esc</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>createIndexConditions</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>TableFilter</name></type> <name>filter</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>not</name> <operator>||</operator> <name>whenOperand</name> <operator>||</operator> <name>likeType</name> <operator>==</operator> <name><name>LikeType</name><operator>.</operator><name>REGEXP</name></name> <operator>||</operator> <operator>!</operator><operator>(</operator><name>left</name> <operator>instanceof</operator> <name>ExpressionColumn</name><operator>)</operator></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>ExpressionColumn</name></type> <name>l</name> <init>= <expr><operator>(</operator><name>ExpressionColumn</name><operator>)</operator> <name>left</name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>filter</name> <operator>!=</operator> <call><name><name>l</name><operator>.</operator><name>getTableFilter</name></name><argument_list>()</argument_list></call> <operator>||</operator> <operator>!</operator><call><name><name>TypeInfo</name><operator>.</operator><name>haveSameOrdering</name></name><argument_list>(<argument><expr><call><name><name>l</name><operator>.</operator><name>getType</name></name><argument_list>()</argument_list></call></expr></argument>,
+                <argument><expr><ternary><condition><expr><name>ignoreCase</name></expr> ?</condition><then> <expr><name><name>TypeInfo</name><operator>.</operator><name>TYPE_VARCHAR_IGNORECASE</name></name></expr> </then><else>: <expr><name><name>TypeInfo</name><operator>.</operator><name>TYPE_VARCHAR</name></name></expr></else></ternary></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <comment type="line">// parameters are always evaluatable, but</comment>
+        <comment type="line">// we need to check if the value is set</comment>
+        <comment type="line">// (at prepare time)</comment>
+        <comment type="line">// otherwise we would need to prepare at execute time,</comment>
+        <comment type="line">// which may be slower (possibly not in this case)</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>right</name><operator>.</operator><name>isEverything</name></name><argument_list>(<argument><expr><name><name>ExpressionVisitor</name><operator>.</operator><name>INDEPENDENT_VISITOR</name></name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>escape</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <operator>!</operator><call><name><name>escape</name><operator>.</operator><name>isEverything</name></name><argument_list>(<argument><expr><name><name>ExpressionVisitor</name><operator>.</operator><name>INDEPENDENT_VISITOR</name></name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>String</name></type> <name>p</name> <init>= <expr><call><name><name>right</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>getString</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>isInit</name></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>Value</name></type> <name>e</name> <init>= <expr><ternary><condition><expr><name>escape</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>escape</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>e</name> <operator>==</operator> <name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>)</condition> <block>{<block_content>
+                <comment type="line">// should already be optimized</comment>
+                <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getInternalError</name></name><argument_list>()</argument_list></call></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><call><name>initPattern</name><argument_list>(<argument><expr><name>p</name></expr></argument>, <argument><expr><call><name>getEscapeChar</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>invalidPattern</name></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>patternLength</name> <operator>&lt;=</operator> <literal type="number">0</literal> <operator>||</operator> <name><name>patternTypes</name><index>[<expr><literal type="number">0</literal></expr>]</index></name> <operator>!=</operator> <name>MATCH</name></expr>)</condition> <block>{<block_content>
+            <comment type="line">// can't use an index</comment>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>DataType</name><operator>.</operator><name>isStringType</name></name><argument_list>(<argument><expr><call><name><name>l</name><operator>.</operator><name>getColumn</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getType</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getValueType</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+            <comment type="line">// column is not a varchar - can't use the index</comment>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <comment type="line">// Get the MATCH prefix and see if we can create an index condition from</comment>
+        <comment type="line">// that.</comment>
+        <decl_stmt><decl><type><name>int</name></type> <name>maxMatch</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>buff</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <while>while <condition>(<expr><name>maxMatch</name> <operator>&lt;</operator> <name>patternLength</name> <operator>&amp;&amp;</operator> <name><name>patternTypes</name><index>[<expr><name>maxMatch</name></expr>]</index></name> <operator>==</operator> <name>MATCH</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>buff</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name><name>patternChars</name><index>[<expr><name>maxMatch</name><operator>++</operator></expr>]</index></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></while>
+        <decl_stmt><decl><type><name>String</name></type> <name>begin</name> <init>= <expr><call><name><name>buff</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>maxMatch</name> <operator>==</operator> <name>patternLength</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>filter</name><operator>.</operator><name>addIndexCondition</name></name><argument_list>(<argument><expr><call><name><name>IndexCondition</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>Comparison</name><operator>.</operator><name>EQUAL</name></name></expr></argument>, <argument><expr><name>l</name></expr></argument>,
+                    <argument><expr><call><name><name>ValueExpression</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>ValueVarchar</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>begin</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <comment type="line">// TODO check if this is correct according to Unicode rules</comment>
+            <comment type="line">// (code points)</comment>
+            <decl_stmt><decl><type><name>String</name></type> <name>end</name></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>begin</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>filter</name><operator>.</operator><name>addIndexCondition</name></name><argument_list>(<argument><expr><call><name><name>IndexCondition</name><operator>.</operator><name>get</name></name><argument_list>(
+                        <argument><expr><name><name>Comparison</name><operator>.</operator><name>BIGGER_EQUAL</name></name></expr></argument>, <argument><expr><name>l</name></expr></argument>,
+                        <argument><expr><call><name><name>ValueExpression</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>ValueVarchar</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>begin</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <decl_stmt><decl><type><name>char</name></type> <name>next</name> <init>= <expr><call><name><name>begin</name><operator>.</operator><name>charAt</name></name><argument_list>(<argument><expr><call><name><name>begin</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <comment type="line">// search the 'next' unicode character (or at least a character</comment>
+                <comment type="line">// that is higher)</comment>
+                <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <literal type="number">2000</literal></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+                    <expr_stmt><expr><name>end</name> <operator>=</operator> <call><name><name>begin</name><operator>.</operator><name>substring</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><call><name><name>begin</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call> <operator>+</operator> <operator>(</operator><name>char</name><operator>)</operator> <operator>(</operator><name>next</name> <operator>+</operator> <name>i</name><operator>)</operator></expr>;</expr_stmt>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>compareMode</name><operator>.</operator><name>compareString</name></name><argument_list>(<argument><expr><name>begin</name></expr></argument>, <argument><expr><name>end</name></expr></argument>, <argument><expr><name>ignoreCase</name></expr></argument>)</argument_list></call> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                        <expr_stmt><expr><call><name><name>filter</name><operator>.</operator><name>addIndexCondition</name></name><argument_list>(<argument><expr><call><name><name>IndexCondition</name><operator>.</operator><name>get</name></name><argument_list>(
+                                <argument><expr><name><name>Comparison</name><operator>.</operator><name>SMALLER</name></name></expr></argument>, <argument><expr><name>l</name></expr></argument>,
+                                <argument><expr><call><name><name>ValueExpression</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><call><name><name>ValueVarchar</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>end</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <break>break;</break>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></for>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></else></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Value</name></type> <name>getValue</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getValue</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><call><name><name>left</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>getWhenValue</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>Value</name></type> <name>left</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>whenOperand</name></expr>)</condition> <block>{<block_content>
+            <return>return <expr><call><name><name>super</name><operator>.</operator><name>getWhenValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>left</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name>getValue</name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>left</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>isTrue</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>Value</name></type> <name>getValue</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>Value</name></type> <name>left</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>left</name> <operator>==</operator> <name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>)</condition> <block>{<block_content>
+            <return>return <expr><name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>isInit</name></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>Value</name></type> <name>r</name> <init>= <expr><call><name><name>right</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>r</name> <operator>==</operator> <name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>)</condition> <block>{<block_content>
+                <return>return <expr><name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <decl_stmt><decl><type><name>String</name></type> <name>p</name> <init>= <expr><call><name><name>r</name><operator>.</operator><name>getString</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Value</name></type> <name>e</name> <init>= <expr><ternary><condition><expr><name>escape</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>escape</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>e</name> <operator>==</operator> <name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>)</condition> <block>{<block_content>
+                <return>return <expr><name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><call><name>initPattern</name><argument_list>(<argument><expr><name>p</name></expr></argument>, <argument><expr><call><name>getEscapeChar</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>invalidPattern</name></expr>)</condition> <block>{<block_content>
+            <return>return <expr><name><name>ValueNull</name><operator>.</operator><name>INSTANCE</name></name></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>String</name></type> <name>value</name> <init>= <expr><call><name><name>left</name><operator>.</operator><name>getString</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>result</name></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>likeType</name> <operator>==</operator> <name><name>LikeType</name><operator>.</operator><name>REGEXP</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>result</name> <operator>=</operator> <call><name><name>patternRegexp</name><operator>.</operator><name>matcher</name></name><argument_list>(<argument><expr><name>value</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>find</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>shortcutToStartsWith</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>result</name> <operator>=</operator> <call><name><name>value</name><operator>.</operator><name>regionMatches</name></name><argument_list>(<argument><expr><name>ignoreCase</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>patternString</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>patternLength</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>shortcutToEndsWith</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>result</name> <operator>=</operator> <call><name><name>value</name><operator>.</operator><name>regionMatches</name></name><argument_list>(<argument><expr><name>ignoreCase</name></expr></argument>, <argument><expr><call><name><name>value</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>-</operator>
+                    <name>patternLength</name> <operator>+</operator> <literal type="number">1</literal></expr></argument>, <argument><expr><name>patternString</name></expr></argument>, <argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><name>patternLength</name> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>shortcutToContains</name></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>p</name> <init>= <expr><call><name><name>patternString</name><operator>.</operator><name>substring</name></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><call><name><name>patternString</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>-</operator> <literal type="number">1</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>ignoreCase</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>result</name> <operator>=</operator> <call><name>containsIgnoreCase</name><argument_list>(<argument><expr><name>value</name></expr></argument>, <argument><expr><name>p</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><name>result</name> <operator>=</operator> <call><name><name>value</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>p</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><name>result</name> <operator>=</operator> <call><name>compareAt</name><argument_list>(<argument><expr><name>value</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><call><name><name>value</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>patternChars</name></expr></argument>, <argument><expr><name>patternTypes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <return>return <expr><call><name><name>ValueBoolean</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>not</name> <operator>^</operator> <name>result</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>containsIgnoreCase</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>src</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>what</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>length</name> <init>= <expr><call><name><name>what</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>length</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <comment type="line">// Empty string is contained</comment>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <decl_stmt><decl><type><specifier>final</specifier> <name>char</name></type> <name>firstLo</name> <init>= <expr><call><name><name>Character</name><operator>.</operator><name>toLowerCase</name></name><argument_list>(<argument><expr><call><name><name>what</name><operator>.</operator><name>charAt</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>char</name></type> <name>firstUp</name> <init>= <expr><call><name><name>Character</name><operator>.</operator><name>toUpperCase</name></name><argument_list>(<argument><expr><call><name><name>what</name><operator>.</operator><name>charAt</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><call><name><name>src</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>length</name></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr>;</condition> <incr><expr><name>i</name><operator>--</operator></expr></incr>)</control> <block>{<block_content>
+            <comment type="line">// Quick check before calling the more expensive regionMatches()</comment>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>char</name></type> <name>ch</name> <init>= <expr><call><name><name>src</name><operator>.</operator><name>charAt</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>ch</name> <operator>!=</operator> <name>firstLo</name> <operator>&amp;&amp;</operator> <name>ch</name> <operator>!=</operator> <name>firstUp</name></expr>)</condition> <block>{<block_content>
+                <continue>continue;</continue>
+            </block_content>}</block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>src</name><operator>.</operator><name>regionMatches</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>, <argument><expr><name>i</name></expr></argument>, <argument><expr><name>what</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>length</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+                <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+
+        <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>compareAt</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>s</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>pi</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>si</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>sLen</name></decl></parameter>,
+            <parameter><decl><type><name><name>char</name><index>[]</index></name></type> <name>pattern</name></decl></parameter>, <parameter><decl><type><name><name>int</name><index>[]</index></name></type> <name>types</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <for>for <control>(<init>;</init> <condition><expr><name>pi</name> <operator>&lt;</operator> <name>patternLength</name></expr>;</condition> <incr><expr><name>pi</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+            <switch>switch <condition>(<expr><name><name>types</name><index>[<expr><name>pi</name></expr>]</index></name></expr>)</condition> <block>{<block_content>
+            <case>case <expr><name>MATCH</name></expr>:</case>
+                <if_stmt><if>if <condition>(<expr><operator>(</operator><name>si</name> <operator>&gt;=</operator> <name>sLen</name><operator>)</operator> <operator>||</operator> <operator>!</operator><call><name>compare</name><argument_list>(<argument><expr><name>pattern</name></expr></argument>, <argument><expr><name>s</name></expr></argument>, <argument><expr><name>pi</name></expr></argument>, <argument><expr><name>si</name><operator>++</operator></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+                </block_content>}</block></if></if_stmt>
+                <break>break;</break>
+            <case>case <expr><name>ONE</name></expr>:</case>
+                <if_stmt><if>if <condition>(<expr><name>si</name><operator>++</operator> <operator>&gt;=</operator> <name>sLen</name></expr>)</condition> <block>{<block_content>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+                </block_content>}</block></if></if_stmt>
+                <break>break;</break>
+            <case>case <expr><name>ANY</name></expr>:</case>
+                <if_stmt><if>if <condition>(<expr><operator>++</operator><name>pi</name> <operator>&gt;=</operator> <name>patternLength</name></expr>)</condition> <block>{<block_content>
+                    <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+                </block_content>}</block></if></if_stmt>
+                <while>while <condition>(<expr><name>si</name> <operator>&lt;</operator> <name>sLen</name></expr>)</condition> <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name>compare</name><argument_list>(<argument><expr><name>pattern</name></expr></argument>, <argument><expr><name>s</name></expr></argument>, <argument><expr><name>pi</name></expr></argument>, <argument><expr><name>si</name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator>
+                            <call><name>compareAt</name><argument_list>(<argument><expr><name>s</name></expr></argument>, <argument><expr><name>pi</name></expr></argument>, <argument><expr><name>si</name></expr></argument>, <argument><expr><name>sLen</name></expr></argument>, <argument><expr><name>pattern</name></expr></argument>, <argument><expr><name>types</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+                        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+                    </block_content>}</block></if></if_stmt>
+                    <expr_stmt><expr><name>si</name><operator>++</operator></expr>;</expr_stmt>
+                </block_content>}</block></while>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            <default>default:</default>
+                <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>getInternalError</name></name><argument_list>(<argument><expr><call><name><name>Integer</name><operator>.</operator><name>toString</name></name><argument_list>(<argument><expr><name><name>types</name><index>[<expr><name>pi</name></expr>]</index></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></switch>
+        </block_content>}</block></for>
+        <return>return <expr><name>si</name> <operator>==</operator> <name>sLen</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>compare</name><parameter_list>(<parameter><decl><type><name><name>char</name><index>[]</index></name></type> <name>pattern</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>s</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>pi</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>si</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><name><name>pattern</name><index>[<expr><name>pi</name></expr>]</index></name> <operator>==</operator> <call><name><name>s</name><operator>.</operator><name>charAt</name></name><argument_list>(<argument><expr><name>si</name></expr></argument>)</argument_list></call> <operator>||</operator>
+                <operator>(</operator><operator>!</operator><name>fastCompare</name> <operator>&amp;&amp;</operator> <call><name><name>compareMode</name><operator>.</operator><name>equalsChars</name></name><argument_list>(<argument><expr><name>patternString</name></expr></argument>, <argument><expr><name>pi</name></expr></argument>, <argument><expr><name>s</name></expr></argument>,
+                        <argument><expr><name>si</name></expr></argument>, <argument><expr><name>ignoreCase</name></expr></argument>)</argument_list></call><operator>)</operator></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>isWhenConditionOperand</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>whenOperand</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Test if the value matches the pattern.
+     *
+     * @param testPattern the pattern
+     * @param value the value
+     * @param escapeChar the escape character
+     * @return true if the value matches
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>test</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>testPattern</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>value</name></decl></parameter>, <parameter><decl><type><name>char</name></type> <name>escapeChar</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>initPattern</name><argument_list>(<argument><expr><name>testPattern</name></expr></argument>, <argument><expr><name>escapeChar</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name>test</name><argument_list>(<argument><expr><name>value</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Test if the value matches the initialized pattern.
+     *
+     * @param value the value
+     * @return true if the value matches
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>test</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>value</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>invalidPattern</name></expr>)</condition> <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name>compareAt</name><argument_list>(<argument><expr><name>value</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><call><name><name>value</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>patternChars</name></expr></argument>, <argument><expr><name>patternTypes</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Initializes the pattern.
+     *
+     * @param p the pattern
+     * @param escapeChar the escape character
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>initPattern</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>p</name></decl></parameter>, <parameter><decl><type><name>Character</name></type> <name>escapeChar</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>compareMode</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name><name>CompareMode</name><operator>.</operator><name>OFF</name></name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <operator>!</operator><name>ignoreCase</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>fastCompare</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>likeType</name> <operator>==</operator> <name><name>LikeType</name><operator>.</operator><name>REGEXP</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>patternString</name> <operator>=</operator> <name>p</name></expr>;</expr_stmt>
+            <try>try <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>ignoreCase</name></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>patternRegexp</name> <operator>=</operator> <call><name><name>Pattern</name><operator>.</operator><name>compile</name></name><argument_list>(<argument><expr><name>p</name></expr></argument>, <argument><expr><name><name>Pattern</name><operator>.</operator><name>CASE_INSENSITIVE</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if> <else>else <block>{<block_content>
+                    <expr_stmt><expr><name>patternRegexp</name> <operator>=</operator> <call><name><name>Pattern</name><operator>.</operator><name>compile</name></name><argument_list>(<argument><expr><name>p</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>PatternSyntaxException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+                <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>LIKE_ESCAPE_ERROR_1</name></name></expr></argument>, <argument><expr><name>e</name></expr></argument>, <argument><expr><name>p</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name>patternLength</name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>p</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>patternTypes</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><name>patternChars</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>len</name> <init>= <expr><call><name><name>p</name><operator>.</operator><name>length</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><name>patternChars</name> <operator>=</operator> <operator>new</operator> <name><name>char</name><index>[<expr><name>len</name></expr>]</index></name></expr>;</expr_stmt>
+        <expr_stmt><expr><name>patternTypes</name> <operator>=</operator> <operator>new</operator> <name><name>int</name><index>[<expr><name>len</name></expr>]</index></name></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>lastAny</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>len</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+            <decl_stmt><decl><type><name>char</name></type> <name>c</name> <init>= <expr><call><name><name>p</name><operator>.</operator><name>charAt</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>int</name></type> <name>type</name></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>escapeChar</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>escapeChar</name> <operator>==</operator> <name>c</name></expr>)</condition> <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>i</name> <operator>&gt;=</operator> <name>len</name> <operator>-</operator> <literal type="number">1</literal></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>invalidPattern</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><name>c</name> <operator>=</operator> <call><name><name>p</name><operator>.</operator><name>charAt</name></name><argument_list>(<argument><expr><operator>++</operator><name>i</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><name>type</name> <operator>=</operator> <name>MATCH</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name>lastAny</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+            </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>c</name> <operator>==</operator> <literal type="char">'%'</literal></expr>)</condition> <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>lastAny</name></expr>)</condition> <block>{<block_content>
+                    <continue>continue;</continue>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><name>type</name> <operator>=</operator> <name>ANY</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name>lastAny</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>c</name> <operator>==</operator> <literal type="char">'_'</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>type</name> <operator>=</operator> <name>ONE</name></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><name>type</name> <operator>=</operator> <name>MATCH</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name>lastAny</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+            <expr_stmt><expr><name><name>patternTypes</name><index>[<expr><name>patternLength</name></expr>]</index></name> <operator>=</operator> <name>type</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>patternChars</name><index>[<expr><name>patternLength</name><operator>++</operator></expr>]</index></name> <operator>=</operator> <name>c</name></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>patternLength</name> <operator>-</operator> <literal type="number">1</literal></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>(</operator><name><name>patternTypes</name><index>[<expr><name>i</name></expr>]</index></name> <operator>==</operator> <name>ANY</name><operator>)</operator> <operator>&amp;&amp;</operator> <operator>(</operator><name><name>patternTypes</name><index>[<expr><name>i</name> <operator>+</operator> <literal type="number">1</literal></expr>]</index></name> <operator>==</operator> <name>ONE</name><operator>)</operator></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name><name>patternTypes</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <name>ONE</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name><name>patternTypes</name><index>[<expr><name>i</name> <operator>+</operator> <literal type="number">1</literal></expr>]</index></name> <operator>=</operator> <name>ANY</name></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+        <expr_stmt><expr><name>patternString</name> <operator>=</operator> <operator>new</operator> <call><name>String</name><argument_list>(<argument><expr><name>patternChars</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name>patternLength</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <comment type="line">// Clear optimizations</comment>
+        <expr_stmt><expr><name>shortcutToStartsWith</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>shortcutToEndsWith</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>shortcutToContains</name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+
+        <comment type="line">// optimizes the common case of LIKE 'foo%'</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>compareMode</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name><name>CompareMode</name><operator>.</operator><name>OFF</name></name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <name>patternLength</name> <operator>&gt;</operator> <literal type="number">1</literal></expr>)</condition> <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>maxMatch</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+            <while>while <condition>(<expr><name>maxMatch</name> <operator>&lt;</operator> <name>patternLength</name> <operator>&amp;&amp;</operator> <name><name>patternTypes</name><index>[<expr><name>maxMatch</name></expr>]</index></name> <operator>==</operator> <name>MATCH</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>maxMatch</name><operator>++</operator></expr>;</expr_stmt>
+            </block_content>}</block></while>
+            <if_stmt><if>if <condition>(<expr><name>maxMatch</name> <operator>==</operator> <name>patternLength</name> <operator>-</operator> <literal type="number">1</literal> <operator>&amp;&amp;</operator> <name><name>patternTypes</name><index>[<expr><name>patternLength</name> <operator>-</operator> <literal type="number">1</literal></expr>]</index></name> <operator>==</operator> <name>ANY</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>shortcutToStartsWith</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                <return>return;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <comment type="line">// optimizes the common case of LIKE '%foo'</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>compareMode</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name><name>CompareMode</name><operator>.</operator><name>OFF</name></name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <name>patternLength</name> <operator>&gt;</operator> <literal type="number">1</literal></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name><name>patternTypes</name><index>[<expr><literal type="number">0</literal></expr>]</index></name> <operator>==</operator> <name>ANY</name></expr>)</condition> <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>maxMatch</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+                <while>while <condition>(<expr><name>maxMatch</name> <operator>&lt;</operator> <name>patternLength</name> <operator>&amp;&amp;</operator> <name><name>patternTypes</name><index>[<expr><name>maxMatch</name></expr>]</index></name> <operator>==</operator> <name>MATCH</name></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>maxMatch</name><operator>++</operator></expr>;</expr_stmt>
+                </block_content>}</block></while>
+                <if_stmt><if>if <condition>(<expr><name>maxMatch</name> <operator>==</operator> <name>patternLength</name></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>shortcutToEndsWith</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                    <return>return;</return>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <comment type="line">// optimizes the common case of LIKE '%foo%'</comment>
+        <if_stmt><if>if <condition>(<expr><call><name><name>compareMode</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name><name>CompareMode</name><operator>.</operator><name>OFF</name></name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <name>patternLength</name> <operator>&gt;</operator> <literal type="number">2</literal></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name><name>patternTypes</name><index>[<expr><literal type="number">0</literal></expr>]</index></name> <operator>==</operator> <name>ANY</name></expr>)</condition> <block>{<block_content>
+                <decl_stmt><decl><type><name>int</name></type> <name>maxMatch</name> <init>= <expr><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+                <while>while <condition>(<expr><name>maxMatch</name> <operator>&lt;</operator> <name>patternLength</name> <operator>&amp;&amp;</operator> <name><name>patternTypes</name><index>[<expr><name>maxMatch</name></expr>]</index></name> <operator>==</operator> <name>MATCH</name></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>maxMatch</name><operator>++</operator></expr>;</expr_stmt>
+                </block_content>}</block></while>
+                <if_stmt><if>if <condition>(<expr><name>maxMatch</name> <operator>==</operator> <name>patternLength</name> <operator>-</operator> <literal type="number">1</literal> <operator>&amp;&amp;</operator> <name><name>patternTypes</name><index>[<expr><name>patternLength</name> <operator>-</operator> <literal type="number">1</literal></expr>]</index></name> <operator>==</operator> <name>ANY</name></expr>)</condition> <block>{<block_content>
+                    <expr_stmt><expr><name>shortcutToContains</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>boolean</name></type> <name>isFullMatch</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>patternTypes</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>type</name> <range>: <expr><name>patternTypes</name></expr></range></decl></init>)</control> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>type</name> <operator>!=</operator> <name>MATCH</name></expr>)</condition> <block>{<block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Expression</name></type> <name>getNotIfPossible</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>whenOperand</name></expr>)</condition> <block>{<block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><operator>new</operator> <call><name>CompareLike</name><argument_list>(<argument><expr><name>compareMode</name></expr></argument>, <argument><expr><name>defaultEscape</name></expr></argument>, <argument><expr><name>left</name></expr></argument>, <argument><expr><operator>!</operator><name>not</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><name>right</name></expr></argument>, <argument><expr><name>escape</name></expr></argument>, <argument><expr><name>likeType</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>mapColumns</name><parameter_list>(<parameter><decl><type><name>ColumnResolver</name></type> <name>resolver</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>level</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>state</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>left</name><operator>.</operator><name>mapColumns</name></name><argument_list>(<argument><expr><name>resolver</name></expr></argument>, <argument><expr><name>level</name></expr></argument>, <argument><expr><name>state</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>right</name><operator>.</operator><name>mapColumns</name></name><argument_list>(<argument><expr><name>resolver</name></expr></argument>, <argument><expr><name>level</name></expr></argument>, <argument><expr><name>state</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>escape</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>escape</name><operator>.</operator><name>mapColumns</name></name><argument_list>(<argument><expr><name>resolver</name></expr></argument>, <argument><expr><name>level</name></expr></argument>, <argument><expr><name>state</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>setEvaluatable</name><parameter_list>(<parameter><decl><type><name>TableFilter</name></type> <name>tableFilter</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>b</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>left</name><operator>.</operator><name>setEvaluatable</name></name><argument_list>(<argument><expr><name>tableFilter</name></expr></argument>, <argument><expr><name>b</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>right</name><operator>.</operator><name>setEvaluatable</name></name><argument_list>(<argument><expr><name>tableFilter</name></expr></argument>, <argument><expr><name>b</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>escape</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>escape</name><operator>.</operator><name>setEvaluatable</name></name><argument_list>(<argument><expr><name>tableFilter</name></expr></argument>, <argument><expr><name>b</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>updateAggregate</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>stage</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>left</name><operator>.</operator><name>updateAggregate</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>stage</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>right</name><operator>.</operator><name>updateAggregate</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>stage</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>escape</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>escape</name><operator>.</operator><name>updateAggregate</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>stage</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>isEverything</name><parameter_list>(<parameter><decl><type><name>ExpressionVisitor</name></type> <name>visitor</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>left</name><operator>.</operator><name>isEverything</name></name><argument_list>(<argument><expr><name>visitor</name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>right</name><operator>.</operator><name>isEverything</name></name><argument_list>(<argument><expr><name>visitor</name></expr></argument>)</argument_list></call>
+                <operator>&amp;&amp;</operator> <operator>(</operator><name>escape</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>escape</name><operator>.</operator><name>isEverything</name></name><argument_list>(<argument><expr><name>visitor</name></expr></argument>)</argument_list></call><operator>)</operator></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>getCost</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name><name>left</name><operator>.</operator><name>getCost</name></name><argument_list>()</argument_list></call> <operator>+</operator> <call><name><name>right</name><operator>.</operator><name>getCost</name></name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="number">3</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>getSubexpressionCount</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><ternary><condition><expr><name>escape</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="number">2</literal></expr> </then><else>: <expr><literal type="number">3</literal></expr></else></ternary></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>Expression</name></type> <name>getSubexpression</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>index</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <switch>switch <condition>(<expr><name>index</name></expr>)</condition> <block>{<block_content>
+        <case>case <expr><literal type="number">0</literal></expr>:</case>
+            <return>return <expr><name>left</name></expr>;</return>
+        <case>case <expr><literal type="number">1</literal></expr>:</case>
+            <return>return <expr><name>right</name></expr>;</return>
+        <case>case <expr><literal type="number">2</literal></expr>:</case>
+            <if_stmt><if>if <condition>(<expr><name>escape</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <return>return <expr><name>escape</name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+            <comment type="line">//$FALL-THROUGH$</comment>
+        <default>default:</default>
+            <throw>throw <expr><operator>new</operator> <call><name>IndexOutOfBoundsException</name><argument_list>()</argument_list></call></expr>;</throw>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

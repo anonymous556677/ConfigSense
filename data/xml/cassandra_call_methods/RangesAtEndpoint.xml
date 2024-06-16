@@ -1,0 +1,324 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/locator/RangesAtEndpoint.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name></name>;</package>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Preconditions</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>ImmutableSet</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>Range</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>dht</name><operator>.</operator><name>Token</name></name>;</import>
+
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>UnknownHostException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Arrays</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Collection</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Collections</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Objects</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Set</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>stream</name><operator>.</operator><name>Collector</name></name>;</import>
+
+<import>import static <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>collect</name><operator>.</operator><name>Iterables</name><operator>.</operator><name>all</name></name>;</import>
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>ReplicaCollection</name><operator>.</operator><name>Builder</name><operator>.</operator><name>Conflict</name><operator>.</operator><name>*</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A ReplicaCollection for Ranges occurring at an endpoint. All Replica will be for the same endpoint,
+ * and must be unique Ranges (though overlapping ranges are presently permitted, these should probably not be permitted to occur)
+ */</comment>
+<class><specifier>public</specifier> class <name>RangesAtEndpoint</name> <super_list><extends>extends <super><name><name>AbstractReplicaCollection</name><argument_list type="generic">&lt;<argument><name>RangesAtEndpoint</name></argument>&gt;</argument_list></name></super></extends></super_list>
+<block>{
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name><name>ReplicaMap</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>rangeMap</name><parameter_list>(<parameter><decl><type><name>ReplicaList</name></type> <name>list</name></decl></parameter>)</parameter_list> <block>{<block_content> <return>return <expr><operator>new</operator> <call><name><name>ReplicaMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><name>list</name></expr></argument>, <argument><expr><name>Replica</name><operator>::</operator><name>range</name></expr></argument>)</argument_list></call></expr>;</return> </block_content>}</block></function>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>ReplicaMap</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>EMPTY_MAP</name> <init>= <expr><call><name>rangeMap</name><argument_list>(<argument><expr><name>EMPTY_LIST</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>InetAddressAndPort</name></type> <name>endpoint</name></decl>;</decl_stmt>
+
+    <comment type="line">// volatile not needed, as all of these caching collections have final members,</comment>
+    <comment type="line">// besides (transitively) those that cache objects that themselves have only final members</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>ReplicaMap</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>byRange</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>RangesAtEndpoint</name></type> <name>onlyFull</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>RangesAtEndpoint</name></type> <name>onlyTransient</name></decl>;</decl_stmt>
+
+    <constructor><specifier>private</specifier> <name>RangesAtEndpoint</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>, <parameter><decl><type><name>ReplicaList</name></type> <name>list</name></decl></parameter>, <parameter><decl><type><name><name>ReplicaMap</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>byRange</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>list</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>endpoint</name></name> <operator>=</operator> <name>endpoint</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>byRange</name></name> <operator>=</operator> <name>byRange</name></expr>;</expr_stmt>
+        <assert>assert <expr><name>endpoint</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</assert>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>InetAddressAndPort</name></type> <name>endpoint</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>endpoint</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name>InetAddressAndPort</name></argument>&gt;</argument_list></name></type> <name>endpoints</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>Collections</name><operator>.</operator><name>unmodifiableSet</name></name><argument_list>(<argument><expr><ternary><condition><expr><call><name><name>list</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>
+                ?</condition><then> <expr><call><name><name>Collections</name><operator>.</operator><name>emptySet</name></name><argument_list>()</argument_list></call></expr>
+                </then><else>: <expr><call><name><name>Collections</name><operator>.</operator><name>singleton</name></name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr></else></ternary></expr></argument>
+        )</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return a set of all unique Ranges
+     * This method is threadsafe, though it is not synchronised
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>Set</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>ranges</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>byRange</name><argument_list>()</argument_list></call><operator>.</operator><call><name>keySet</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return a map of all Ranges, to their owning Replica instance
+     * This method is threadsafe, though it is not synchronised
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>, <argument><name>Replica</name></argument>&gt;</argument_list></name></type> <name>byRange</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>ReplicaMap</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>map</name> <init>= <expr><name>byRange</name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>map</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>byRange</name> <operator>=</operator> <name>map</name> <operator>=</operator> <call><name>rangeMap</name><argument_list>(<argument><expr><name>list</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <return>return <expr><name>map</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>protected</specifier> <name>RangesAtEndpoint</name></type> <name>snapshot</name><parameter_list>(<parameter><decl><type><name>ReplicaList</name></type> <name>newList</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>newList</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content> <return>return <expr><call><name>empty</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+        <decl_stmt><decl><type><name><name>ReplicaMap</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>byRange</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name><name>this</name><operator>.</operator><name>byRange</name></name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>list</name><operator>.</operator><name>isSubList</name></name><argument_list>(<argument><expr><name>newList</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>byRange</name> <operator>=</operator> <call><name><name>this</name><operator>.</operator><name>byRange</name><operator>.</operator><name>forSubList</name></name><argument_list>(<argument><expr><name>newList</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <return>return <expr><operator>new</operator> <call><name>RangesAtEndpoint</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>, <argument><expr><name>newList</name></expr></argument>, <argument><expr><name>byRange</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>RangesAtEndpoint</name></type> <name>snapshot</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>this</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name><name>ReplicaCollection</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>RangesAtEndpoint</name></argument>&gt;</argument_list></name></name></type> <name>newBuilder</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>initialCapacity</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>Builder</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>, <argument><expr><name>initialCapacity</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>contains</name><parameter_list>(<parameter><decl><type><name>Replica</name></type> <name>replica</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>replica</name> <operator>!=</operator> <literal type="null">null</literal>
+                <operator>&amp;&amp;</operator> <call><name><name>Objects</name><operator>.</operator><name>equals</name></name><argument_list>(
+                        <argument><expr><call><name>byRange</name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><call><name><name>replica</name><operator>.</operator><name>range</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                        <argument><expr><name>replica</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>RangesAtEndpoint</name></type> <name>onlyFull</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>RangesAtEndpoint</name></type> <name>result</name> <init>= <expr><name>onlyFull</name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>result</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>onlyFull</name> <operator>=</operator> <name>result</name> <operator>=</operator> <call><name>filter</name><argument_list>(<argument><expr><name>Replica</name><operator>::</operator><name>isFull</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <return>return <expr><name>result</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>RangesAtEndpoint</name></type> <name>onlyTransient</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>RangesAtEndpoint</name></type> <name>result</name> <init>= <expr><name>onlyTransient</name></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>result</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>onlyTransient</name> <operator>=</operator> <name>result</name> <operator>=</operator> <call><name>filter</name><argument_list>(<argument><expr><name>Replica</name><operator>::</operator><name>isTransient</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <return>return <expr><name>result</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>contains</name><parameter_list>(<parameter><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>range</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>isFull</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Replica</name></type> <name>replica</name> <init>= <expr><call><name>byRange</name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><name>range</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><name>replica</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <call><name><name>replica</name><operator>.</operator><name>isFull</name></name><argument_list>()</argument_list></call> <operator>==</operator> <name>isFull</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return if there are no wrap around ranges contained in this RangesAtEndpoint, return self;
+     * otherwise, return a RangesAtEndpoint covering the same logical portions of the ring, but with those ranges unwrapped
+     */</comment>
+    <function><type><specifier>public</specifier> <name>RangesAtEndpoint</name></type> <name>unwrap</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>int</name></type> <name>wrapAroundCount</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>Replica</name></type> <name>replica</name> <range>: <expr><name>this</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>replica</name><operator>.</operator><name>range</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isWrapAround</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><operator>++</operator><name>wrapAroundCount</name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        </block_content>}</block></for>
+
+        <assert>assert <expr><name>wrapAroundCount</name> <operator>&lt;=</operator> <literal type="number">1</literal></expr>;</assert>
+        <if_stmt><if>if <condition>(<expr><name>wrapAroundCount</name> <operator>==</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><call><name>snapshot</name><argument_list>()</argument_list></call></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>RangesAtEndpoint</name><operator>.</operator><name>Builder</name></name></type> <name>builder</name> <init>= <expr><call><name>builder</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>, <argument><expr><call><name>size</name><argument_list>()</argument_list></call> <operator>+</operator> <name>wrapAroundCount</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>Replica</name></type> <name>replica</name> <range>: <expr><name>this</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>replica</name><operator>.</operator><name>range</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>isWrapAround</name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>replica</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <continue>continue;</continue>
+            </block_content>}</block></if></if_stmt>
+            <for>for <control>(<init><decl><type><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></type> <name>range</name> <range>: <expr><call><name><name>replica</name><operator>.</operator><name>range</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>unwrap</name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>replica</name><operator>.</operator><name>decorateSubrange</name></name><argument_list>(<argument><expr><name>range</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        </block_content>}</block></for>
+        <return>return <expr><call><name><name>builder</name><operator>.</operator><name>build</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name><name>Collector</name><argument_list type="generic">&lt;<argument><name>Replica</name></argument>, <argument><name>Builder</name></argument>, <argument><name>RangesAtEndpoint</name></argument>&gt;</argument_list></name></type> <name>collector</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>collector</name><argument_list>(<argument><expr><call><name><name>ImmutableSet</name><operator>.</operator><name>of</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><lambda><parameter_list>()</parameter_list> -&gt;<block type="pseudo"><block_content> <expr><operator>new</operator> <call><name>Builder</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>Builder</name> <super_list><extends>extends <super><name>RangesAtEndpoint</name></super></extends> <implements>implements <super><name><name>ReplicaCollection</name><operator>.</operator><name><name>Builder</name><argument_list type="generic">&lt;<argument><name>RangesAtEndpoint</name></argument>&gt;</argument_list></name></name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><name>boolean</name></type> <name>built</name></decl>;</decl_stmt>
+        <constructor><specifier>public</specifier> <name>Builder</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list> <block>{<block_content> <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt> </block_content>}</block></constructor>
+        <constructor><specifier>public</specifier> <name>Builder</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>capacity</name></decl></parameter>)</parameter_list> <block>{<block_content> <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>, <argument><expr><operator>new</operator> <call><name>ReplicaList</name><argument_list>(<argument><expr><name>capacity</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt> </block_content>}</block></constructor>
+        <constructor><specifier>private</specifier> <name>Builder</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>, <parameter><decl><type><name>ReplicaList</name></type> <name>list</name></decl></parameter>)</parameter_list> <block>{<block_content> <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>, <argument><expr><name>list</name></expr></argument>, <argument><expr><call><name>rangeMap</name><argument_list>(<argument><expr><name>list</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt> </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name><name>RangesAtEndpoint</name><operator>.</operator><name>Builder</name></name></type> <name>add</name><parameter_list>(<parameter><decl><type><name>Replica</name></type> <name>replica</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>add</name><argument_list>(<argument><expr><name>replica</name></expr></argument>, <argument><expr><name><name>Conflict</name><operator>.</operator><name>DUPLICATE</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>RangesAtEndpoint</name><operator>.</operator><name>Builder</name></name></type> <name>add</name><parameter_list>(<parameter><decl><type><name>Replica</name></type> <name>replica</name></decl></parameter>, <parameter><decl><type><name>Conflict</name></type> <name>ignoreConflict</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>built</name></expr>)</condition><block type="pseudo"><block_content> <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>()</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkNotNull</name></name><argument_list>(<argument><expr><name>replica</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>Objects</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><name><name>super</name><operator>.</operator><name>endpoint</name></name></expr></argument>, <argument><expr><call><name><name>replica</name><operator>.</operator><name>endpoint</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Replica "</literal> <operator>+</operator> <name>replica</name> <operator>+</operator> <literal type="string">" has incorrect endpoint (expected "</literal> <operator>+</operator> <name><name>super</name><operator>.</operator><name>endpoint</name></name> <operator>+</operator> <literal type="string">")"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>super</name><operator>.</operator><name>byRange</name><operator>.</operator><name>internalPutIfAbsent</name></name><argument_list>(<argument><expr><name>replica</name></expr></argument>, <argument><expr><call><name><name>list</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <switch>switch <condition>(<expr><name>ignoreConflict</name></expr>)</condition>
+                <block>{<block_content>
+                    <case>case <expr><name>DUPLICATE</name></expr>:</case>
+                        <if_stmt><if>if <condition>(<expr><call><name>byRange</name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><call><name><name>replica</name><operator>.</operator><name>range</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><name>replica</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                            <break>break;</break></block_content></block></if></if_stmt>
+                    <case>case <expr><name>NONE</name></expr>:</case>
+                        <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Conflicting replica added (expected unique ranges): "</literal>
+                                <operator>+</operator> <name>replica</name> <operator>+</operator> <literal type="string">"; existing: "</literal> <operator>+</operator> <call><name>byRange</name><argument_list>()</argument_list></call><operator>.</operator><call><name>get</name><argument_list>(<argument><expr><call><name><name>replica</name><operator>.</operator><name>range</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+                    <case>case <expr><name>ALL</name></expr>:</case>
+                </block_content>}</block></switch>
+                <return>return <expr><name>this</name></expr>;</return>
+            </block_content>}</block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>list</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>replica</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>Override</name></annotation>
+        <type><specifier>public</specifier> <name>RangesAtEndpoint</name></type> <name>snapshot</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><call><name>snapshot</name><argument_list>(<argument><expr><call><name><name>list</name><operator>.</operator><name>subList</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><call><name><name>list</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>RangesAtEndpoint</name></type> <name>build</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name>built</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            <return>return <expr><operator>new</operator> <call><name>RangesAtEndpoint</name><argument_list>(<argument><expr><name><name>super</name><operator>.</operator><name>endpoint</name></name></expr></argument>, <argument><expr><name><name>super</name><operator>.</operator><name>list</name></name></expr></argument>, <argument><expr><name><name>super</name><operator>.</operator><name>byRange</name></name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>Builder</name></type> <name>builder</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>Builder</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>Builder</name></type> <name>builder</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>capacity</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>Builder</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>, <argument><expr><name>capacity</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>RangesAtEndpoint</name></type> <name>empty</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>endpoint</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>RangesAtEndpoint</name><argument_list>(<argument><expr><name>endpoint</name></expr></argument>, <argument><expr><name>EMPTY_LIST</name></expr></argument>, <argument><expr><name>EMPTY_MAP</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>RangesAtEndpoint</name></type> <name>of</name><parameter_list>(<parameter><decl><type><name>Replica</name></type> <name>replica</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ReplicaList</name></type> <name>one</name> <init>= <expr><operator>new</operator> <call><name>ReplicaList</name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>one</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>replica</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><operator>new</operator> <call><name>RangesAtEndpoint</name><argument_list>(<argument><expr><call><name><name>replica</name><operator>.</operator><name>endpoint</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>one</name></expr></argument>, <argument><expr><call><name>rangeMap</name><argument_list>(<argument><expr><name>one</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>RangesAtEndpoint</name></type> <name>of</name><parameter_list>(<parameter><decl><type><name>Replica</name> <modifier>...</modifier></type> <name>replicas</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>copyOf</name><argument_list>(<argument><expr><call><name><name>Arrays</name><operator>.</operator><name>asList</name></name><argument_list>(<argument><expr><name>replicas</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>RangesAtEndpoint</name></type> <name>copyOf</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>Replica</name></argument>&gt;</argument_list></name></type> <name>replicas</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>replicas</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Must specify a non-empty collection of replicas"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <return>return <expr><call><name>builder</name><argument_list>(<argument><expr><call><name><name>replicas</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>endpoint</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>replicas</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call><operator>.</operator><call><name>addAll</name><argument_list>(<argument><expr><name>replicas</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>build</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+
+    <comment type="block" format="javadoc">/**
+     * Use of this method to synthesize Replicas is almost always wrong. In repair it turns out the concerns of transient
+     * vs non-transient are handled at a higher level, but eventually repair needs to ask streaming to actually move
+     * the data and at that point it doesn't have a great handle on what the replicas are and it doesn't really matter.
+     *
+     * Streaming expects to be given Replicas with each replica indicating what type of data (transient or not transient)
+     * should be sent.
+     *
+     * So in this one instance we can lie to streaming and pretend all the replicas are full and use a dummy address
+     * and it doesn't matter because streaming doesn't rely on the address for anything other than debugging and full
+     * is a valid value for transientness because streaming is selecting candidate tables from the repair/unrepaired
+     * set already.
+     * @param ranges
+     * @return
+     */</comment>
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>RangesAtEndpoint</name></type> <name>toDummyList</name><parameter_list>(<parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name><name>Range</name><argument_list type="generic">&lt;<argument><name>Token</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>ranges</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>InetAddressAndPort</name></type> <name>dummy</name></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><name>dummy</name> <operator>=</operator> <call><name><name>InetAddressAndPort</name><operator>.</operator><name>getByNameOverrideDefaults</name></name><argument_list>(<argument><expr><literal type="string">"0.0.0.0"</literal></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>UnknownHostException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+
+        <comment type="line">//For repair we are less concerned with full vs transient since repair is already dealing with those concerns.</comment>
+        <comment type="line">//Always say full and then if the repair is incremental or not will determine what is streamed.</comment>
+        <return>return <expr><call><name><name>ranges</name><operator>.</operator><name>stream</name></name><argument_list>()</argument_list></call>
+                <operator>.</operator><call><name>map</name><argument_list>(<argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>range</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><operator>new</operator> <call><name>Replica</name><argument_list>(<argument><expr><name>dummy</name></expr></argument>, <argument><expr><name>range</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call>
+                <operator>.</operator><call><name>collect</name><argument_list>(<argument><expr><call><name>collector</name><argument_list>(<argument><expr><name>dummy</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>isDummyList</name><parameter_list>(<parameter><decl><type><name>RangesAtEndpoint</name></type> <name>ranges</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>all</name><argument_list>(<argument><expr><name>ranges</name></expr></argument>, <argument><expr><lambda><parameter_list type="pseudo"><parameter><decl><name>range</name></decl></parameter></parameter_list> -&gt;<block type="pseudo"><block_content> <expr><call><name><name>range</name><operator>.</operator><name>endpoint</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getHostAddress</name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>equals</name><argument_list>(<argument><expr><literal type="string">"0.0.0.0:0"</literal></expr></argument>)</argument_list></call></expr></block_content></block></lambda></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @return concatenate two DISJOINT collections together
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>RangesAtEndpoint</name></type> <name>concat</name><parameter_list>(<parameter><decl><type><name>RangesAtEndpoint</name></type> <name>replicas</name></decl></parameter>, <parameter><decl><type><name>RangesAtEndpoint</name></type> <name>extraReplicas</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>AbstractReplicaCollection</name><operator>.</operator><name>concat</name></name><argument_list>(<argument><expr><name>replicas</name></expr></argument>, <argument><expr><name>extraReplicas</name></expr></argument>, <argument><expr><name>NONE</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

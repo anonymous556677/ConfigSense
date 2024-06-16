@@ -1,0 +1,263 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/commitlog/CommitLogDescriptor.java"><comment type="block">/*
+ *
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>commitlog</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>DataInput</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>EOFException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>File</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>IOException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>io</name><operator>.</operator><name>RandomAccessFile</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>charset</name><operator>.</operator><name>StandardCharsets</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Collections</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>TreeMap</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>regex</name><operator>.</operator><name>Matcher</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>regex</name><operator>.</operator><name>Pattern</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>zip</name><operator>.</operator><name>CRC32</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Objects</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>ParameterizedClass</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>ConfigurationException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>FSReadError</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>MessagingService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>security</name><operator>.</operator><name>EncryptionContext</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>json</name><operator>.</operator><name>simple</name><operator>.</operator><name>JSONValue</name></name>;</import>
+
+<import>import static <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name><operator>.</operator><name>updateChecksumInt</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>CommitLogDescriptor</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>SEPARATOR</name> <init>= <expr><literal type="string">"-"</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>FILENAME_PREFIX</name> <init>= <expr><literal type="string">"CommitLog"</literal> <operator>+</operator> <name>SEPARATOR</name></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>FILENAME_EXTENSION</name> <init>= <expr><literal type="string">".log"</literal></expr></init></decl>;</decl_stmt>
+    <comment type="line">// match both legacy and new version of commitlogs Ex: CommitLog-12345.log and CommitLog-4-12345.log.</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Pattern</name></type> <name>COMMIT_LOG_FILE_PATTERN</name> <init>= <expr><call><name><name>Pattern</name><operator>.</operator><name>compile</name></name><argument_list>(<argument><expr><name>FILENAME_PREFIX</name> <operator>+</operator> <literal type="string">"((\\d+)("</literal> <operator>+</operator> <name>SEPARATOR</name> <operator>+</operator> <literal type="string">"\\d+)?)"</literal> <operator>+</operator> <name>FILENAME_EXTENSION</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>COMPRESSION_PARAMETERS_KEY</name> <init>= <expr><literal type="string">"compressionParameters"</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>static</specifier> <specifier>final</specifier> <name>String</name></type> <name>COMPRESSION_CLASS_KEY</name> <init>= <expr><literal type="string">"compressionClass"</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// We don't support anything pre-3.0</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>VERSION_30</name> <init>= <expr><literal type="number">6</literal></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>VERSION_40</name> <init>= <expr><literal type="number">7</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Increment this number if there is a changes in the commit log disc layout or MessagingVersion changes.
+     * Note: make sure to handle {@link #getMessagingVersion()}
+     */</comment>
+    <decl_stmt><decl><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>current_version</name> <init>= <expr><name>VERSION_40</name></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>final</specifier> <name>int</name></type> <name>version</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>long</name></type> <name>id</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>ParameterizedClass</name></type> <name>compression</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>EncryptionContext</name></type> <name>encryptionContext</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>CommitLogDescriptor</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>version</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>ParameterizedClass</name></type> <name>compression</name></decl></parameter>, <parameter><decl><type><name>EncryptionContext</name></type> <name>encryptionContext</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>version</name></name> <operator>=</operator> <name>version</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>id</name></name> <operator>=</operator> <name>id</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>compression</name></name> <operator>=</operator> <name>compression</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>encryptionContext</name></name> <operator>=</operator> <name>encryptionContext</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><specifier>public</specifier> <name>CommitLogDescriptor</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>ParameterizedClass</name></type> <name>compression</name></decl></parameter>, <parameter><decl><type><name>EncryptionContext</name></type> <name>encryptionContext</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>current_version</name></expr></argument>, <argument><expr><name>id</name></expr></argument>, <argument><expr><name>compression</name></expr></argument>, <argument><expr><name>encryptionContext</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>writeHeader</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>CommitLogDescriptor</name></type> <name>descriptor</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>writeHeader</name><argument_list>(<argument><expr><name>out</name></expr></argument>, <argument><expr><name>descriptor</name></expr></argument>, <argument><expr><name><name>Collections</name><operator>.</operator></name>&lt;<name>String</name></expr></argument>, <argument><expr><name>String</name><operator>&gt;</operator><call><name>emptyMap</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @param additionalHeaders Allow segments to pass custom header data
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>void</name></type> <name>writeHeader</name><parameter_list>(<parameter><decl><type><name>ByteBuffer</name></type> <name>out</name></decl></parameter>, <parameter><decl><type><name>CommitLogDescriptor</name></type> <name>descriptor</name></decl></parameter>, <parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name></type> <name>additionalHeaders</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>CRC32</name></type> <name>crc</name> <init>= <expr><operator>new</operator> <call><name>CRC32</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>putInt</name></name><argument_list>(<argument><expr><name><name>descriptor</name><operator>.</operator><name>version</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>updateChecksumInt</name><argument_list>(<argument><expr><name>crc</name></expr></argument>, <argument><expr><name><name>descriptor</name><operator>.</operator><name>version</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>putLong</name></name><argument_list>(<argument><expr><name><name>descriptor</name><operator>.</operator><name>id</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>updateChecksumInt</name><argument_list>(<argument><expr><name>crc</name></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><name><name>descriptor</name><operator>.</operator><name>id</name></name> <operator>&amp;</operator> <literal type="number">0xFFFFFFFFL</literal><operator>)</operator></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>updateChecksumInt</name><argument_list>(<argument><expr><name>crc</name></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><name><name>descriptor</name><operator>.</operator><name>id</name></name> <operator>&gt;&gt;&gt;</operator> <literal type="number">32</literal><operator>)</operator></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>String</name></type> <name>parametersString</name> <init>= <expr><call><name>constructParametersString</name><argument_list>(<argument><expr><name><name>descriptor</name><operator>.</operator><name>compression</name></name></expr></argument>, <argument><expr><name><name>descriptor</name><operator>.</operator><name>encryptionContext</name></name></expr></argument>, <argument><expr><name>additionalHeaders</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>byte</name><index>[]</index></name></type> <name>parametersBytes</name> <init>= <expr><call><name><name>parametersString</name><operator>.</operator><name>getBytes</name></name><argument_list>(<argument><expr><name><name>StandardCharsets</name><operator>.</operator><name>UTF_8</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name><name>parametersBytes</name><operator>.</operator><name>length</name></name> <operator>!=</operator> <operator>(</operator><operator>(</operator><operator>(</operator><name>short</name><operator>)</operator> <name><name>parametersBytes</name><operator>.</operator><name>length</name></name><operator>)</operator> <operator>&amp;</operator> <literal type="number">0xFFFF</literal><operator>)</operator></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>ConfigurationException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Compression parameters too long, length %d cannot be above 65535."</literal></expr></argument>,
+                        <argument><expr><name><name>parametersBytes</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>putShort</name></name><argument_list>(<argument><expr><operator>(</operator><name>short</name><operator>)</operator> <name><name>parametersBytes</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>updateChecksumInt</name><argument_list>(<argument><expr><name>crc</name></expr></argument>, <argument><expr><name><name>parametersBytes</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>parametersBytes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>crc</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>parametersBytes</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name><name>parametersBytes</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>out</name><operator>.</operator><name>putInt</name></name><argument_list>(<argument><expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>crc</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>static</specifier> <name>String</name></type> <name>constructParametersString</name><parameter_list>(<parameter><decl><type><name>ParameterizedClass</name></type> <name>compression</name></decl></parameter>, <parameter><decl><type><name>EncryptionContext</name></type> <name>encryptionContext</name></decl></parameter>, <parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name></type> <name>additionalHeaders</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>Object</name></argument>&gt;</argument_list></name></type> <name>params</name> <init>= <expr><operator>new</operator> <call><name><name>TreeMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>compression</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>params</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>COMPRESSION_PARAMETERS_KEY</name></expr></argument>, <argument><expr><name><name>compression</name><operator>.</operator><name>parameters</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>params</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>COMPRESSION_CLASS_KEY</name></expr></argument>, <argument><expr><name><name>compression</name><operator>.</operator><name>class_name</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>encryptionContext</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>params</name><operator>.</operator><name>putAll</name></name><argument_list>(<argument><expr><call><name><name>encryptionContext</name><operator>.</operator><name>toHeaderParameters</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <expr_stmt><expr><call><name><name>params</name><operator>.</operator><name>putAll</name></name><argument_list>(<argument><expr><name>additionalHeaders</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name><name>JSONValue</name><operator>.</operator><name>toJSONString</name></name><argument_list>(<argument><expr><name>params</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>CommitLogDescriptor</name></type> <name>fromHeader</name><parameter_list>(<parameter><decl><type><name>File</name></type> <name>file</name></decl></parameter>, <parameter><decl><type><name>EncryptionContext</name></type> <name>encryptionContext</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <try>try <init>(<decl><type><name>RandomAccessFile</name></type> <name>raf</name> <init>= <expr><operator>new</operator> <call><name>RandomAccessFile</name><argument_list>(<argument><expr><name>file</name></expr></argument>, <argument><expr><literal type="string">"r"</literal></expr></argument>)</argument_list></call></expr></init></decl>)</init>
+        <block>{<block_content>
+            <assert>assert <expr><call><name><name>raf</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>;</assert>
+            <return>return <expr><call><name>readHeader</name><argument_list>(<argument><expr><name>raf</name></expr></argument>, <argument><expr><name>encryptionContext</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>EOFException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>IOException</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>FSReadError</name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><name>file</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>CommitLogDescriptor</name></type> <name>readHeader</name><parameter_list>(<parameter><decl><type><name>DataInput</name></type> <name>input</name></decl></parameter>, <parameter><decl><type><name>EncryptionContext</name></type> <name>encryptionContext</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>IOException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>CRC32</name></type> <name>checkcrc</name> <init>= <expr><operator>new</operator> <call><name>CRC32</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>version</name> <init>= <expr><call><name><name>input</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>version</name> <operator>&lt;</operator> <name>VERSION_30</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>(<argument><expr><literal type="string">"Unsupported pre-3.0 commit log found; cannot read."</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name>updateChecksumInt</name><argument_list>(<argument><expr><name>checkcrc</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>long</name></type> <name>id</name> <init>= <expr><call><name><name>input</name><operator>.</operator><name>readLong</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>updateChecksumInt</name><argument_list>(<argument><expr><name>checkcrc</name></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><name>id</name> <operator>&amp;</operator> <literal type="number">0xFFFFFFFFL</literal><operator>)</operator></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>updateChecksumInt</name><argument_list>(<argument><expr><name>checkcrc</name></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator> <operator>(</operator><name>id</name> <operator>&gt;&gt;&gt;</operator> <literal type="number">32</literal><operator>)</operator></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>parametersLength</name> <init>= <expr><call><name><name>input</name><operator>.</operator><name>readShort</name></name><argument_list>()</argument_list></call> <operator>&amp;</operator> <literal type="number">0xFFFF</literal></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>updateChecksumInt</name><argument_list>(<argument><expr><name>checkcrc</name></expr></argument>, <argument><expr><name>parametersLength</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <comment type="line">// This should always succeed as parametersLength cannot be too long even for a</comment>
+        <comment type="line">// corrupt segment file.</comment>
+        <decl_stmt><decl><type><name><name>byte</name><index>[]</index></name></type> <name>parametersBytes</name> <init>= <expr><operator>new</operator> <name><name>byte</name><index>[<expr><name>parametersLength</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>input</name><operator>.</operator><name>readFully</name></name><argument_list>(<argument><expr><name>parametersBytes</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>checkcrc</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>parametersBytes</name></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><name><name>parametersBytes</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>crc</name> <init>= <expr><call><name><name>input</name><operator>.</operator><name>readInt</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>crc</name> <operator>==</operator> <operator>(</operator><name>int</name><operator>)</operator> <call><name><name>checkcrc</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>?</name></argument>, <argument><name>?</name></argument>&gt;</argument_list></name></type> <name>map</name> <init>= <expr><operator>(</operator><name><name>Map</name><argument_list type="generic">&lt;<argument><name>?</name></argument>, <argument><name>?</name></argument>&gt;</argument_list></name><operator>)</operator> <call><name><name>JSONValue</name><operator>.</operator><name>parse</name></name><argument_list>(<argument><expr><operator>new</operator> <call><name>String</name><argument_list>(<argument><expr><name>parametersBytes</name></expr></argument>, <argument><expr><name><name>StandardCharsets</name><operator>.</operator><name>UTF_8</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <return>return <expr><operator>new</operator> <call><name>CommitLogDescriptor</name><argument_list>(<argument><expr><name>version</name></expr></argument>, <argument><expr><name>id</name></expr></argument>, <argument><expr><call><name>parseCompression</name><argument_list>(<argument><expr><name>map</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><call><name><name>EncryptionContext</name><operator>.</operator><name>createFromMap</name></name><argument_list>(<argument><expr><name>map</name></expr></argument>, <argument><expr><name>encryptionContext</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><literal type="null">null</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unchecked"</literal></expr></argument>)</argument_list></annotation>
+    <annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>static</specifier> <name>ParameterizedClass</name></type> <name>parseCompression</name><parameter_list>(<parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>?</name></argument>, <argument><name>?</name></argument>&gt;</argument_list></name></type> <name>params</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>params</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>params</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+        <decl_stmt><decl><type><name>String</name></type> <name>className</name> <init>= <expr><operator>(</operator><name>String</name><operator>)</operator> <call><name><name>params</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>COMPRESSION_CLASS_KEY</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>className</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name></type> <name>cparams</name> <init>= <expr><operator>(</operator><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>String</name></argument>&gt;</argument_list></name><operator>)</operator> <call><name><name>params</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name>COMPRESSION_PARAMETERS_KEY</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <call><name>ParameterizedClass</name><argument_list>(<argument><expr><name>className</name></expr></argument>, <argument><expr><name>cparams</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>CommitLogDescriptor</name></type> <name>fromFileName</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>Matcher</name></type> <name>matcher</name></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><operator>(</operator><name>matcher</name> <operator>=</operator> <call><name><name>COMMIT_LOG_FILE_PATTERN</name><operator>.</operator><name>matcher</name></name><argument_list>(<argument><expr><name>name</name></expr></argument>)</argument_list></call><operator>)</operator><operator>.</operator><call><name>matches</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><literal type="string">"Cannot parse the version of the file: "</literal> <operator>+</operator> <name>name</name></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><call><name><name>matcher</name><operator>.</operator><name>group</name></name><argument_list>(<argument><expr><literal type="number">3</literal></expr></argument>)</argument_list></call> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>UnsupportedOperationException</name><argument_list>(<argument><expr><literal type="string">"Commitlog segment is too old to open; upgrade to 1.2.5+ first"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <decl_stmt><decl><type><name>long</name></type> <name>id</name> <init>= <expr><call><name><name>Long</name><operator>.</operator><name>parseLong</name></name><argument_list>(<argument><expr><call><name><name>matcher</name><operator>.</operator><name>group</name></name><argument_list>(<argument><expr><literal type="number">3</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>split</name><argument_list>(<argument><expr><name>SEPARATOR</name></expr></argument>)</argument_list></call><index>[<expr><literal type="number">1</literal></expr>]</index></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <call><name>CommitLogDescriptor</name><argument_list>(<argument><expr><call><name><name>Integer</name><operator>.</operator><name>parseInt</name></name><argument_list>(<argument><expr><call><name><name>matcher</name><operator>.</operator><name>group</name></name><argument_list>(<argument><expr><literal type="number">2</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>id</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><operator>new</operator> <call><name>EncryptionContext</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getMessagingVersion</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <switch>switch <condition>(<expr><name>version</name></expr>)</condition>
+        <block>{<block_content>
+            <case>case <expr><name>VERSION_30</name></expr>:</case>
+                <return>return <expr><name><name>MessagingService</name><operator>.</operator><name>VERSION_30</name></name></expr>;</return>
+            <case>case <expr><name>VERSION_40</name></expr>:</case>
+                <return>return <expr><name><name>MessagingService</name><operator>.</operator><name>VERSION_40</name></name></expr>;</return>
+            <default>default:</default>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"Unknown commitlog version "</literal> <operator>+</operator> <name>version</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></switch>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>fileName</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>FILENAME_PREFIX</name> <operator>+</operator> <name>version</name> <operator>+</operator> <name>SEPARATOR</name> <operator>+</operator> <name>id</name> <operator>+</operator> <name>FILENAME_EXTENSION</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>cdcIndexFileName</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>FILENAME_PREFIX</name> <operator>+</operator> <name>version</name> <operator>+</operator> <name>SEPARATOR</name> <operator>+</operator> <name>id</name> <operator>+</operator> <literal type="string">"_cdc.idx"</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @param   filename  the filename to check
+     * @return true if filename could be a commit log based on it's filename
+     */</comment>
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>isValid</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>filename</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>COMMIT_LOG_FILE_PATTERN</name><operator>.</operator><name>matcher</name></name><argument_list>(<argument><expr><name>filename</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>matches</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>EncryptionContext</name></type> <name>getEncryptionContext</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>encryptionContext</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="string">"("</literal> <operator>+</operator> <name>version</name> <operator>+</operator> <literal type="string">","</literal> <operator>+</operator> <name>id</name> <operator>+</operator> <operator>(</operator><ternary><condition><expr><name>compression</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="string">","</literal> <operator>+</operator> <name>compression</name></expr> </then><else>: <expr><literal type="string">""</literal></expr></else></ternary><operator>)</operator> <operator>+</operator> <literal type="string">")"</literal></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>Object</name></type> <name>that</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>that</name> <operator>instanceof</operator> <name>CommitLogDescriptor</name> <operator>&amp;&amp;</operator> <call><name>equals</name><argument_list>(<argument><expr><operator>(</operator><name>CommitLogDescriptor</name><operator>)</operator> <name>that</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>equalsIgnoringCompression</name><parameter_list>(<parameter><decl><type><name>CommitLogDescriptor</name></type> <name>that</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name><name>this</name><operator>.</operator><name>version</name></name> <operator>==</operator> <name><name>that</name><operator>.</operator><name>version</name></name> <operator>&amp;&amp;</operator> <name><name>this</name><operator>.</operator><name>id</name></name> <operator>==</operator> <name><name>that</name><operator>.</operator><name>id</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>equals</name><parameter_list>(<parameter><decl><type><name>CommitLogDescriptor</name></type> <name>that</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name>equalsIgnoringCompression</name><argument_list>(<argument><expr><name>that</name></expr></argument>)</argument_list></call> <operator>&amp;&amp;</operator> <call><name><name>Objects</name><operator>.</operator><name>equal</name></name><argument_list>(<argument><expr><name><name>this</name><operator>.</operator><name>compression</name></name></expr></argument>, <argument><expr><name><name>that</name><operator>.</operator><name>compression</name></name></expr></argument>)</argument_list></call>
+                <operator>&amp;&amp;</operator> <call><name><name>Objects</name><operator>.</operator><name>equal</name></name><argument_list>(<argument><expr><name>encryptionContext</name></expr></argument>, <argument><expr><name><name>that</name><operator>.</operator><name>encryptionContext</name></name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

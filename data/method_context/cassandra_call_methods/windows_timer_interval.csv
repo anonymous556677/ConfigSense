@@ -1,0 +1,546 @@
+function,option,Method,Method_short,class_name,xml_path,Method_body
+org.apache.cassandra.config.DatabaseDescriptor:getWindowsTimerInterval(),windows_timer_interval,(M)org.apache.cassandra.service.CassandraDaemon:applyConfig(),applyConfig,CassandraDaemon,../data/xml/cassandra_call_methods/CassandraDaemon.xml,"
+public void applyConfig()
+    {
+        DatabaseDescriptor.daemonInitialization();
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getWindowsTimerInterval(),windows_timer_interval,(S)org.apache.cassandra.service.CassandraDaemon:registerNativeAccess(),registerNativeAccess,CassandraDaemon,../data/xml/cassandra_call_methods/CassandraDaemon.xml,"
+@VisibleForTesting
+    public static void registerNativeAccess() throws javax.management.NotCompliantMBeanException
+    {
+        MBeanWrapper.instance.registerMBean(new StandardMBean(new NativeAccess(), NativeAccessMBean.class), MBEAN_NAME, MBeanWrapper.OnException.LOG);
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getWindowsTimerInterval(),windows_timer_interval,(S)org.apache.cassandra.config.DatabaseDescriptor:getWindowsTimerInterval(),getWindowsTimerInterval,DatabaseDescriptor,../data/xml/cassandra_call_methods/DatabaseDescriptor.xml,"
+public static int getWindowsTimerInterval()
+    {
+        return conf.windows_timer_interval;
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getWindowsTimerInterval(),windows_timer_interval,(S)org.apache.cassandra.utils.WindowsTimer:startTimerPeriod(int),startTimerPeriod,WindowsTimer,../data/xml/cassandra_call_methods/WindowsTimer.xml,"
+public static void startTimerPeriod(int period)
+    {
+        if (period == 0)
+            return;
+        assert(period > 0);
+        if (timeBeginPeriod(period) != 0)
+            logger.warn(""Failed to set timer to : {}. Performance will be degraded."", period);
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getWindowsTimerInterval(),windows_timer_interval,(M)org.apache.cassandra.service.CassandraDaemon:setup(),setup,CassandraDaemon,../data/xml/cassandra_call_methods/CassandraDaemon.xml,"/**
+     * This is a hook for concrete daemons to initialize themselves suitably.
+     *
+     * Subclasses should override this to finish the job (listening on ports, etc.)
+     */
+protected void setup()
+    {
+        FileUtils.setFSErrorHandler(new DefaultFSErrorHandler());
+
+        // Since CASSANDRA-14793 the local system keyspaces data are not dispatched across the data directories
+        // anymore to reduce the risks in case of disk failures. By consequence, the system need to ensure in case of
+        // upgrade that the old data files have been migrated to the new directories before we start deleting
+        // snapshots and upgrading system tables.
+        try
+        {
+            migrateSystemDataIfNeeded();
+        }
+        catch (IOException e)
+        {
+            exitOrFail(StartupException.ERR_WRONG_DISK_STATE, e.getMessage(), e);
+        }
+
+        // Delete any failed snapshot deletions on Windows - see CASSANDRA-9658
+        if (FBUtilities.isWindows)
+            WindowsFailedSnapshotTracker.deleteOldSnapshots();
+
+        maybeInitJmx();
+
+        Mx4jTool.maybeLoad();
+
+        ThreadAwareSecurityManager.install();
+
+        logSystemInfo();
+
+        NativeLibrary.tryMlockall();
+
+        CommitLog.instance.start();
+
+        runStartupChecks();
+
+        try
+        {
+            SystemKeyspace.snapshotOnVersionChange();
+        }
+        catch (IOException e)
+        {
+            exitOrFail(StartupException.ERR_WRONG_DISK_STATE, e.getMessage(), e.getCause());
+        }
+
+        // We need to persist this as soon as possible after startup checks.
+        // This should be the first write to SystemKeyspace (CASSANDRA-11742)
+        SystemKeyspace.persistLocalMetadata();
+
+        Thread.setDefaultUncaughtExceptionHandler(CassandraDaemon::uncaughtException);
+
+        SystemKeyspaceMigrator40.migrate();
+
+        // Populate token metadata before flushing, for token-aware sstable partitioning (#6696)
+        StorageService.instance.populateTokenMetadata();
+
+        try
+        {
+            // load schema from disk
+            Schema.instance.loadFromDisk();
+        }
+        catch (Exception e)
+        {
+            logger.error(""Error while loading schema: "", e);
+            throw e;
+        }
+
+        setupVirtualKeyspaces();
+
+        SSTableHeaderFix.fixNonFrozenUDTIfUpgradeFrom30();
+
+        // clean up debris in the rest of the keyspaces
+        for (String keyspaceName : Schema.instance.getKeyspaces())
+        {
+            // Skip system as we've already cleaned it
+            if (keyspaceName.equals(SchemaConstants.SYSTEM_KEYSPACE_NAME))
+                continue;
+
+            for (TableMetadata cfm : Schema.instance.getTablesAndViews(keyspaceName))
+            {
+                try
+                {
+                    ColumnFamilyStore.scrubDataDirectories(cfm);
+                }
+                catch (StartupException e)
+                {
+                    exitOrFail(e.returnCode, e.getMessage(), e.getCause());
+                }
+            }
+        }
+
+        Keyspace.setInitialized();
+
+        // initialize keyspaces
+        for (String keyspaceName : Schema.instance.getKeyspaces())
+        {
+            if (logger.isDebugEnabled())
+                logger.debug(""opening keyspace {}"", keyspaceName);
+            // disable auto compaction until gossip settles since disk boundaries may be affected by ring layout
+            for (ColumnFamilyStore cfs : Keyspace.open(keyspaceName).getColumnFamilyStores())
+            {
+                for (ColumnFamilyStore store : cfs.concatWithIndexes())
+                {
+                    store.disableAutoCompaction();
+                }
+            }
+        }
+
+
+        try
+        {
+            loadRowAndKeyCacheAsync().get();
+        }
+        catch (Throwable t)
+        {
+            JVMStabilityInspector.inspectThrowable(t);
+            logger.warn(""Error loading key or row cache"", t);
+        }
+
+        try
+        {
+            GCInspector.register();
+        }
+        catch (Throwable t)
+        {
+            JVMStabilityInspector.inspectThrowable(t);
+            logger.warn(""Unable to start GCInspector (currently only supported on the Sun JVM)"");
+        }
+
+        // Replay any CommitLogSegments found on disk
+        try
+        {
+            CommitLog.instance.recoverSegmentsOnDisk();
+        }
+        catch (IOException e)
+        {
+            throw new RuntimeException(e);
+        }
+
+        // Re-populate token metadata after commit log recover (new peers might be loaded onto system keyspace #10293)
+        StorageService.instance.populateTokenMetadata();
+
+        SystemKeyspace.finishStartup();
+
+        // Clean up system.size_estimates entries left lying around from missed keyspace drops (CASSANDRA-14905)
+        StorageService.instance.cleanupSizeEstimates();
+
+        // schedule periodic dumps of table size estimates into SystemKeyspace.SIZE_ESTIMATES_CF
+        // set cassandra.size_recorder_interval to 0 to disable
+        int sizeRecorderInterval = Integer.getInteger(""cassandra.size_recorder_interval"", 5 * 60);
+        if (sizeRecorderInterval > 0)
+            ScheduledExecutors.optionalTasks.scheduleWithFixedDelay(SizeEstimatesRecorder.instance, 30, sizeRecorderInterval, TimeUnit.SECONDS);
+
+        ActiveRepairService.instance.start();
+
+        // Prepared statements
+        QueryProcessor.instance.preloadPreparedStatements();
+
+        // Metrics
+        String metricsReporterConfigFile = System.getProperty(""cassandra.metricsReporterConfigFile"");
+        if (metricsReporterConfigFile != null)
+        {
+            logger.info(""Trying to load metrics-reporter-config from file: {}"", metricsReporterConfigFile);
+            try
+            {
+                // enable metrics provided by metrics-jvm.jar
+                CassandraMetricsRegistry.Metrics.register(""jvm.buffers"", new BufferPoolMetricSet(ManagementFactory.getPlatformMBeanServer()));
+                CassandraMetricsRegistry.Metrics.register(""jvm.gc"", new GarbageCollectorMetricSet());
+                CassandraMetricsRegistry.Metrics.register(""jvm.memory"", new MemoryUsageGaugeSet());
+                CassandraMetricsRegistry.Metrics.register(""jvm.fd.usage"", new FileDescriptorRatioGauge());
+                // initialize metrics-reporter-config from yaml file
+                URL resource = CassandraDaemon.class.getClassLoader().getResource(metricsReporterConfigFile);
+                if (resource == null)
+                {
+                    logger.warn(""Failed to load metrics-reporter-config, file does not exist: {}"", metricsReporterConfigFile);
+                }
+                else
+                {
+                    String reportFileLocation = resource.getFile();
+                    ReporterConfig.loadFromFile(reportFileLocation).enableAll(CassandraMetricsRegistry.Metrics);
+                }
+            }
+            catch (Exception e)
+            {
+                logger.warn(""Failed to load metrics-reporter-config, metric sinks will not be activated"", e);
+            }
+        }
+
+        // start server internals
+        StorageService.instance.registerDaemon(this);
+        try
+        {
+            StorageService.instance.initServer();
+        }
+        catch (ConfigurationException e)
+        {
+            System.err.println(e.getMessage() + ""\nFatal configuration error; unable to start server.  See log for stacktrace."");
+            exitOrFail(1, ""Fatal configuration error"", e);
+        }
+
+        // Because we are writing to the system_distributed keyspace, this should happen after that is created, which
+        // happens in StorageService.instance.initServer()
+        Runnable viewRebuild = () -> {
+            for (Keyspace keyspace : Keyspace.all())
+            {
+                keyspace.viewManager.buildAllViews();
+            }
+            logger.debug(""Completed submission of build tasks for any materialized views defined at startup"");
+        };
+
+        ScheduledExecutors.optionalTasks.schedule(viewRebuild, StorageService.RING_DELAY, TimeUnit.MILLISECONDS);
+
+        if (!FBUtilities.getBroadcastAddressAndPort().equals(InetAddressAndPort.getLoopbackAddress()))
+            Gossiper.waitToSettle();
+
+        StorageService.instance.doAuthSetup(false);
+
+        // re-enable auto-compaction after gossip is settled, so correct disk boundaries are used
+        for (Keyspace keyspace : Keyspace.all())
+        {
+            for (ColumnFamilyStore cfs : keyspace.getColumnFamilyStores())
+            {
+                for (final ColumnFamilyStore store : cfs.concatWithIndexes())
+                {
+                    store.reload(); //reload CFs in case there was a change of disk boundaries
+                    if (store.getCompactionStrategyManager().shouldBeEnabled())
+                    {
+                        if (DatabaseDescriptor.getAutocompactionOnStartupEnabled())
+                        {
+                            store.enableAutoCompaction();
+                        }
+                        else
+                        {
+                            logger.info(""Not enabling compaction for {}.{}; autocompaction_on_startup_enabled is set to false"", store.keyspace.getName(), store.name);
+                        }
+                    }
+                }
+            }
+        }
+
+        AuditLogManager.instance.initialize();
+
+        // schedule periodic background compaction task submission. this is simply a backstop against compactions stalling
+        // due to scheduling errors or race conditions
+        ScheduledExecutors.optionalTasks.scheduleWithFixedDelay(ColumnFamilyStore.getBackgroundCompactionTaskSubmitter(), 5, 1, TimeUnit.MINUTES);
+
+        // schedule periodic recomputation of speculative retry thresholds
+        ScheduledExecutors.optionalTasks.scheduleWithFixedDelay(SPECULATION_THRESHOLD_UPDATER, 
+                                                                DatabaseDescriptor.getReadRpcTimeout(NANOSECONDS),
+                                                                DatabaseDescriptor.getReadRpcTimeout(NANOSECONDS),
+                                                                NANOSECONDS);
+
+        initializeClientTransports();
+
+        completeSetup();
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getWindowsTimerInterval(),windows_timer_interval,(M)org.apache.cassandra.config.CassandraRelevantProperties:getString(),getString,CassandraRelevantProperties,../data/xml/cassandra_call_methods/CassandraRelevantProperties.xml,"/**
+     * Gets the value of the indicated system property.
+     * @return system property value if it exists, defaultValue otherwise.
+     */
+public String getString()
+    {
+        String value = System.getProperty(key);
+
+        return value == null ? defaultVal : STRING_CONVERTER.convert(value);
+    }
+
+    
+/**
+     * Gets the value of a system property as a String.
+     * @return system property String value if it exists, overrideDefaultValue otherwise.
+     */
+public String getString(String overrideDefaultValue)
+    {
+        String value = System.getProperty(key);
+        if (value == null)
+            return overrideDefaultValue;
+
+        return STRING_CONVERTER.convert(value);
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getWindowsTimerInterval(),windows_timer_interval,(M)org.apache.cassandra.service.CassandraDaemon:start(),start,CassandraDaemon,../data/xml/cassandra_call_methods/CassandraDaemon.xml,"/**
+     * Start the Cassandra Daemon, assuming that it has already been
+     * initialized via {@link #init(String[])}
+     *
+     * Hook for JSVC
+     */
+public void start()
+    {
+        StartupClusterConnectivityChecker connectivityChecker = StartupClusterConnectivityChecker.create(DatabaseDescriptor.getBlockForPeersTimeoutInSeconds(),
+                                                                                                         DatabaseDescriptor.getBlockForPeersInRemoteDatacenters());
+        connectivityChecker.execute(Gossiper.instance.getEndpoints(), DatabaseDescriptor.getEndpointSnitch()::getDatacenter);
+
+        // check to see if transports may start else return without starting.  This is needed when in survey mode or
+        // when bootstrap has not completed.
+        try
+        {
+            validateTransportsCanStart();
+        }
+        catch (IllegalStateException isx)
+        {
+            // If there are any errors, we just log and return in this case
+            logger.warn(isx.getMessage());
+            return;
+        }
+
+        startClientTransports();
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getWindowsTimerInterval(),windows_timer_interval,(M)org.apache.cassandra.service.StorageService:drain(boolean),drain,StorageService,../data/xml/cassandra_call_methods/StorageService.xml,"/**
+     * Shuts node off to writes, empties memtables and the commit log.
+     */
+public synchronized void drain() throws IOException, InterruptedException, ExecutionException
+    {
+        drain(false);
+    }
+
+    
+
+protected synchronized void drain(boolean isFinalShutdown) throws IOException, InterruptedException, ExecutionException
+    {
+        if (Stage.areMutationExecutorsTerminated())
+        {
+            if (!isFinalShutdown)
+                logger.warn(""Cannot drain node (did it already happen?)"");
+            return;
+        }
+
+        assert !isShutdown;
+        isShutdown = true;
+
+        Throwable preShutdownHookThrowable = Throwables.perform(null, preShutdownHooks.stream().map(h -> h::run));
+        if (preShutdownHookThrowable != null)
+            logger.error(""Attempting to continue draining after pre-shutdown hooks returned exception"", preShutdownHookThrowable);
+
+        try
+        {
+            setMode(Mode.DRAINING, ""starting drain process"", !isFinalShutdown);
+
+            try
+            {
+                /* not clear this is reasonable time, but propagated from prior embedded behaviour */
+                BatchlogManager.instance.shutdownAndWait(1L, MINUTES);
+            }
+            catch (TimeoutException t)
+            {
+                logger.error(""Batchlog manager timed out shutting down"", t);
+            }
+
+            HintsService.instance.pauseDispatch();
+
+            if (daemon != null)
+                shutdownClientServers();
+            ScheduledExecutors.optionalTasks.shutdown();
+            Gossiper.instance.stop();
+            ActiveRepairService.instance.stop();
+
+            if (!isFinalShutdown)
+                setMode(Mode.DRAINING, ""shutting down MessageService"", false);
+
+            // In-progress writes originating here could generate hints to be written,
+            // which is currently scheduled on the mutation stage. So shut down MessagingService
+            // before mutation stage, so we can get all the hints saved before shutting down.
+            try
+            {
+                MessagingService.instance().shutdown();
+            }
+            catch (Throwable t)
+            {
+                // prevent messaging service timing out shutdown from aborting
+                // drain process; otherwise drain and/or shutdown might throw
+                logger.error(""Messaging service timed out shutting down"", t);
+            }
+
+            if (!isFinalShutdown)
+                setMode(Mode.DRAINING, ""clearing mutation stage"", false);
+            Stage.shutdownAndAwaitMutatingExecutors(false,
+                                                    DRAIN_EXECUTOR_TIMEOUT_MS.getInt(), TimeUnit.MILLISECONDS);
+
+            StorageProxy.instance.verifyNoHintsInProgress();
+
+            if (!isFinalShutdown)
+                setMode(Mode.DRAINING, ""flushing column families"", false);
+
+            // we don't want to start any new compactions while we are draining
+            disableAutoCompaction();
+
+            // count CFs first, since forceFlush could block for the flushWriter to get a queue slot empty
+            totalCFs = 0;
+            for (Keyspace keyspace : Keyspace.nonSystem())
+                totalCFs += keyspace.getColumnFamilyStores().size();
+            remainingCFs = totalCFs;
+            // flush
+            List<Future<?>> flushes = new ArrayList<>();
+            for (Keyspace keyspace : Keyspace.nonSystem())
+            {
+                for (ColumnFamilyStore cfs : keyspace.getColumnFamilyStores())
+                    flushes.add(cfs.forceFlush());
+            }
+            // wait for the flushes.
+            // TODO this is a godawful way to track progress, since they flush in parallel.  a long one could
+            // thus make several short ones ""instant"" if we wait for them later.
+            for (Future f : flushes)
+            {
+                try
+                {
+                    FBUtilities.waitOnFuture(f);
+                }
+                catch (Throwable t)
+                {
+                    JVMStabilityInspector.inspectThrowable(t);
+                    // don't let this stop us from shutting down the commitlog and other thread pools
+                    logger.warn(""Caught exception while waiting for memtable flushes during shutdown hook"", t);
+                }
+
+                remainingCFs--;
+            }
+
+            // Interrupt ongoing compactions and shutdown CM to prevent further compactions.
+            CompactionManager.instance.forceShutdown();
+            // Flush the system tables after all other tables are flushed, just in case flushing modifies any system state
+            // like CASSANDRA-5151. Don't bother with progress tracking since system data is tiny.
+            // Flush system tables after stopping compactions since they modify
+            // system tables (for example compactions can obsolete sstables and the tidiers in SSTableReader update
+            // system tables, see SSTableReader.GlobalTidy)
+            flushes.clear();
+            for (Keyspace keyspace : Keyspace.system())
+            {
+                for (ColumnFamilyStore cfs : keyspace.getColumnFamilyStores())
+                    flushes.add(cfs.forceFlush());
+            }
+            FBUtilities.waitOnFutures(flushes);
+
+            HintsService.instance.shutdownBlocking();
+
+            // Interrupt ongoing compactions and shutdown CM to prevent further compactions.
+            CompactionManager.instance.forceShutdown();
+
+            // whilst we've flushed all the CFs, which will have recycled all completed segments, we want to ensure
+            // there are no segments to replay, so we force the recycling of any remaining (should be at most one)
+            CommitLog.instance.forceRecycleAllSegments();
+
+            CommitLog.instance.shutdownBlocking();
+
+            // wait for miscellaneous tasks like sstable and commitlog segment deletion
+            ScheduledExecutors.nonPeriodicTasks.shutdown();
+            if (!ScheduledExecutors.nonPeriodicTasks.awaitTermination(1, MINUTES))
+                logger.warn(""Unable to terminate non-periodic tasks within 1 minute."");
+
+            ColumnFamilyStore.shutdownPostFlushExecutor();
+            setMode(Mode.DRAINED, !isFinalShutdown);
+        }
+        catch (Throwable t)
+        {
+            logger.error(""Caught an exception while draining "", t);
+        }
+        finally
+        {
+            Throwable postShutdownHookThrowable = Throwables.perform(null, postShutdownHooks.stream().map(h -> h::run));
+            if (postShutdownHookThrowable != null)
+                logger.error(""Post-shutdown hooks returned exception"", postShutdownHookThrowable);
+        }
+    }
+
+    "
+org.apache.cassandra.config.DatabaseDescriptor:getWindowsTimerInterval(),windows_timer_interval,(S)org.apache.cassandra.utils.WindowsTimer:endTimerPeriod(int),endTimerPeriod,WindowsTimer,../data/xml/cassandra_call_methods/WindowsTimer.xml,"
+public static void endTimerPeriod(int period)
+    {
+        if (period == 0)
+            return;
+        assert(period > 0);
+        if (timeEndPeriod(period) != 0)
+            logger.warn(""Failed to end accelerated timer period. System timer will remain set to: {} ms."", period);
+    }
+}"
+org.apache.cassandra.config.DatabaseDescriptor:getWindowsTimerInterval(),windows_timer_interval,(S)org.apache.cassandra.utils.logging.LoggingSupportFactory:getLoggingSupport(),getLoggingSupport,LoggingSupportFactory,../data/xml/cassandra_call_methods/LoggingSupportFactory.xml,"/**
+     * @return An appropriate {@link LoggingSupport} implementation according to the used slf4j binding.
+     */
+public static LoggingSupport getLoggingSupport()
+    {
+        if (loggingSupport == null)
+        {
+            // unfortunately, this is the best way to determine if logback is being used for logger
+            String loggerFactoryClass = LoggerFactory.getILoggerFactory().getClass().getName();
+            if (loggerFactoryClass.contains(""logback""))
+            {
+                loggingSupport = FBUtilities.instanceOrConstruct(""org.apache.cassandra.utils.logging.LogbackLoggingSupport"", ""LogbackLoggingSupport"");
+            }
+            else
+            {
+                loggingSupport = new NoOpFallbackLoggingSupport();
+                logger.warn(""You are using Cassandra with an unsupported deployment. The intended logging implementation library logback is not used by slf4j. Detected slf4j logger factory: {}. ""
+                            + ""You will not be able to dynamically manage log levels via JMX and may have performance or other issues."", loggerFactoryClass);
+            }
+        }
+        return loggingSupport;
+    }
+}"
+org.apache.cassandra.config.DatabaseDescriptor:getWindowsTimerInterval(),windows_timer_interval,(I)org.apache.cassandra.utils.logging.LoggingSupport:onShutdown(),onShutdown,LoggingSupport,../data/xml/cassandra_call_methods/LoggingSupport.xml,"/**
+     * Hook used to execute logging implementation specific customization at Cassandra shutdown time.
+     */
+default void onShutdown() {}
+
+    "

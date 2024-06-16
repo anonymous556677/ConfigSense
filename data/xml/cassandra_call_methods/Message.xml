@@ -1,0 +1,474 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/transport/Message.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>reflect</name><operator>.</operator><name>Field</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>reflect</name><operator>.</operator><name>Modifier</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>nio</name><operator>.</operator><name>ByteBuffer</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>EnumSet</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>List</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Map</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>UUID</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>buffer</name><operator>.</operator><name>ByteBuf</name></name>;</import>
+<import>import <name><name>io</name><operator>.</operator><name>netty</name><operator>.</operator><name>channel</name><operator>.</operator><name>*</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>StorageService</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>tracing</name><operator>.</operator><name>Tracing</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>transport</name><operator>.</operator><name>messages</name><operator>.</operator><name>*</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>QueryState</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>UUIDGen</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * A message from the CQL binary protocol.
+ */</comment>
+<class><specifier>public</specifier> <specifier>abstract</specifier> class <name>Message</name>
+<block>{
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>Message</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <interface><specifier>public</specifier> interface <name><name>Codec</name><parameter_list>&lt;<parameter><name>M</name> <extends>extends <name>Message</name></extends></parameter>&gt;</parameter_list></name> <super_list><extends>extends <super><name><name>CBCodec</name><argument_list type="generic">&lt;<argument><name>M</name></argument>&gt;</argument_list></name></super></extends></super_list> <block>{}</block></interface>
+
+    <enum><specifier>public</specifier> enum <name>Direction</name>
+    <block>{
+        <decl><name>REQUEST</name></decl>, <decl><name>RESPONSE</name></decl>;
+
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>Direction</name></type> <name>extractFromVersion</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>versionWithDirection</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><ternary><condition><expr><operator>(</operator><name>versionWithDirection</name> <operator>&amp;</operator> <literal type="number">0x80</literal><operator>)</operator> <operator>==</operator> <literal type="number">0</literal></expr> ?</condition><then> <expr><name>REQUEST</name></expr> </then><else>: <expr><name>RESPONSE</name></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>int</name></type> <name>addToVersion</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>rawVersion</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><ternary><condition><expr><name>this</name> <operator>==</operator> <name>REQUEST</name></expr> ?</condition><then> <expr><operator>(</operator><name>rawVersion</name> <operator>&amp;</operator> <literal type="number">0x7F</literal><operator>)</operator></expr> </then><else>: <expr><operator>(</operator><name>rawVersion</name> <operator>|</operator> <literal type="number">0x80</literal><operator>)</operator></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+    }</block></enum>
+
+    <enum><specifier>public</specifier> enum <name>Type</name>
+    <block>{
+        <decl><name>ERROR</name>          <argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>,  <argument><expr><name><name>Direction</name><operator>.</operator><name>RESPONSE</name></name></expr></argument>, <argument><expr><name><name>ErrorMessage</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>STARTUP</name>        <argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>,  <argument><expr><name><name>Direction</name><operator>.</operator><name>REQUEST</name></name></expr></argument>,  <argument><expr><name><name>StartupMessage</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>READY</name>          <argument_list>(<argument><expr><literal type="number">2</literal></expr></argument>,  <argument><expr><name><name>Direction</name><operator>.</operator><name>RESPONSE</name></name></expr></argument>, <argument><expr><name><name>ReadyMessage</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>AUTHENTICATE</name>   <argument_list>(<argument><expr><literal type="number">3</literal></expr></argument>,  <argument><expr><name><name>Direction</name><operator>.</operator><name>RESPONSE</name></name></expr></argument>, <argument><expr><name><name>AuthenticateMessage</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>CREDENTIALS</name>    <argument_list>(<argument><expr><literal type="number">4</literal></expr></argument>,  <argument><expr><name><name>Direction</name><operator>.</operator><name>REQUEST</name></name></expr></argument>,  <argument><expr><name><name>UnsupportedMessageCodec</name><operator>.</operator><name>instance</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>OPTIONS</name>        <argument_list>(<argument><expr><literal type="number">5</literal></expr></argument>,  <argument><expr><name><name>Direction</name><operator>.</operator><name>REQUEST</name></name></expr></argument>,  <argument><expr><name><name>OptionsMessage</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>SUPPORTED</name>      <argument_list>(<argument><expr><literal type="number">6</literal></expr></argument>,  <argument><expr><name><name>Direction</name><operator>.</operator><name>RESPONSE</name></name></expr></argument>, <argument><expr><name><name>SupportedMessage</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>QUERY</name>          <argument_list>(<argument><expr><literal type="number">7</literal></expr></argument>,  <argument><expr><name><name>Direction</name><operator>.</operator><name>REQUEST</name></name></expr></argument>,  <argument><expr><name><name>QueryMessage</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>RESULT</name>         <argument_list>(<argument><expr><literal type="number">8</literal></expr></argument>,  <argument><expr><name><name>Direction</name><operator>.</operator><name>RESPONSE</name></name></expr></argument>, <argument><expr><name><name>ResultMessage</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>PREPARE</name>        <argument_list>(<argument><expr><literal type="number">9</literal></expr></argument>,  <argument><expr><name><name>Direction</name><operator>.</operator><name>REQUEST</name></name></expr></argument>,  <argument><expr><name><name>PrepareMessage</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>EXECUTE</name>        <argument_list>(<argument><expr><literal type="number">10</literal></expr></argument>, <argument><expr><name><name>Direction</name><operator>.</operator><name>REQUEST</name></name></expr></argument>,  <argument><expr><name><name>ExecuteMessage</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>REGISTER</name>       <argument_list>(<argument><expr><literal type="number">11</literal></expr></argument>, <argument><expr><name><name>Direction</name><operator>.</operator><name>REQUEST</name></name></expr></argument>,  <argument><expr><name><name>RegisterMessage</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>EVENT</name>          <argument_list>(<argument><expr><literal type="number">12</literal></expr></argument>, <argument><expr><name><name>Direction</name><operator>.</operator><name>RESPONSE</name></name></expr></argument>, <argument><expr><name><name>EventMessage</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>BATCH</name>          <argument_list>(<argument><expr><literal type="number">13</literal></expr></argument>, <argument><expr><name><name>Direction</name><operator>.</operator><name>REQUEST</name></name></expr></argument>,  <argument><expr><name><name>BatchMessage</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>AUTH_CHALLENGE</name> <argument_list>(<argument><expr><literal type="number">14</literal></expr></argument>, <argument><expr><name><name>Direction</name><operator>.</operator><name>RESPONSE</name></name></expr></argument>, <argument><expr><name><name>AuthChallenge</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>AUTH_RESPONSE</name>  <argument_list>(<argument><expr><literal type="number">15</literal></expr></argument>, <argument><expr><name><name>Direction</name><operator>.</operator><name>REQUEST</name></name></expr></argument>,  <argument><expr><name><name>AuthResponse</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>,
+        <decl><name>AUTH_SUCCESS</name>   <argument_list>(<argument><expr><literal type="number">16</literal></expr></argument>, <argument><expr><name><name>Direction</name><operator>.</operator><name>RESPONSE</name></name></expr></argument>, <argument><expr><name><name>AuthSuccess</name><operator>.</operator><name>codec</name></name></expr></argument>)</argument_list></decl>;
+
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>int</name></type> <name>opcode</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>Direction</name></type> <name>direction</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name><name>Codec</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>codec</name></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>Type</name><index>[]</index></name></type> <name>opcodeIdx</name></decl>;</decl_stmt>
+        <static>static
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>maxOpcode</name> <init>= <expr><operator>-</operator><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+            <for>for <control>(<init><decl><type><name>Type</name></type> <name>type</name> <range>: <expr><call><name><name>Type</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                <expr_stmt><expr><name>maxOpcode</name> <operator>=</operator> <call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><name>maxOpcode</name></expr></argument>, <argument><expr><name><name>type</name><operator>.</operator><name>opcode</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            <expr_stmt><expr><name>opcodeIdx</name> <operator>=</operator> <operator>new</operator> <name><name>Type</name><index>[<expr><name>maxOpcode</name> <operator>+</operator> <literal type="number">1</literal></expr>]</index></name></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name>Type</name></type> <name>type</name> <range>: <expr><call><name><name>Type</name><operator>.</operator><name>values</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name><name>opcodeIdx</name><index>[<expr><name><name>type</name><operator>.</operator><name>opcode</name></name></expr>]</index></name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"Duplicate opcode"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+                <expr_stmt><expr><name><name>opcodeIdx</name><index>[<expr><name><name>type</name><operator>.</operator><name>opcode</name></name></expr>]</index></name> <operator>=</operator> <name>type</name></expr>;</expr_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></static>
+
+        <constructor><name>Type</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>opcode</name></decl></parameter>, <parameter><decl><type><name>Direction</name></type> <name>direction</name></decl></parameter>, <parameter><decl><type><name><name>Codec</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>codec</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>opcode</name></name> <operator>=</operator> <name>opcode</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>direction</name></name> <operator>=</operator> <name>direction</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>codec</name></name> <operator>=</operator> <name>codec</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <specifier>static</specifier> <name>Type</name></type> <name>fromOpcode</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>opcode</name></decl></parameter>, <parameter><decl><type><name>Direction</name></type> <name>direction</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>opcode</name> <operator>&gt;=</operator> <name><name>opcodeIdx</name><operator>.</operator><name>length</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>ProtocolException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Unknown opcode %d"</literal></expr></argument>, <argument><expr><name>opcode</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+            <decl_stmt><decl><type><name>Type</name></type> <name>t</name> <init>= <expr><name><name>opcodeIdx</name><index>[<expr><name>opcode</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>t</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>ProtocolException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Unknown opcode %d"</literal></expr></argument>, <argument><expr><name>opcode</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+            <if_stmt><if>if <condition>(<expr><name><name>t</name><operator>.</operator><name>direction</name></name> <operator>!=</operator> <name>direction</name></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>ProtocolException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Wrong protocol direction (expected %s, got %s) for opcode %d (%s)"</literal></expr></argument>,
+                                                          <argument><expr><name><name>t</name><operator>.</operator><name>direction</name></name></expr></argument>,
+                                                          <argument><expr><name>direction</name></expr></argument>,
+                                                          <argument><expr><name>opcode</name></expr></argument>,
+                                                          <argument><expr><name>t</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+            <return>return <expr><name>t</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><annotation>@<name>VisibleForTesting</name></annotation>
+        <type><specifier>public</specifier> <name><name>Codec</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>unsafeSetCodec</name><parameter_list>(<parameter><decl><type><name><name>Codec</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>codec</name></decl></parameter>)</parameter_list> <throws>throws <argument><expr><name>NoSuchFieldException</name></expr></argument>, <argument><expr><name>IllegalAccessException</name></expr></argument></throws>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Codec</name><argument_list type="generic">&lt;<argument><name>?</name></argument>&gt;</argument_list></name></type> <name>original</name> <init>= <expr><name><name>this</name><operator>.</operator><name>codec</name></name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Field</name></type> <name>field</name> <init>= <expr><call><name><name>Type</name><operator>.</operator><name><name>class</name><operator>.</operator><name>getDeclaredField</name></name></name><argument_list>(<argument><expr><literal type="string">"codec"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>field</name><operator>.</operator><name>setAccessible</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>Field</name></type> <name>modifiers</name> <init>= <expr><call><name><name>Field</name><operator>.</operator><name><name>class</name><operator>.</operator><name>getDeclaredField</name></name></name><argument_list>(<argument><expr><literal type="string">"modifiers"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>modifiers</name><operator>.</operator><name>setAccessible</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>modifiers</name><operator>.</operator><name>setInt</name></name><argument_list>(<argument><expr><name>field</name></expr></argument>, <argument><expr><call><name><name>field</name><operator>.</operator><name>getModifiers</name></name><argument_list>()</argument_list></call> <operator>&amp;</operator> <operator>~</operator><name><name>Modifier</name><operator>.</operator><name>FINAL</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>field</name><operator>.</operator><name>set</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>codec</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name>original</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></enum>
+
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>final</specifier> <name>Type</name></type> <name>type</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>Connection</name></type> <name>connection</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>streamId</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Envelope</name></type> <name>source</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>customPayload</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>ProtocolVersion</name></type> <name>forcedProtocolVersion</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+
+    <constructor><specifier>protected</specifier> <name>Message</name><parameter_list>(<parameter><decl><type><name>Type</name></type> <name>type</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>type</name></name> <operator>=</operator> <name>type</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>attach</name><parameter_list>(<parameter><decl><type><name>Connection</name></type> <name>connection</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>connection</name></name> <operator>=</operator> <name>connection</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Connection</name></type> <name>connection</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>connection</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Message</name></type> <name>setStreamId</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>streamId</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>streamId</name></name> <operator>=</operator> <name>streamId</name></expr>;</expr_stmt>
+        <return>return <expr><name>this</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getStreamId</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>streamId</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setSource</name><parameter_list>(<parameter><decl><type><name>Envelope</name></type> <name>source</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>source</name></name> <operator>=</operator> <name>source</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>Envelope</name></type> <name>getSource</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>source</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>getCustomPayload</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>customPayload</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setCustomPayload</name><parameter_list>(<parameter><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>customPayload</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>customPayload</name></name> <operator>=</operator> <name>customPayload</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>debugString</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"(%s:%s:%s)"</literal></expr></argument>, <argument><expr><name>type</name></expr></argument>, <argument><expr><name>streamId</name></expr></argument>, <argument><expr><ternary><condition><expr><name>connection</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="string">"null"</literal></expr> </then><else>:  <expr><call><name><name>connection</name><operator>.</operator><name>getVersion</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>asInt</name><argument_list>()</argument_list></call></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> <specifier>abstract</specifier> class <name>Request</name> <super_list><extends>extends <super><name>Message</name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>tracingRequested</name></decl>;</decl_stmt>
+
+        <constructor><specifier>protected</specifier> <name>Request</name><parameter_list>(<parameter><decl><type><name>Type</name></type> <name>type</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>type</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name><name>type</name><operator>.</operator><name>direction</name></name> <operator>!=</operator> <name><name>Direction</name><operator>.</operator><name>REQUEST</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>()</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>protected</specifier> <name>boolean</name></type> <name>isTraceable</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function_decl><type><specifier>protected</specifier> <specifier>abstract</specifier> <name>Response</name></type> <name>execute</name><parameter_list>(<parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>traceRequest</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <function><type><specifier>public</specifier> <specifier>final</specifier> <name>Response</name></type> <name>execute</name><parameter_list>(<parameter><decl><type><name>QueryState</name></type> <name>queryState</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>shouldTrace</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>UUID</name></type> <name>tracingSessionId</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name>isTraceable</name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name>isTracingRequested</name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>shouldTrace</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>tracingSessionId</name> <operator>=</operator> <call><name><name>UUIDGen</name><operator>.</operator><name>getTimeUUID</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>instance</name><operator>.</operator><name>newSession</name></name><argument_list>(<argument><expr><name>tracingSessionId</name></expr></argument>, <argument><expr><call><name>getCustomPayload</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <if type="elseif">else if <condition>(<expr><call><name><name>StorageService</name><operator>.</operator><name>instance</name><operator>.</operator><name>shouldTraceProbablistically</name></name><argument_list>()</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><name>shouldTrace</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>instance</name><operator>.</operator><name>newSession</name></name><argument_list>(<argument><expr><call><name>getCustomPayload</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>Response</name></type> <name>response</name></decl>;</decl_stmt>
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><name>response</name> <operator>=</operator> <call><name>execute</name><argument_list>(<argument><expr><name>queryState</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>, <argument><expr><name>shouldTrace</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <finally>finally
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name>shouldTrace</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>instance</name><operator>.</operator><name>stopSession</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></finally></try>
+
+            <if_stmt><if>if <condition>(<expr><call><name>isTraceable</name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <call><name>isTracingRequested</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>response</name><operator>.</operator><name>setTracingId</name></name><argument_list>(<argument><expr><name>tracingSessionId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <return>return <expr><name>response</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>void</name></type> <name>setTracingRequested</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name>tracingRequested</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><name>boolean</name></type> <name>isTracingRequested</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>tracingRequested</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <class><specifier>public</specifier> <specifier>static</specifier> <specifier>abstract</specifier> class <name>Response</name> <super_list><extends>extends <super><name>Message</name></super></extends></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>protected</specifier> <name>UUID</name></type> <name>tracingId</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>protected</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>warnings</name></decl>;</decl_stmt>
+
+        <constructor><specifier>protected</specifier> <name>Response</name><parameter_list>(<parameter><decl><type><name>Type</name></type> <name>type</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>type</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name><name>type</name><operator>.</operator><name>direction</name></name> <operator>!=</operator> <name><name>Direction</name><operator>.</operator><name>RESPONSE</name></name></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>IllegalArgumentException</name><argument_list>()</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><name>Message</name></type> <name>setTracingId</name><parameter_list>(<parameter><decl><type><name>UUID</name></type> <name>tracingId</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>tracingId</name></name> <operator>=</operator> <name>tracingId</name></expr>;</expr_stmt>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><name>UUID</name></type> <name>getTracingId</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>tracingId</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Message</name></type> <name>setWarnings</name><parameter_list>(<parameter><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>warnings</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>warnings</name></name> <operator>=</operator> <name>warnings</name></expr>;</expr_stmt>
+            <return>return <expr><name>this</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>getWarnings</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>warnings</name></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>public</specifier> <name>Envelope</name></type> <name>encode</name><parameter_list>(<parameter><decl><type><name>ProtocolVersion</name></type> <name>version</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name><name>EnumSet</name><argument_list type="generic">&lt;<argument><name><name>Envelope</name><operator>.</operator><name>Header</name><operator>.</operator><name>Flag</name></name></argument>&gt;</argument_list></name></type> <name>flags</name> <init>= <expr><call><name><name>EnumSet</name><operator>.</operator><name>noneOf</name></name><argument_list>(<argument><expr><name><name>Envelope</name><operator>.</operator><name>Header</name><operator>.</operator><name>Flag</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"unchecked"</literal></expr></argument>)</argument_list></annotation>
+        <type><name><name>Codec</name><argument_list type="generic">&lt;<argument><name>Message</name></argument>&gt;</argument_list></name></type> <name>codec</name> <init>= <expr><operator>(</operator><name><name>Codec</name><argument_list type="generic">&lt;<argument><name>Message</name></argument>&gt;</argument_list></name><operator>)</operator><name><name>this</name><operator>.</operator><name>type</name><operator>.</operator><name>codec</name></name></expr></init></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>int</name></type> <name>messageSize</name> <init>= <expr><call><name><name>codec</name><operator>.</operator><name>encodedSize</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>ByteBuf</name></type> <name>body</name></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>this</name> <operator>instanceof</operator> <name>Response</name></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>Response</name></type> <name>message</name> <init>= <expr><operator>(</operator><name>Response</name><operator>)</operator><name>this</name></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>UUID</name></type> <name>tracingId</name> <init>= <expr><call><name><name>message</name><operator>.</operator><name>getTracingId</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>customPayload</name> <init>= <expr><call><name><name>message</name><operator>.</operator><name>getCustomPayload</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>tracingId</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>messageSize</name> <operator>+=</operator> <call><name><name>CBUtil</name><operator>.</operator><name>sizeOfUUID</name></name><argument_list>(<argument><expr><name>tracingId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>warnings</name> <init>= <expr><call><name><name>message</name><operator>.</operator><name>getWarnings</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>warnings</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>version</name><operator>.</operator><name>isSmallerThan</name></name><argument_list>(<argument><expr><name><name>ProtocolVersion</name><operator>.</operator><name>V4</name></name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <throw>throw <expr><operator>new</operator> <call><name>ProtocolException</name><argument_list>(<argument><expr><literal type="string">"Must not send frame with WARNING flag for native protocol version &lt; 4"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+                    <expr_stmt><expr><name>messageSize</name> <operator>+=</operator> <call><name><name>CBUtil</name><operator>.</operator><name>sizeOfStringList</name></name><argument_list>(<argument><expr><name>warnings</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><name>customPayload</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>version</name><operator>.</operator><name>isSmallerThan</name></name><argument_list>(<argument><expr><name><name>ProtocolVersion</name><operator>.</operator><name>V4</name></name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                        <throw>throw <expr><operator>new</operator> <call><name>ProtocolException</name><argument_list>(<argument><expr><literal type="string">"Must not send frame with CUSTOM_PAYLOAD flag for native protocol version &lt; 4"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+                    <expr_stmt><expr><name>messageSize</name> <operator>+=</operator> <call><name><name>CBUtil</name><operator>.</operator><name>sizeOfBytesMap</name></name><argument_list>(<argument><expr><name>customPayload</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <expr_stmt><expr><name>body</name> <operator>=</operator> <call><name><name>CBUtil</name><operator>.</operator><name>allocator</name><operator>.</operator><name>buffer</name></name><argument_list>(<argument><expr><name>messageSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>tracingId</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>CBUtil</name><operator>.</operator><name>writeUUID</name></name><argument_list>(<argument><expr><name>tracingId</name></expr></argument>, <argument><expr><name>body</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>flags</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name><name>Envelope</name><operator>.</operator><name>Header</name><operator>.</operator><name>Flag</name><operator>.</operator><name>TRACING</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><name>warnings</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>CBUtil</name><operator>.</operator><name>writeStringList</name></name><argument_list>(<argument><expr><name>warnings</name></expr></argument>, <argument><expr><name>body</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>flags</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name><name>Envelope</name><operator>.</operator><name>Header</name><operator>.</operator><name>Flag</name><operator>.</operator><name>WARNING</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><name>customPayload</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>CBUtil</name><operator>.</operator><name>writeBytesMap</name></name><argument_list>(<argument><expr><name>customPayload</name></expr></argument>, <argument><expr><name>body</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>flags</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name><name>Envelope</name><operator>.</operator><name>Header</name><operator>.</operator><name>Flag</name><operator>.</operator><name>CUSTOM_PAYLOAD</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <assert>assert <expr><name>this</name> <operator>instanceof</operator> <name>Request</name></expr>;</assert>
+                <if_stmt><if>if <condition>(<expr><operator>(</operator><operator>(</operator><name>Request</name><operator>)</operator><name>this</name><operator>)</operator><operator>.</operator><call><name>isTracingRequested</name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>flags</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name><name>Envelope</name><operator>.</operator><name>Header</name><operator>.</operator><name>Flag</name><operator>.</operator><name>TRACING</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>payload</name> <init>= <expr><call><name>getCustomPayload</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>payload</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><name>messageSize</name> <operator>+=</operator> <call><name><name>CBUtil</name><operator>.</operator><name>sizeOfBytesMap</name></name><argument_list>(<argument><expr><name>payload</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <expr_stmt><expr><name>body</name> <operator>=</operator> <call><name><name>CBUtil</name><operator>.</operator><name>allocator</name><operator>.</operator><name>buffer</name></name><argument_list>(<argument><expr><name>messageSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>payload</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>CBUtil</name><operator>.</operator><name>writeBytesMap</name></name><argument_list>(<argument><expr><name>payload</name></expr></argument>, <argument><expr><name>body</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>flags</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name><name>Envelope</name><operator>.</operator><name>Header</name><operator>.</operator><name>Flag</name><operator>.</operator><name>CUSTOM_PAYLOAD</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></else></if_stmt>
+
+            <try>try
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>codec</name><operator>.</operator><name>encode</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>body</name></expr></argument>, <argument><expr><name>version</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block>
+            <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>e</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>body</name><operator>.</operator><name>release</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                <throw>throw <expr><name>e</name></expr>;</throw>
+            </block_content>}</block></catch></try>
+
+            <comment type="line">// if the driver attempted to connect with a protocol version lower than the minimum supported</comment>
+            <comment type="line">// version, respond with a protocol error message with the correct message header for that version</comment>
+            <decl_stmt><decl><type><name>ProtocolVersion</name></type> <name>responseVersion</name> <init>= <expr><ternary><condition><expr><name>forcedProtocolVersion</name> <operator>==</operator> <literal type="null">null</literal></expr>
+                                              ?</condition><then> <expr><name>version</name></expr>
+                                              </then><else>: <expr><name>forcedProtocolVersion</name></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>responseVersion</name><operator>.</operator><name>isBeta</name></name><argument_list>()</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <expr_stmt><expr><call><name><name>flags</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name><name>Envelope</name><operator>.</operator><name>Header</name><operator>.</operator><name>Flag</name><operator>.</operator><name>USE_BETA</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+            <return>return <expr><call><name><name>Envelope</name><operator>.</operator><name>create</name></name><argument_list>(<argument><expr><name>type</name></expr></argument>, <argument><expr><call><name>getStreamId</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>responseVersion</name></expr></argument>, <argument><expr><name>flags</name></expr></argument>, <argument><expr><name>body</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><call><name><name>ErrorMessage</name><operator>.</operator><name>wrap</name></name><argument_list>(<argument><expr><name>e</name></expr></argument>, <argument><expr><call><name>getStreamId</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <class><specifier>abstract</specifier> <specifier>static</specifier> class <name><name>Decoder</name><parameter_list>&lt;<parameter><name>M</name> <extends>extends <name>Message</name></extends></parameter>&gt;</parameter_list></name>
+    <block>{
+        <function><type><specifier>static</specifier> <name>Message</name></type> <name>decodeMessage</name><parameter_list>(<parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>, <parameter><decl><type><name>Envelope</name></type> <name>inbound</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>isRequest</name> <init>= <expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>type</name><operator>.</operator><name>direction</name></name> <operator>==</operator> <name><name>Direction</name><operator>.</operator><name>REQUEST</name></name></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>isTracing</name> <init>= <expr><call><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>flags</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name><name>Envelope</name><operator>.</operator><name>Header</name><operator>.</operator><name>Flag</name><operator>.</operator><name>TRACING</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>isCustomPayload</name> <init>= <expr><call><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>flags</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name><name>Envelope</name><operator>.</operator><name>Header</name><operator>.</operator><name>Flag</name><operator>.</operator><name>CUSTOM_PAYLOAD</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>hasWarning</name> <init>= <expr><call><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>flags</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name><name>Envelope</name><operator>.</operator><name>Header</name><operator>.</operator><name>Flag</name><operator>.</operator><name>WARNING</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <decl_stmt><decl><type><name>UUID</name></type> <name>tracingId</name> <init>= <expr><ternary><condition><expr><name>isRequest</name> <operator>||</operator> <operator>!</operator><name>isTracing</name></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>CBUtil</name><operator>.</operator><name>readUUID</name></name><argument_list>(<argument><expr><name><name>inbound</name><operator>.</operator><name>body</name></name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>String</name></argument>&gt;</argument_list></name></type> <name>warnings</name> <init>= <expr><ternary><condition><expr><name>isRequest</name> <operator>||</operator> <operator>!</operator><name>hasWarning</name></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>CBUtil</name><operator>.</operator><name>readStringList</name></name><argument_list>(<argument><expr><name><name>inbound</name><operator>.</operator><name>body</name></name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name><name>Map</name><argument_list type="generic">&lt;<argument><name>String</name></argument>, <argument><name>ByteBuffer</name></argument>&gt;</argument_list></name></type> <name>customPayload</name> <init>= <expr><ternary><condition><expr><operator>!</operator><name>isCustomPayload</name></expr> ?</condition><then> <expr><literal type="null">null</literal></expr> </then><else>: <expr><call><name><name>CBUtil</name><operator>.</operator><name>readBytesMap</name></name><argument_list>(<argument><expr><name><name>inbound</name><operator>.</operator><name>body</name></name></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>isCustomPayload</name> <operator>&amp;&amp;</operator> <call><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>version</name><operator>.</operator><name>isSmallerThan</name></name><argument_list>(<argument><expr><name><name>ProtocolVersion</name><operator>.</operator><name>V4</name></name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <throw>throw <expr><operator>new</operator> <call><name>ProtocolException</name><argument_list>(<argument><expr><literal type="string">"Received frame with CUSTOM_PAYLOAD flag for native protocol version &lt; 4"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>Message</name></type> <name>message</name> <init>= <expr><call><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>type</name><operator>.</operator><name>codec</name><operator>.</operator><name>decode</name></name><argument_list>(<argument><expr><name><name>inbound</name><operator>.</operator><name>body</name></name></expr></argument>, <argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>version</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>message</name><operator>.</operator><name>setStreamId</name></name><argument_list>(<argument><expr><name><name>inbound</name><operator>.</operator><name>header</name><operator>.</operator><name>streamId</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>message</name><operator>.</operator><name>setSource</name></name><argument_list>(<argument><expr><name>inbound</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>message</name><operator>.</operator><name>setCustomPayload</name></name><argument_list>(<argument><expr><name>customPayload</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+            <if_stmt><if>if <condition>(<expr><name>isRequest</name></expr>)</condition>
+            <block>{<block_content>
+                <assert>assert <expr><name>message</name> <operator>instanceof</operator> <name>Request</name></expr>;</assert>
+                <decl_stmt><decl><type><name>Request</name></type> <name>req</name> <init>= <expr><operator>(</operator><name>Request</name><operator>)</operator> <name>message</name></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>Connection</name></type> <name>connection</name> <init>= <expr><call><name><name>channel</name><operator>.</operator><name>attr</name></name><argument_list>(<argument><expr><name><name>Connection</name><operator>.</operator><name>attributeKey</name></name></expr></argument>)</argument_list></call><operator>.</operator><call><name>get</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>req</name><operator>.</operator><name>attach</name></name><argument_list>(<argument><expr><name>connection</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <if_stmt><if>if <condition>(<expr><name>isTracing</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>req</name><operator>.</operator><name>setTracingRequested</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <assert>assert <expr><name>message</name> <operator>instanceof</operator> <name>Response</name></expr>;</assert>
+                <if_stmt><if>if <condition>(<expr><name>isTracing</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><operator>(</operator><operator>(</operator><name>Response</name><operator>)</operator> <name>message</name><operator>)</operator><operator>.</operator><call><name>setTracingId</name><argument_list>(<argument><expr><name>tracingId</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+                <if_stmt><if>if <condition>(<expr><name>hasWarning</name></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><operator>(</operator><operator>(</operator><name>Response</name><operator>)</operator> <name>message</name><operator>)</operator><operator>.</operator><call><name>setWarnings</name><argument_list>(<argument><expr><name>warnings</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></else></if_stmt>
+            <return>return <expr><name>message</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function_decl><type><specifier>abstract</specifier> <name>M</name></type> <name>decode</name><parameter_list>(<parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>, <parameter><decl><type><name>Envelope</name></type> <name>inbound</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <class><specifier>private</specifier> <specifier>static</specifier> class <name>RequestDecoder</name> <super_list><extends>extends <super><name><name>Decoder</name><argument_list type="generic">&lt;<argument><name>Request</name></argument>&gt;</argument_list></name></super></extends></super_list>
+        <block>{
+            <function><type><name>Request</name></type> <name>decode</name><parameter_list>(<parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>, <parameter><decl><type><name>Envelope</name></type> <name>request</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name><name>request</name><operator>.</operator><name>header</name><operator>.</operator><name>type</name><operator>.</operator><name>direction</name></name> <operator>!=</operator> <name><name>Direction</name><operator>.</operator><name>REQUEST</name></name></expr>)</condition><block type="pseudo"><block_content>
+                    <throw>throw <expr><operator>new</operator> <call><name>ProtocolException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Unexpected RESPONSE message %s, expecting REQUEST"</literal></expr></argument>,
+                                                              <argument><expr><name><name>request</name><operator>.</operator><name>header</name><operator>.</operator><name>type</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+                <return>return <expr><operator>(</operator><name>Request</name><operator>)</operator> <call><name>decodeMessage</name><argument_list>(<argument><expr><name>channel</name></expr></argument>, <argument><expr><name>request</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></function>
+        }</block></class>
+
+        <class><specifier>private</specifier> <specifier>static</specifier> class <name>ResponseDecoder</name> <super_list><extends>extends <super><name><name>Decoder</name><argument_list type="generic">&lt;<argument><name>Response</name></argument>&gt;</argument_list></name></super></extends></super_list>
+        <block>{
+            <function><type><name>Response</name></type> <name>decode</name><parameter_list>(<parameter><decl><type><name>Channel</name></type> <name>channel</name></decl></parameter>, <parameter><decl><type><name>Envelope</name></type> <name>response</name></decl></parameter>)</parameter_list>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><name><name>response</name><operator>.</operator><name>header</name><operator>.</operator><name>type</name><operator>.</operator><name>direction</name></name> <operator>!=</operator> <name><name>Direction</name><operator>.</operator><name>RESPONSE</name></name></expr>)</condition><block type="pseudo"><block_content>
+                    <throw>throw <expr><operator>new</operator> <call><name>ProtocolException</name><argument_list>(<argument><expr><call><name><name>String</name><operator>.</operator><name>format</name></name><argument_list>(<argument><expr><literal type="string">"Unexpected REQUEST message %s, expecting RESPONSE"</literal></expr></argument>,
+                                                              <argument><expr><name><name>response</name><operator>.</operator><name>header</name><operator>.</operator><name>type</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+                <return>return <expr><operator>(</operator><name>Response</name><operator>)</operator> <call><name>decodeMessage</name><argument_list>(<argument><expr><name>channel</name></expr></argument>, <argument><expr><name>response</name></expr></argument>)</argument_list></call></expr>;</return>
+            </block_content>}</block></function>
+        }</block></class>
+    }</block></class>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>Decoder</name><operator>.</operator><name>RequestDecoder</name></name></type> <name>REQUEST_DECODER</name> <init>= <expr><operator>new</operator> <call><name><name>Decoder</name><operator>.</operator><name>RequestDecoder</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>Decoder</name><operator>.</operator><name>ResponseDecoder</name></name></type> <name>RESPONSE_DECODER</name> <init>= <expr><operator>new</operator> <call><name><name>Decoder</name><operator>.</operator><name>ResponseDecoder</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <function><type><specifier>static</specifier> <name><name>Decoder</name><argument_list type="generic">&lt;<argument><name><name>Message</name><operator>.</operator><name>Request</name></name></argument>&gt;</argument_list></name></type> <name>requestDecoder</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>REQUEST_DECODER</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>static</specifier> <name><name>Decoder</name><argument_list type="generic">&lt;<argument><name><name>Message</name><operator>.</operator><name>Response</name></name></argument>&gt;</argument_list></name></type> <name>responseDecoder</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>RESPONSE_DECODER</name></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

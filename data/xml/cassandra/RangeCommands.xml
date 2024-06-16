@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/service/reads/range/RangeCommands.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name><operator>.</operator><name>reads</name><operator>.</operator><name>range</name></name>;</package>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ColumnFamilyStore</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ConsistencyLevel</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Keyspace</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>PartitionRangeReadCommand</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>partitions</name><operator>.</operator><name>PartitionIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>index</name><operator>.</operator><name>Index</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>tracing</name><operator>.</operator><name>Tracing</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>FBUtilities</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>assertj</name><operator>.</operator><name>core</name><operator>.</operator><name>util</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>RangeCommands</name>
+<block>{
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>RangeCommandIterator</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>double</name></type> <name>CONCURRENT_SUBREQUESTS_MARGIN</name> <init>= <expr><literal type="number">0.10</literal></expr></init></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * Introduce a maximum number of sub-ranges that the coordinator can request in parallel for range queries. Previously
+     * we would request up to the maximum number of ranges but this causes problems if the number of vnodes is large.
+     * By default we pick 10 requests per core, assuming all replicas have the same number of cores. The idea is that we
+     * don't want a burst of range requests that will back up, hurting all other queries. At the same time,
+     * we want to give range queries a chance to run if resources are available.
+     */</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>MAX_CONCURRENT_RANGE_REQUESTS</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><call><name><name>Integer</name><operator>.</operator><name>getInteger</name></name><argument_list>(<argument><expr><literal type="string">"cassandra.max_concurrent_range_requests"</literal></expr></argument>,
+                                                                                            <argument><expr><call><name><name>FBUtilities</name><operator>.</operator><name>getAvailableProcessors</name></name><argument_list>()</argument_list></call> <operator>*</operator> <literal type="number">10</literal></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <function><annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation> <comment type="line">// created iterators will be closed in CQL layer through the chain of transformations</comment>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>PartitionIterator</name></type> <name>partitions</name><parameter_list>(<parameter><decl><type><name>PartitionRangeReadCommand</name></type> <name>command</name></decl></parameter>,
+                                               <parameter><decl><type><name>ConsistencyLevel</name></type> <name>consistencyLevel</name></decl></parameter>,
+                                               <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// Note that in general, a RangeCommandIterator will honor the command limit for each range, but will not enforce it globally.</comment>
+        <decl_stmt><decl><type><name>RangeCommandIterator</name></type> <name>rangeCommands</name> <init>= <expr><call><name>rangeCommandIterator</name><argument_list>(<argument><expr><name>command</name></expr></argument>, <argument><expr><name>consistencyLevel</name></expr></argument>, <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><call><name><name>command</name><operator>.</operator><name>limits</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>filter</name><argument_list>(<argument><expr><call><name><name>command</name><operator>.</operator><name>postReconciliationProcessing</name></name><argument_list>(<argument><expr><name>rangeCommands</name></expr></argument>)</argument_list></call></expr></argument>,
+                                       <argument><expr><call><name><name>command</name><operator>.</operator><name>nowInSec</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                       <argument><expr><call><name><name>command</name><operator>.</operator><name>selectsFullPartition</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                       <argument><expr><call><name><name>command</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>enforceStrictLiveness</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <annotation>@<name>SuppressWarnings</name><argument_list>(<argument><expr><literal type="string">"resource"</literal></expr></argument>)</argument_list></annotation> <comment type="line">// created iterators will be closed in CQL layer through the chain of transformations</comment>
+    <type><specifier>static</specifier> <name>RangeCommandIterator</name></type> <name>rangeCommandIterator</name><parameter_list>(<parameter><decl><type><name>PartitionRangeReadCommand</name></type> <name>command</name></decl></parameter>,
+                                                     <parameter><decl><type><name>ConsistencyLevel</name></type> <name>consistencyLevel</name></decl></parameter>,
+                                                     <parameter><decl><type><name>long</name></type> <name>queryStartNanoTime</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Computing ranges to query"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>Keyspace</name></type> <name>keyspace</name> <init>= <expr><call><name><name>Keyspace</name><operator>.</operator><name>open</name></name><argument_list>(<argument><expr><call><name><name>command</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>keyspace</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>ReplicaPlanIterator</name></type> <name>replicaPlans</name> <init>= <expr><operator>new</operator> <call><name>ReplicaPlanIterator</name><argument_list>(<argument><expr><call><name><name>command</name><operator>.</operator><name>dataRange</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>keyRange</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>keyspace</name></expr></argument>, <argument><expr><name>consistencyLevel</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// our estimate of how many result rows there will be per-range</comment>
+        <decl_stmt><decl><type><name>float</name></type> <name>resultsPerRange</name> <init>= <expr><call><name>estimateResultsPerRange</name><argument_list>(<argument><expr><name>command</name></expr></argument>, <argument><expr><name>keyspace</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <comment type="line">// underestimate how many rows we will get per-range in order to increase the likelihood that we'll</comment>
+        <comment type="line">// fetch enough rows in the first round</comment>
+        <expr_stmt><expr><name>resultsPerRange</name> <operator>-=</operator> <name>resultsPerRange</name> <operator>*</operator> <name>CONCURRENT_SUBREQUESTS_MARGIN</name></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>maxConcurrencyFactor</name> <init>= <expr><call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><call><name><name>replicaPlans</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>MAX_CONCURRENT_RANGE_REQUESTS</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>concurrencyFactor</name> <init>= <expr><ternary><condition><expr><name>resultsPerRange</name> <operator>==</operator> <literal type="number">0.0</literal></expr>
+                                ?</condition><then> <expr><literal type="number">1</literal></expr>
+                                </then><else>: <expr><call><name><name>Math</name><operator>.</operator><name>max</name></name><argument_list>(<argument><expr><literal type="number">1</literal></expr></argument>, <argument><expr><call><name><name>Math</name><operator>.</operator><name>min</name></name><argument_list>(<argument><expr><name>maxConcurrencyFactor</name></expr></argument>, <argument><expr><operator>(</operator><name>int</name><operator>)</operator> <call><name><name>Math</name><operator>.</operator><name>ceil</name></name><argument_list>(<argument><expr><call><name><name>command</name><operator>.</operator><name>limits</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>count</name><argument_list>()</argument_list></call> <operator>/</operator> <name>resultsPerRange</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>logger</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Estimated result rows per range: {}; requested rows: {}, ranges.size(): {}; concurrent range requests: {}"</literal></expr></argument>,
+                     <argument><expr><name>resultsPerRange</name></expr></argument>, <argument><expr><call><name><name>command</name><operator>.</operator><name>limits</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>count</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>replicaPlans</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>concurrencyFactor</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>Tracing</name><operator>.</operator><name>trace</name></name><argument_list>(<argument><expr><literal type="string">"Submitting range requests on {} ranges with a concurrency of {} ({} rows per range expected)"</literal></expr></argument>,
+                      <argument><expr><call><name><name>replicaPlans</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>concurrencyFactor</name></expr></argument>, <argument><expr><name>resultsPerRange</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <decl_stmt><decl><type><name>ReplicaPlanMerger</name></type> <name>mergedReplicaPlans</name> <init>= <expr><operator>new</operator> <call><name>ReplicaPlanMerger</name><argument_list>(<argument><expr><name>replicaPlans</name></expr></argument>, <argument><expr><name>keyspace</name></expr></argument>, <argument><expr><name>consistencyLevel</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <return>return <expr><operator>new</operator> <call><name>RangeCommandIterator</name><argument_list>(<argument><expr><name>mergedReplicaPlans</name></expr></argument>,
+                                        <argument><expr><name>command</name></expr></argument>,
+                                        <argument><expr><name>concurrencyFactor</name></expr></argument>,
+                                        <argument><expr><name>maxConcurrencyFactor</name></expr></argument>,
+                                        <argument><expr><call><name><name>replicaPlans</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                        <argument><expr><name>queryStartNanoTime</name></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Estimate the number of result rows per range in the ring based on our local data.
+     * &lt;p&gt;
+     * This assumes that ranges are uniformly distributed across the cluster and
+     * that the queried data is also uniformly distributed.
+     */</comment>
+    <function><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>static</specifier> <name>float</name></type> <name>estimateResultsPerRange</name><parameter_list>(<parameter><decl><type><name>PartitionRangeReadCommand</name></type> <name>command</name></decl></parameter>, <parameter><decl><type><name>Keyspace</name></type> <name>keyspace</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name> <init>= <expr><call><name><name>keyspace</name><operator>.</operator><name>getColumnFamilyStore</name></name><argument_list>(<argument><expr><call><name><name>command</name><operator>.</operator><name>metadata</name></name><argument_list>()</argument_list></call><operator>.</operator><name>id</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Index</name></type> <name>index</name> <init>= <expr><call><name><name>command</name><operator>.</operator><name>getIndex</name></name><argument_list>(<argument><expr><name>cfs</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>float</name></type> <name>maxExpectedResults</name> <init>= <expr><ternary><condition><expr><name>index</name> <operator>==</operator> <literal type="null">null</literal></expr>
+                                   ?</condition><then> <expr><call><name><name>command</name><operator>.</operator><name>limits</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>estimateTotalResults</name><argument_list>(<argument><expr><name>cfs</name></expr></argument>)</argument_list></call></expr>
+                                   </then><else>: <expr><call><name><name>index</name><operator>.</operator><name>getEstimatedResultRows</name></name><argument_list>()</argument_list></call></expr></else></ternary></expr></init></decl>;</decl_stmt>
+
+        <comment type="line">// adjust maxExpectedResults by the number of tokens this node has and the replication factor for this ks</comment>
+        <return>return <expr><operator>(</operator><name>maxExpectedResults</name> <operator>/</operator> <call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getNumTokens</name></name><argument_list>()</argument_list></call><operator>)</operator>
+               <operator>/</operator> <call><name><name>keyspace</name><operator>.</operator><name>getReplicationStrategy</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getReplicationFactor</name><argument_list>()</argument_list></call><operator>.</operator><name>allReplicas</name></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

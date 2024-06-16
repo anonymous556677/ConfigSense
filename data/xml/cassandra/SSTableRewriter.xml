@@ -1,0 +1,398 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/io/sstable/SSTableRewriter.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>ref</name><operator>.</operator><name>WeakReference</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>*</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>annotations</name><operator>.</operator><name>VisibleForTesting</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cache</name><operator>.</operator><name>InstrumentingCache</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>cache</name><operator>.</operator><name>KeyCacheKey</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ColumnFamilyStore</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>DecoratedKey</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>RowIndexEntry</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>lifecycle</name><operator>.</operator><name>ILifecycleTransaction</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>rows</name><operator>.</operator><name>UnfilteredRowIterator</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>format</name><operator>.</operator><name>SSTableReader</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>format</name><operator>.</operator><name>SSTableWriter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>NativeLibrary</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>Transactional</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ * Wraps one or more writers as output for rewriting one or more readers: every sstable_preemptive_open_interval_in_mb
+ * we look in the summary we're collecting for the latest writer for the penultimate key that we know to have been fully
+ * flushed to the index file, and then double check that the key is fully present in the flushed data file.
+ * Then we move the starts of each reader forwards to that point, replace them in the Tracker, and attach a runnable
+ * for on-close (i.e. when all references expire) that drops the page cache prior to that key position
+ *
+ * hard-links are created for each partially written sstable so that readers opened against them continue to work past
+ * the rename of the temporary file, which is deleted once all readers against the hard-link have been closed.
+ * If for any reason the writer is rolled over, we immediately rename and fully expose the completed file in the Tracker.
+ *
+ * On abort we restore the original lower bounds to the existing readers and delete any temporary files we had in progress,
+ * but leave any hard-links in place for the readers we opened to cleanup when they're finished as we would had we finished
+ * successfully.
+ */</comment>
+<class><specifier>public</specifier> class <name>SSTableRewriter</name> <super_list><extends>extends <super><name><name>Transactional</name><operator>.</operator><name>AbstractTransactional</name></name></super></extends> <implements>implements <super><name>Transactional</name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><annotation>@<name>VisibleForTesting</name></annotation>
+    <type><specifier>public</specifier> <specifier>static</specifier> <name>boolean</name></type> <name>disableEarlyOpeningForTests</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>preemptiveOpenInterval</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>maxAge</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>repairedAt</name> <init>= <expr><operator>-</operator><literal type="number">1</literal></expr></init></decl>;</decl_stmt>
+    <comment type="line">// the set of final readers we will expose on commit</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>ILifecycleTransaction</name></type> <name>transaction</name></decl>;</decl_stmt> <comment type="line">// the readers we are rewriting (updated as they are replaced)</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>preparedForCommit</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>currentlyOpenedEarlyAt</name></decl>;</decl_stmt> <comment type="line">// the position (in MB) in the target file we last (re)opened at</comment>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>SSTableWriter</name></argument>&gt;</argument_list></name></type> <name>writers</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>keepOriginals</name></decl>;</decl_stmt> <comment type="line">// true if we do not want to obsolete the originals</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>boolean</name></type> <name>eagerWriterMetaRelease</name></decl>;</decl_stmt> <comment type="line">// true if the writer metadata should be released when switch is called</comment>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>SSTableWriter</name></type> <name>writer</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name><name>Map</name><argument_list type="generic">&lt;<argument><name>DecoratedKey</name></argument>, <argument><name>RowIndexEntry</name></argument>&gt;</argument_list></name></type> <name>cachedKeys</name> <init>= <expr><operator>new</operator> <call><name><name>HashMap</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+
+    <comment type="line">// for testing (TODO: remove when have byteman setup)</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>throwEarly</name></decl>, <decl><type ref="prev"/><name>throwLate</name></decl>;</decl_stmt>
+
+    <constructor><annotation>@<name>Deprecated</name></annotation>
+    <specifier>public</specifier> <name>SSTableRewriter</name><parameter_list>(<parameter><decl><type><name>ILifecycleTransaction</name></type> <name>transaction</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>maxAge</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>preemptiveOpenInterval</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>keepOriginals</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>this</name><argument_list>(<argument><expr><name>transaction</name></expr></argument>, <argument><expr><name>maxAge</name></expr></argument>, <argument><expr><name>preemptiveOpenInterval</name></expr></argument>, <argument><expr><name>keepOriginals</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <constructor><name>SSTableRewriter</name><parameter_list>(<parameter><decl><type><name>ILifecycleTransaction</name></type> <name>transaction</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>maxAge</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>preemptiveOpenInterval</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>keepOriginals</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>eagerWriterMetaRelease</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>transaction</name></name> <operator>=</operator> <name>transaction</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>maxAge</name></name> <operator>=</operator> <name>maxAge</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>preemptiveOpenInterval</name></name> <operator>=</operator> <name>preemptiveOpenInterval</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>keepOriginals</name></name> <operator>=</operator> <name>keepOriginals</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>eagerWriterMetaRelease</name></name> <operator>=</operator> <name>eagerWriterMetaRelease</name></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SSTableRewriter</name></type> <name>constructKeepingOriginals</name><parameter_list>(<parameter><decl><type><name>ILifecycleTransaction</name></type> <name>transaction</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>keepOriginals</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>maxAge</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>SSTableRewriter</name><argument_list>(<argument><expr><name>transaction</name></expr></argument>, <argument><expr><name>maxAge</name></expr></argument>, <argument><expr><call><name>calculateOpenInterval</name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>keepOriginals</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SSTableRewriter</name></type> <name>constructWithoutEarlyOpening</name><parameter_list>(<parameter><decl><type><name>ILifecycleTransaction</name></type> <name>transaction</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>keepOriginals</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>maxAge</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>SSTableRewriter</name><argument_list>(<argument><expr><name>transaction</name></expr></argument>, <argument><expr><name>maxAge</name></expr></argument>, <argument><expr><call><name>calculateOpenInterval</name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>keepOriginals</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <specifier>static</specifier> <name>SSTableRewriter</name></type> <name>construct</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>, <parameter><decl><type><name>ILifecycleTransaction</name></type> <name>transaction</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>keepOriginals</name></decl></parameter>, <parameter><decl><type><name>long</name></type> <name>maxAge</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><operator>new</operator> <call><name>SSTableRewriter</name><argument_list>(<argument><expr><name>transaction</name></expr></argument>, <argument><expr><name>maxAge</name></expr></argument>, <argument><expr><call><name>calculateOpenInterval</name><argument_list>(<argument><expr><call><name><name>cfs</name><operator>.</operator><name>supportsEarlyOpen</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>keepOriginals</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>long</name></type> <name>calculateOpenInterval</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>shouldOpenEarly</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>interval</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getSSTablePreemptiveOpenIntervalInMB</name></name><argument_list>()</argument_list></call> <operator>*</operator> <operator>(</operator><literal type="number">1L</literal> <operator>&lt;&lt;</operator> <literal type="number">20</literal><operator>)</operator></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>disableEarlyOpeningForTests</name> <operator>||</operator> <operator>!</operator><name>shouldOpenEarly</name> <operator>||</operator> <name>interval</name> <operator>&lt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>interval</name> <operator>=</operator> <name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr>;</expr_stmt></block_content></block></if></if_stmt>
+        <return>return <expr><name>interval</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>SSTableWriter</name></type> <name>currentWriter</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><name>writer</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>RowIndexEntry</name></type> <name>append</name><parameter_list>(<parameter><decl><type><name>UnfilteredRowIterator</name></type> <name>partition</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// we do this before appending to ensure we can resetAndTruncate() safely if the append fails</comment>
+        <decl_stmt><decl><type><name>DecoratedKey</name></type> <name>key</name> <init>= <expr><call><name><name>partition</name><operator>.</operator><name>partitionKey</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name>maybeReopenEarly</name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>RowIndexEntry</name></type> <name>index</name> <init>= <expr><call><name><name>writer</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name>partition</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>shouldMigrateKeycacheOnCompaction</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>transaction</name><operator>.</operator><name>isOffline</name></name><argument_list>()</argument_list></call> <operator>&amp;&amp;</operator> <name>index</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>reader</name> <range>: <expr><call><name><name>transaction</name><operator>.</operator><name>originals</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>reader</name><operator>.</operator><name>getCachedPosition</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><call><name><name>cachedKeys</name><operator>.</operator><name>put</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><name>index</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        <break>break;</break>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></for>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>index</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// attempts to append the row, if fails resets the writer position</comment>
+    <function><type><specifier>public</specifier> <name>RowIndexEntry</name></type> <name>tryAppend</name><parameter_list>(<parameter><decl><type><name>UnfilteredRowIterator</name></type> <name>partition</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>writer</name><operator>.</operator><name>mark</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <try>try
+        <block>{<block_content>
+            <return>return <expr><call><name>append</name><argument_list>(<argument><expr><name>partition</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>t</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>writer</name><operator>.</operator><name>resetAndTruncate</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <throw>throw <expr><name>t</name></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>maybeReopenEarly</name><parameter_list>(<parameter><decl><type><name>DecoratedKey</name></type> <name>key</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>writer</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>currentlyOpenedEarlyAt</name> <operator>&gt;</operator> <name>preemptiveOpenInterval</name></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><call><name><name>transaction</name><operator>.</operator><name>isOffline</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>reader</name> <range>: <expr><call><name><name>transaction</name><operator>.</operator><name>originals</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+                <block>{<block_content>
+                    <decl_stmt><decl><type><name>RowIndexEntry</name></type> <name>index</name> <init>= <expr><call><name><name>reader</name><operator>.</operator><name>getPosition</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>, <argument><expr><name><name>SSTableReader</name><operator>.</operator><name>Operator</name><operator>.</operator><name>GE</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <expr_stmt><expr><call><name><name>NativeLibrary</name><operator>.</operator><name>trySkipCache</name></name><argument_list>(<argument><expr><call><name><name>reader</name><operator>.</operator><name>getFilename</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><literal type="number">0</literal></expr></argument>, <argument><expr><ternary><condition><expr><name>index</name> <operator>==</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><literal type="number">0</literal></expr> </then><else>: <expr><name><name>index</name><operator>.</operator><name>position</name></name></expr></else></ternary></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></for>
+            </block_content>}</block></if>
+            <else>else
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>SSTableReader</name></type> <name>reader</name> <init>= <expr><call><name><name>writer</name><operator>.</operator><name>setMaxDataAge</name></name><argument_list>(<argument><expr><name>maxAge</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>openEarly</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>reader</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>transaction</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><name>currentlyOpenedEarlyAt</name> <operator>=</operator> <call><name><name>writer</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name>moveStarts</name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><name><name>reader</name><operator>.</operator><name>last</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>transaction</name><operator>.</operator><name>checkpoint</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>Throwable</name></type> <name>doAbort</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// abort the writers</comment>
+        <for>for <control>(<init><decl><type><name>SSTableWriter</name></type> <name>writer</name> <range>: <expr><name>writers</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name><name>writer</name><operator>.</operator><name>abort</name></name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+        <comment type="line">// abort the lifecycle transaction</comment>
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name><name>transaction</name><operator>.</operator><name>abort</name></name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>accumulate</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>Throwable</name></type> <name>doCommit</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>accumulate</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <for>for <control>(<init><decl><type><name>SSTableWriter</name></type> <name>writer</name> <range>: <expr><name>writers</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name><name>writer</name><operator>.</operator><name>commit</name></name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+
+        <expr_stmt><expr><name>accumulate</name> <operator>=</operator> <call><name><name>transaction</name><operator>.</operator><name>commit</name></name><argument_list>(<argument><expr><name>accumulate</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>accumulate</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Replace the readers we are rewriting with cloneWithNewStart, reclaiming any page cache that is no longer
+     * needed, and transferring any key cache entries over to the new reader, expiring them from the old. if reset
+     * is true, we are instead restoring the starts of the readers from before the rewriting began
+     *
+     * note that we replace an existing sstable with a new *instance* of the same sstable, the replacement
+     * sstable .equals() the old one, BUT, it is a new instance, so, for example, since we releaseReference() on the old
+     * one, the old *instance* will have reference count == 0 and if we were to start a new compaction with that old
+     * instance, we would get exceptions.
+     *
+     * @param newReader the rewritten reader that replaces them for this region
+     * @param lowerbound if !reset, must be non-null, and marks the exclusive lowerbound of the start for each sstable
+     */</comment>
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>moveStarts</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>newReader</name></decl></parameter>, <parameter><decl><type><name>DecoratedKey</name></type> <name>lowerbound</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><call><name><name>transaction</name><operator>.</operator><name>isOffline</name></name><argument_list>()</argument_list></call> <operator>||</operator> <name>preemptiveOpenInterval</name> <operator>==</operator> <name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr>)</condition><block type="pseudo"><block_content>
+            <return>return;</return></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>newReader</name><operator>.</operator><name>setupOnline</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name><name>List</name><argument_list type="generic">&lt;<argument><name>DecoratedKey</name></argument>&gt;</argument_list></name></type> <name>invalidateKeys</name> <init>= <expr><literal type="null">null</literal></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>cachedKeys</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <expr_stmt><expr><name>invalidateKeys</name> <operator>=</operator> <operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>cachedKeys</name><operator>.</operator><name>size</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <for>for <control>(<init><decl><type><name><name>Map</name><operator>.</operator><name><name>Entry</name><argument_list type="generic">&lt;<argument><name>DecoratedKey</name></argument>, <argument><name>RowIndexEntry</name></argument>&gt;</argument_list></name></name></type> <name>cacheKey</name> <range>: <expr><call><name><name>cachedKeys</name><operator>.</operator><name>entrySet</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>invalidateKeys</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>cacheKey</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>newReader</name><operator>.</operator><name>cacheKey</name></name><argument_list>(<argument><expr><call><name><name>cacheKey</name><operator>.</operator><name>getKey</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>cacheKey</name><operator>.</operator><name>getValue</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>cachedKeys</name><operator>.</operator><name>clear</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>sstable</name> <range>: <expr><call><name><name>transaction</name><operator>.</operator><name>originals</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <comment type="line">// we call getCurrentReplacement() to support multiple rewriters operating over the same source readers at once.</comment>
+            <comment type="line">// note: only one such writer should be written to at any moment</comment>
+            <decl_stmt><decl><type><specifier>final</specifier> <name>SSTableReader</name></type> <name>latest</name> <init>= <expr><call><name><name>transaction</name><operator>.</operator><name>current</name></name><argument_list>(<argument><expr><name>sstable</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+            <comment type="line">// skip any sstables that we know to already be shadowed</comment>
+            <if_stmt><if>if <condition>(<expr><call><name><name>latest</name><operator>.</operator><name>first</name><operator>.</operator><name>compareTo</name></name><argument_list>(<argument><expr><name>lowerbound</name></expr></argument>)</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition><block type="pseudo"><block_content>
+                <continue>continue;</continue></block_content></block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>Runnable</name></type> <name>runOnClose</name> <init>= <expr><ternary><condition><expr><name>invalidateKeys</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><operator>new</operator> <call><name>InvalidateKeys</name><argument_list>(<argument><expr><name>latest</name></expr></argument>, <argument><expr><name>invalidateKeys</name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>lowerbound</name><operator>.</operator><name>compareTo</name></name><argument_list>(<argument><expr><name><name>latest</name><operator>.</operator><name>last</name></name></expr></argument>)</argument_list></call> <operator>&gt;=</operator> <literal type="number">0</literal></expr>)</condition>
+            <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>transaction</name><operator>.</operator><name>isObsolete</name></name><argument_list>(<argument><expr><name>latest</name></expr></argument>)</argument_list></call></expr>)</condition>
+                <block>{<block_content>
+                    <if_stmt><if>if <condition>(<expr><name>runOnClose</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+                    <block>{<block_content>
+                        <expr_stmt><expr><call><name><name>latest</name><operator>.</operator><name>runOnClose</name></name><argument_list>(<argument><expr><name>runOnClose</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                    <expr_stmt><expr><call><name><name>transaction</name><operator>.</operator><name>obsolete</name></name><argument_list>(<argument><expr><name>latest</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if></if_stmt>
+                <continue>continue;</continue>
+            </block_content>}</block></if></if_stmt>
+
+            <decl_stmt><decl><type><name>DecoratedKey</name></type> <name>newStart</name> <init>= <expr><call><name><name>latest</name><operator>.</operator><name>firstKeyBeyond</name></name><argument_list>(<argument><expr><name>lowerbound</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <assert>assert <expr><name>newStart</name> <operator>!=</operator> <literal type="null">null</literal></expr>;</assert>
+            <decl_stmt><decl><type><name>SSTableReader</name></type> <name>replacement</name> <init>= <expr><call><name><name>latest</name><operator>.</operator><name>cloneWithNewStart</name></name><argument_list>(<argument><expr><name>newStart</name></expr></argument>, <argument><expr><name>runOnClose</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>transaction</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>replacement</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+    </block_content>}</block></function>
+
+    <class><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> class <name>InvalidateKeys</name> <super_list><implements>implements <super><name>Runnable</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>KeyCacheKey</name></argument>&gt;</argument_list></name></type> <name>cacheKeys</name> <init>= <expr><operator>new</operator> <call><name><name>ArrayList</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name><name>WeakReference</name><argument_list type="generic">&lt;<argument><name><name>InstrumentingCache</name><argument_list type="generic">&lt;<argument><name>KeyCacheKey</name></argument>, <argument><name>?</name></argument>&gt;</argument_list></name></argument>&gt;</argument_list></name></type> <name>cacheRef</name></decl>;</decl_stmt>
+
+        <constructor><specifier>private</specifier> <name>InvalidateKeys</name><parameter_list>(<parameter><decl><type><name>SSTableReader</name></type> <name>reader</name></decl></parameter>, <parameter><decl><type><name><name>Collection</name><argument_list type="generic">&lt;<argument><name>DecoratedKey</name></argument>&gt;</argument_list></name></type> <name>invalidate</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cacheRef</name></name> <operator>=</operator> <operator>new</operator> <call><name><name>WeakReference</name><argument_list type="generic">&lt;&gt;</argument_list></name><argument_list>(<argument><expr><call><name><name>reader</name><operator>.</operator><name>getKeyCache</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><call><name><name>cacheRef</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <for>for <control>(<init><decl><type><name>DecoratedKey</name></type> <name>key</name> <range>: <expr><name>invalidate</name></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>cacheKeys</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>reader</name><operator>.</operator><name>getCacheKey</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></for>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>run</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <for>for <control>(<init><decl><type><name>KeyCacheKey</name></type> <name>key</name> <range>: <expr><name>cacheKeys</name></expr></range></decl></init>)</control>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name><name>InstrumentingCache</name><argument_list type="generic">&lt;<argument><name>KeyCacheKey</name></argument>, <argument><name>?</name></argument>&gt;</argument_list></name></type> <name>cache</name> <init>= <expr><call><name><name>cacheRef</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <if_stmt><if>if <condition>(<expr><name>cache</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+                    <expr_stmt><expr><call><name><name>cache</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>key</name></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+            </block_content>}</block></for>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>switchWriter</name><parameter_list>(<parameter><decl><type><name>SSTableWriter</name></type> <name>newWriter</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>newWriter</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>writers</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><call><name><name>newWriter</name><operator>.</operator><name>setMaxDataAge</name></name><argument_list>(<argument><expr><name>maxAge</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>eagerWriterMetaRelease</name> <operator>&amp;&amp;</operator> <name>writer</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>writer</name><operator>.</operator><name>releaseMetadataOverhead</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>writer</name> <operator>==</operator> <literal type="null">null</literal> <operator>||</operator> <call><name><name>writer</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call> <operator>==</operator> <literal type="number">0</literal></expr>)</condition>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>writer</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+            <block>{<block_content>
+                <expr_stmt><expr><call><name><name>writer</name><operator>.</operator><name>abort</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+                <expr_stmt><expr><call><name><name>transaction</name><operator>.</operator><name>untrackNew</name></name><argument_list>(<argument><expr><name>writer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                <expr_stmt><expr><call><name><name>writers</name><operator>.</operator><name>remove</name></name><argument_list>(<argument><expr><name>writer</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>writer</name> <operator>=</operator> <name>newWriter</name></expr>;</expr_stmt>
+
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>preemptiveOpenInterval</name> <operator>!=</operator> <name><name>Long</name><operator>.</operator><name>MAX_VALUE</name></name></expr>)</condition>
+        <block>{<block_content>
+            <comment type="line">// we leave it as a tmp file, but we open it and add it to the Tracker</comment>
+            <decl_stmt><decl><type><name>SSTableReader</name></type> <name>reader</name> <init>= <expr><call><name><name>writer</name><operator>.</operator><name>setMaxDataAge</name></name><argument_list>(<argument><expr><name>maxAge</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>openFinalEarly</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>transaction</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name>moveStarts</name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><name><name>reader</name><operator>.</operator><name>last</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>transaction</name><operator>.</operator><name>checkpoint</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+
+        <expr_stmt><expr><name>currentlyOpenedEarlyAt</name> <operator>=</operator> <literal type="number">0</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>writer</name> <operator>=</operator> <name>newWriter</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * @param repairedAt the repair time, -1 if we should use the time we supplied when we created
+     *                   the SSTableWriter (and called rewriter.switchWriter(..)), actual time if we want to override the
+     *                   repair time.
+     */</comment>
+    <function><type><specifier>public</specifier> <name>SSTableRewriter</name></type> <name>setRepairedAt</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>repairedAt</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>repairedAt</name></name> <operator>=</operator> <name>repairedAt</name></expr>;</expr_stmt>
+        <return>return <expr><name>this</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Finishes the new file(s)
+     *
+     * Creates final files, adds the new files to the Tracker (via replaceReader).
+     *
+     * We add them to the tracker to be able to get rid of the tmpfiles
+     *
+     * It is up to the caller to do the compacted sstables replacement
+     * gymnastics (ie, call Tracker#markCompactedSSTablesReplaced(..))
+     *
+     *
+     */</comment>
+    <function><type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>finish</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>super</name><operator>.</operator><name>finish</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><call><name>finished</name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="line">// returns, in list form, the</comment>
+    <function><type><specifier>public</specifier> <name><name>List</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>finished</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <assert>assert <expr><call><name>state</name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>State</name><operator>.</operator><name>COMMITTED</name></name> <operator>||</operator> <call><name>state</name><argument_list>()</argument_list></call> <operator>==</operator> <name><name>State</name><operator>.</operator><name>READY_TO_COMMIT</name></name></expr>;</assert>
+        <return>return <expr><name>preparedForCommit</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>protected</specifier> <name>void</name></type> <name>doPrepare</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name>switchWriter</name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>throwEarly</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><literal type="string">"exception thrown early in finish, for testing"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <comment type="line">// No early open to finalize and replace</comment>
+        <for>for <control>(<init><decl><type><name>SSTableWriter</name></type> <name>writer</name> <range>: <expr><name>writers</name></expr></range></decl></init>)</control>
+        <block>{<block_content>
+            <assert>assert <expr><call><name><name>writer</name><operator>.</operator><name>getFilePointer</name></name><argument_list>()</argument_list></call> <operator>&gt;</operator> <literal type="number">0</literal></expr>;</assert>
+            <expr_stmt><expr><call><name><name>writer</name><operator>.</operator><name>setRepairedAt</name></name><argument_list>(<argument><expr><name>repairedAt</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>setOpenResult</name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>prepareToCommit</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            <decl_stmt><decl><type><name>SSTableReader</name></type> <name>reader</name> <init>= <expr><call><name><name>writer</name><operator>.</operator><name>finished</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>transaction</name><operator>.</operator><name>update</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>preparedForCommit</name><operator>.</operator><name>add</name></name><argument_list>(<argument><expr><name>reader</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <expr_stmt><expr><call><name><name>transaction</name><operator>.</operator><name>checkpoint</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>throwLate</name></expr>)</condition><block type="pseudo"><block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><literal type="string">"exception thrown after all sstables finished, for testing"</literal></expr></argument>)</argument_list></call></expr>;</throw></block_content></block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>keepOriginals</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>transaction</name><operator>.</operator><name>obsoleteOriginals</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+
+        <expr_stmt><expr><call><name><name>transaction</name><operator>.</operator><name>prepareToCommit</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>throwDuringPrepare</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>earlyException</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>earlyException</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><name>throwEarly</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt></block_content></block></if>
+        <else>else<block type="pseudo"><block_content>
+            <expr_stmt><expr><name>throwLate</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt></block_content></block></else></if_stmt>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

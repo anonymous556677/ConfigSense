@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/service/TruncateResponseHandler.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>service</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>net</name><operator>.</operator><name>InetAddress</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeoutException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicInteger</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>Logger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>slf4j</name><operator>.</operator><name>LoggerFactory</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>config</name><operator>.</operator><name>DatabaseDescriptor</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>TruncateResponse</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>RequestFailureReason</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>TruncateException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>locator</name><operator>.</operator><name>InetAddressAndPort</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>RequestCallback</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name><operator>.</operator><name>Message</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>SimpleCondition</name></name>;</import>
+
+<import>import static <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>TimeUnit</name><operator>.</operator><name>NANOSECONDS</name></name>;</import>
+
+<class><specifier>public</specifier> class <name>TruncateResponseHandler</name> <super_list><implements>implements <super><name><name>RequestCallback</name><argument_list type="generic">&lt;<argument><name>TruncateResponse</name></argument>&gt;</argument_list></name></super></implements></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>Logger</name></type> <name>logger</name> <init>= <expr><call><name><name>LoggerFactory</name><operator>.</operator><name>getLogger</name></name><argument_list>(<argument><expr><name><name>TruncateResponseHandler</name><operator>.</operator><name>class</name></name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>SimpleCondition</name></type> <name>condition</name> <init>= <expr><operator>new</operator> <call><name>SimpleCondition</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>int</name></type> <name>responseCount</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>AtomicInteger</name></type> <name>responses</name> <init>= <expr><operator>new</operator> <call><name>AtomicInteger</name><argument_list>(<argument><expr><literal type="number">0</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>final</specifier> <name>long</name></type> <name>start</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>InetAddress</name></type> <name>truncateFailingReplica</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>TruncateResponseHandler</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>responseCount</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// at most one node per range can bootstrap at a time, and these will be added to the write until</comment>
+        <comment type="line">// bootstrap finishes (at which point we no longer need to write to the old ones).</comment>
+        <assert>assert <expr><literal type="number">1</literal> <operator>&lt;=</operator> <name>responseCount</name><operator>:</operator> <literal type="string">"invalid response count "</literal> <operator>+</operator> <name>responseCount</name></expr>;</assert>
+
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>responseCount</name></name> <operator>=</operator> <name>responseCount</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name>start</name> <operator>=</operator> <call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>get</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>TimeoutException</name></expr></argument></throws>
+    <block>{<block_content>
+        <decl_stmt><decl><type><name>long</name></type> <name>timeoutNanos</name> <init>= <expr><call><name><name>DatabaseDescriptor</name><operator>.</operator><name>getTruncateRpcTimeout</name></name><argument_list>(<argument><expr><name>NANOSECONDS</name></expr></argument>)</argument_list></call> <operator>-</operator> <operator>(</operator><call><name><name>System</name><operator>.</operator><name>nanoTime</name></name><argument_list>()</argument_list></call> <operator>-</operator> <name>start</name><operator>)</operator></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>completedInTime</name></decl>;</decl_stmt>
+        <try>try
+        <block>{<block_content>
+            <expr_stmt><expr><name>completedInTime</name> <operator>=</operator> <call><name><name>condition</name><operator>.</operator><name>await</name></name><argument_list>(<argument><expr><name>timeoutNanos</name></expr></argument>, <argument><expr><name>NANOSECONDS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt> <comment type="line">// TODO truncate needs a much longer timeout</comment>
+        </block_content>}</block>
+        <catch>catch <parameter_list>(<parameter><decl><type><name>InterruptedException</name></type> <name>ex</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>AssertionError</name><argument_list>(<argument><expr><name>ex</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>completedInTime</name></expr>)</condition>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>TimeoutException</name><argument_list>(<argument><expr><literal type="string">"Truncate timed out - received only "</literal> <operator>+</operator> <call><name><name>responses</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="string">" responses"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+
+        <if_stmt><if>if <condition>(<expr><name>truncateFailingReplica</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition>
+        <block>{<block_content>
+            <throw>throw <expr><operator>new</operator> <call><name>TruncateException</name><argument_list>(<argument><expr><literal type="string">"Truncate failed on replica "</literal> <operator>+</operator> <name>truncateFailingReplica</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>onResponse</name><parameter_list>(<parameter><decl><type><name><name>Message</name><argument_list type="generic">&lt;<argument><name>TruncateResponse</name></argument>&gt;</argument_list></name></type> <name>message</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><call><name><name>responses</name><operator>.</operator><name>incrementAndGet</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><call><name><name>responses</name><operator>.</operator><name>get</name></name><argument_list>()</argument_list></call> <operator>&gt;=</operator> <name>responseCount</name></expr>)</condition><block type="pseudo"><block_content>
+            <expr_stmt><expr><call><name><name>condition</name><operator>.</operator><name>signalAll</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt></block_content></block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>onFailure</name><parameter_list>(<parameter><decl><type><name>InetAddressAndPort</name></type> <name>from</name></decl></parameter>, <parameter><decl><type><name>RequestFailureReason</name></type> <name>failureReason</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// If the truncation hasn't succeeded on some replica, abort and indicate this back to the client.</comment>
+        <expr_stmt><expr><name>truncateFailingReplica</name> <operator>=</operator> <name><name>from</name><operator>.</operator><name>address</name></name></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>condition</name><operator>.</operator><name>signalAll</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>boolean</name></type> <name>invokeOnFailure</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/db/compaction/AbstractCompactionTask.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>compaction</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Iterator</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Set</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>UUID</name></name>;</import>
+
+<import>import <name><name>com</name><operator>.</operator><name>google</name><operator>.</operator><name>common</name><operator>.</operator><name>base</name><operator>.</operator><name>Preconditions</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>ColumnFamilyStore</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>Directories</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>compaction</name><operator>.</operator><name>writers</name><operator>.</operator><name>CompactionAwareWriter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>FSDiskFullWriteError</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>io</name><operator>.</operator><name>sstable</name><operator>.</operator><name>format</name><operator>.</operator><name>SSTableReader</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>utils</name><operator>.</operator><name>WrappedRunnable</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>db</name><operator>.</operator><name>lifecycle</name><operator>.</operator><name>LifecycleTransaction</name></name>;</import>
+
+<class><specifier>public</specifier> <specifier>abstract</specifier> class <name>AbstractCompactionTask</name> <super_list><extends>extends <super><name>WrappedRunnable</name></super></extends></super_list>
+<block>{
+    <decl_stmt><decl><type><specifier>protected</specifier> <specifier>final</specifier> <name>ColumnFamilyStore</name></type> <name>cfs</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>LifecycleTransaction</name></type> <name>transaction</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>boolean</name></type> <name>isUserDefined</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>protected</specifier> <name>OperationType</name></type> <name>compactionType</name></decl>;</decl_stmt>
+
+    <comment type="block" format="javadoc">/**
+     * @param cfs
+     * @param transaction the modifying managing the status of the sstables we're replacing
+     */</comment>
+    <constructor><specifier>public</specifier> <name>AbstractCompactionTask</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>, <parameter><decl><type><name>LifecycleTransaction</name></type> <name>transaction</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>cfs</name></name> <operator>=</operator> <name>cfs</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>transaction</name></name> <operator>=</operator> <name>transaction</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>isUserDefined</name></name> <operator>=</operator> <literal type="boolean">false</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>compactionType</name></name> <operator>=</operator> <name><name>OperationType</name><operator>.</operator><name>COMPACTION</name></name></expr>;</expr_stmt>
+        <comment type="line">// enforce contract that caller should mark sstables compacting</comment>
+        <decl_stmt><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>compacting</name> <init>= <expr><call><name><name>transaction</name><operator>.</operator><name>tracker</name><operator>.</operator><name>getCompacting</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>SSTableReader</name></type> <name>sstable</name> <range>: <expr><call><name><name>transaction</name><operator>.</operator><name>originals</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control><block type="pseudo"><block_content>
+            <assert>assert <expr><call><name><name>compacting</name><operator>.</operator><name>contains</name></name><argument_list>(<argument><expr><name>sstable</name></expr></argument>)</argument_list></call> <operator>:</operator> <call><name><name>sstable</name><operator>.</operator><name>getFilename</name></name><argument_list>()</argument_list></call> <operator>+</operator> <literal type="string">" is not correctly marked compacting"</literal></expr>;</assert></block_content></block></for>
+
+        <expr_stmt><expr><call><name>validateSSTables</name><argument_list>(<argument><expr><call><name><name>transaction</name><operator>.</operator><name>originals</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <comment type="block" format="javadoc">/**
+     * Confirm that we're not attempting to compact repaired/unrepaired/pending repair sstables together
+     */</comment>
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>validateSSTables</name><parameter_list>(<parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>sstables</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <comment type="line">// do not allow  to be compacted together</comment>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>sstables</name><operator>.</operator><name>isEmpty</name></name><argument_list>()</argument_list></call></expr>)</condition>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name><name>Iterator</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>iter</name> <init>= <expr><call><name><name>sstables</name><operator>.</operator><name>iterator</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>SSTableReader</name></type> <name>first</name> <init>= <expr><call><name><name>iter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>boolean</name></type> <name>isRepaired</name> <init>= <expr><call><name><name>first</name><operator>.</operator><name>isRepaired</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>UUID</name></type> <name>pendingRepair</name> <init>= <expr><call><name><name>first</name><operator>.</operator><name>getPendingRepair</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <while>while <condition>(<expr><call><name><name>iter</name><operator>.</operator><name>hasNext</name></name><argument_list>()</argument_list></call></expr>)</condition>
+            <block>{<block_content>
+                <decl_stmt><decl><type><name>SSTableReader</name></type> <name>next</name> <init>= <expr><call><name><name>iter</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><name>isRepaired</name> <operator>==</operator> <call><name><name>next</name><operator>.</operator><name>isRepaired</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                            <argument><expr><literal type="string">"Cannot compact repaired and unrepaired sstables"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>pendingRepair</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition>
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><operator>!</operator><call><name><name>next</name><operator>.</operator><name>isPendingRepair</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                <argument><expr><literal type="string">"Cannot compact pending repair and non-pending repair sstables"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></if>
+                <else>else
+                <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><call><name><name>next</name><operator>.</operator><name>isPendingRepair</name></name><argument_list>()</argument_list></call></expr></argument>,
+                                                <argument><expr><literal type="string">"Cannot compact pending repair and non-pending repair sstables"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    <expr_stmt><expr><call><name><name>Preconditions</name><operator>.</operator><name>checkArgument</name></name><argument_list>(<argument><expr><call><name><name>pendingRepair</name><operator>.</operator><name>equals</name></name><argument_list>(<argument><expr><call><name><name>next</name><operator>.</operator><name>getPendingRepair</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></argument>,
+                                                <argument><expr><literal type="string">"Cannot compact sstables from different pending repairs"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block></while>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * executes the task and unmarks sstables compacting
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>execute</name><parameter_list>(<parameter><decl><type><name>ActiveCompactionsTracker</name></type> <name>activeCompactions</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <try>try
+        <block>{<block_content>
+            <return>return <expr><call><name>executeInternal</name><argument_list>(<argument><expr><name>activeCompactions</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block>
+        <catch>catch<parameter_list>(<parameter><decl><type><name>FSDiskFullWriteError</name></type> <name>e</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>RuntimeException</name></type> <name>cause</name> <init>= <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><literal type="string">"Converted from FSDiskFullWriteError: "</literal> <operator>+</operator> <call><name><name>e</name><operator>.</operator><name>getMessage</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>cause</name><operator>.</operator><name>setStackTrace</name></name><argument_list>(<argument><expr><call><name><name>e</name><operator>.</operator><name>getStackTrace</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <throw>throw <expr><operator>new</operator> <call><name>RuntimeException</name><argument_list>(<argument><expr><literal type="string">"Throwing new Runtime to bypass exception handler when disk is full"</literal></expr></argument>, <argument><expr><name>cause</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch>
+        <finally>finally
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>transaction</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></finally></try>
+    </block_content>}</block></function>
+    <function_decl><type><specifier>public</specifier> <specifier>abstract</specifier> <name>CompactionAwareWriter</name></type> <name>getCompactionAwareWriter</name><parameter_list>(<parameter><decl><type><name>ColumnFamilyStore</name></type> <name>cfs</name></decl></parameter>, <parameter><decl><type><name>Directories</name></type> <name>directories</name></decl></parameter>, <parameter><decl><type><name>LifecycleTransaction</name></type> <name>txn</name></decl></parameter>, <parameter><decl><type><name><name>Set</name><argument_list type="generic">&lt;<argument><name>SSTableReader</name></argument>&gt;</argument_list></name></type> <name>nonExpiredSSTables</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <function_decl><type><specifier>protected</specifier> <specifier>abstract</specifier> <name>int</name></type> <name>executeInternal</name><parameter_list>(<parameter><decl><type><name>ActiveCompactionsTracker</name></type> <name>activeCompactions</name></decl></parameter>)</parameter_list>;</function_decl>
+
+    <function><type><specifier>public</specifier> <name>AbstractCompactionTask</name></type> <name>setUserDefined</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>isUserDefined</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>isUserDefined</name></name> <operator>=</operator> <name>isUserDefined</name></expr>;</expr_stmt>
+        <return>return <expr><name>this</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>AbstractCompactionTask</name></type> <name>setCompactionType</name><parameter_list>(<parameter><decl><type><name>OperationType</name></type> <name>compactionType</name></decl></parameter>)</parameter_list>
+    <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>compactionType</name></name> <operator>=</operator> <name>compactionType</name></expr>;</expr_stmt>
+        <return>return <expr><name>this</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>toString</name><parameter_list>()</parameter_list>
+    <block>{<block_content>
+        <return>return <expr><literal type="string">"CompactionTask("</literal> <operator>+</operator> <name>transaction</name> <operator>+</operator> <literal type="string">")"</literal></expr>;</return>
+    </block_content>}</block></function>
+}</block></class>
+</unit>

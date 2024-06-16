@@ -1,0 +1,544 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/h2database/h2/src/main/org/h2/schema/TriggerObject.java"><comment type="block">/*
+ * Copyright 2004-2022 H2 Group. Multiple-Licensed under the MPL 2.0,
+ * and the EPL 1.0 (https://h2database.com/html/license.html).
+ * Initial Developer: H2 Group
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>schema</name></name>;</package>
+
+<import>import <name><name>java</name><operator>.</operator><name>lang</name><operator>.</operator><name>reflect</name><operator>.</operator><name>Method</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>sql</name><operator>.</operator><name>Connection</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>sql</name><operator>.</operator><name>ResultSet</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>sql</name><operator>.</operator><name>SQLException</name></name>;</import>
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>Arrays</name></name>;</import>
+
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>api</name><operator>.</operator><name>ErrorCode</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>api</name><operator>.</operator><name>Trigger</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>Constants</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>DbObject</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>engine</name><operator>.</operator><name>SessionLocal</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>jdbc</name><operator>.</operator><name>JdbcConnection</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>jdbc</name><operator>.</operator><name>JdbcResultSet</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>message</name><operator>.</operator><name>DbException</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>message</name><operator>.</operator><name>Trace</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>result</name><operator>.</operator><name>Row</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>result</name><operator>.</operator><name>SimpleResult</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>Column</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>table</name><operator>.</operator><name>Table</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>tools</name><operator>.</operator><name>TriggerAdapter</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>JdbcUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>SourceCompiler</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>util</name><operator>.</operator><name>StringUtils</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>Value</name></name>;</import>
+<import>import <name><name>org</name><operator>.</operator><name>h2</name><operator>.</operator><name>value</name><operator>.</operator><name>ValueToObjectConverter</name></name>;</import>
+
+<comment type="block" format="javadoc">/**
+ *A trigger is created using the statement
+ * CREATE TRIGGER
+ */</comment>
+<class><specifier>public</specifier> <specifier>final</specifier> class <name>TriggerObject</name> <super_list><extends>extends <super><name>SchemaObject</name></super></extends></super_list> <block>{
+
+    <comment type="block" format="javadoc">/**
+     * The default queue size.
+     */</comment>
+    <decl_stmt><decl><type><specifier>public</specifier> <specifier>static</specifier> <specifier>final</specifier> <name>int</name></type> <name>DEFAULT_QUEUE_SIZE</name> <init>= <expr><literal type="number">1024</literal></expr></init></decl>;</decl_stmt>
+
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>insteadOf</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>before</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>typeMask</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>rowBased</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>onRollback</name></decl>;</decl_stmt>
+    <comment type="line">// TODO trigger: support queue and noWait = false as well</comment>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>int</name></type> <name>queueSize</name> <init>= <expr><name>DEFAULT_QUEUE_SIZE</name></expr></init></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>boolean</name></type> <name>noWait</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Table</name></type> <name>table</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>String</name></type> <name>triggerClassName</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>String</name></type> <name>triggerSource</name></decl>;</decl_stmt>
+    <decl_stmt><decl><type><specifier>private</specifier> <name>Trigger</name></type> <name>triggerCallback</name></decl>;</decl_stmt>
+
+    <constructor><specifier>public</specifier> <name>TriggerObject</name><parameter_list>(<parameter><decl><type><name>Schema</name></type> <name>schema</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>id</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>name</name></decl></parameter>, <parameter><decl><type><name>Table</name></type> <name>table</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name>super</name><argument_list>(<argument><expr><name>schema</name></expr></argument>, <argument><expr><name>id</name></expr></argument>, <argument><expr><name>name</name></expr></argument>, <argument><expr><name><name>Trace</name><operator>.</operator><name>TRIGGER</name></name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>table</name></name> <operator>=</operator> <name>table</name></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>setTemporary</name><argument_list>(<argument><expr><call><name><name>table</name><operator>.</operator><name>isTemporary</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></constructor>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setBefore</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>before</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>before</name></name> <operator>=</operator> <name>before</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isInsteadOf</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>insteadOf</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setInsteadOf</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>insteadOf</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>insteadOf</name></name> <operator>=</operator> <name>insteadOf</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>synchronized</specifier> <name>void</name></type> <name>load</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>triggerCallback</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <try>try <block>{<block_content>
+            <decl_stmt><decl><type><name>SessionLocal</name></type> <name>sysSession</name> <init>= <expr><call><name><name>database</name><operator>.</operator><name>getSystemSession</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Connection</name></type> <name>c2</name> <init>= <expr><call><name><name>sysSession</name><operator>.</operator><name>createConnection</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Object</name></type> <name>obj</name></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>triggerClassName</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>obj</name> <operator>=</operator> <call><name><name>JdbcUtils</name><operator>.</operator><name>loadUserClass</name></name><argument_list>(<argument><expr><name>triggerClassName</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>getDeclaredConstructor</name><argument_list>()</argument_list></call><operator>.</operator><call><name>newInstance</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><name>obj</name> <operator>=</operator> <call><name>loadFromSource</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+            <expr_stmt><expr><name>triggerCallback</name> <operator>=</operator> <operator>(</operator><name>Trigger</name><operator>)</operator> <name>obj</name></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>triggerCallback</name><operator>.</operator><name>init</name></name><argument_list>(<argument><expr><name>c2</name></expr></argument>, <argument><expr><call><name>getSchema</name><argument_list>()</argument_list></call><operator>.</operator><call><name>getName</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name>getName</name><argument_list>()</argument_list></call></expr></argument>,
+                    <argument><expr><call><name><name>table</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><name>before</name></expr></argument>, <argument><expr><name>typeMask</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <comment type="line">// try again later</comment>
+            <expr_stmt><expr><name>triggerCallback</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+            <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>ERROR_CREATING_TRIGGER_OBJECT_3</name></name></expr></argument>, <argument><expr><name>e</name></expr></argument>, <argument><expr><call><name>getName</name><argument_list>()</argument_list></call></expr></argument>,
+                <argument><expr><ternary><condition><expr><name>triggerClassName</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>triggerClassName</name></expr> </then><else>: <expr><literal type="string">"..source.."</literal></expr></else></ternary></expr></argument>, <argument><expr><call><name><name>e</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>Trigger</name></type> <name>loadFromSource</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>SourceCompiler</name></type> <name>compiler</name> <init>= <expr><call><name><name>database</name><operator>.</operator><name>getCompiler</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <synchronized>synchronized <init>(<expr><name>compiler</name></expr>)</init> <block>{<block_content>
+            <decl_stmt><decl><type><name>String</name></type> <name>fullClassName</name> <init>= <expr><name><name>Constants</name><operator>.</operator><name>USER_PACKAGE</name></name> <operator>+</operator> <literal type="string">".trigger."</literal> <operator>+</operator> <call><name>getName</name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><call><name><name>compiler</name><operator>.</operator><name>setSource</name></name><argument_list>(<argument><expr><name>fullClassName</name></expr></argument>, <argument><expr><name>triggerSource</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <try>try <block>{<block_content>
+                <if_stmt><if>if <condition>(<expr><call><name><name>SourceCompiler</name><operator>.</operator><name>isJavaxScriptSource</name></name><argument_list>(<argument><expr><name>triggerSource</name></expr></argument>)</argument_list></call></expr>)</condition> <block>{<block_content>
+                    <return>return <expr><operator>(</operator><name>Trigger</name><operator>)</operator> <call><name><name>compiler</name><operator>.</operator><name>getCompiledScript</name></name><argument_list>(<argument><expr><name>fullClassName</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>eval</name><argument_list>()</argument_list></call></expr>;</return>
+                </block_content>}</block></if> <else>else <block>{<block_content>
+                    <decl_stmt><decl><type><specifier>final</specifier> <name>Method</name></type> <name>m</name> <init>= <expr><call><name><name>compiler</name><operator>.</operator><name>getMethod</name></name><argument_list>(<argument><expr><name>fullClassName</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><call><name><name>m</name><operator>.</operator><name>getParameterTypes</name></name><argument_list>()</argument_list></call><operator>.</operator><name>length</name> <operator>&gt;</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+                        <throw>throw <expr><operator>new</operator> <call><name>IllegalStateException</name><argument_list>(<argument><expr><literal type="string">"No parameters are allowed for a trigger"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+                    </block_content>}</block></if></if_stmt>
+                    <return>return <expr><operator>(</operator><name>Trigger</name><operator>)</operator> <call><name><name>m</name><operator>.</operator><name>invoke</name></name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</return>
+                </block_content>}</block></else></if_stmt>
+            </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>DbException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+                <throw>throw <expr><name>e</name></expr>;</throw>
+            </block_content>}</block></catch> <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+                <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>SYNTAX_ERROR_1</name></name></expr></argument>, <argument><expr><name>e</name></expr></argument>, <argument><expr><name>triggerSource</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></synchronized>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the trigger class name and load the class if possible.
+     *
+     * @param triggerClassName the name of the trigger class
+     * @param force whether exceptions (due to missing class or access rights)
+     *            should be ignored
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setTriggerClassName</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>triggerClassName</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>force</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>this</name><operator>.</operator><name>setTriggerAction</name></name><argument_list>(<argument><expr><name>triggerClassName</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>force</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the trigger source code and compile it if possible.
+     *
+     * @param source the source code of a method returning a {@link Trigger}
+     * @param force whether exceptions (due to syntax error)
+     *            should be ignored
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setTriggerSource</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>source</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>force</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>this</name><operator>.</operator><name>setTriggerAction</name></name><argument_list>(<argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>source</name></expr></argument>, <argument><expr><name>force</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>void</name></type> <name>setTriggerAction</name><parameter_list>(<parameter><decl><type><name>String</name></type> <name>triggerClassName</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>source</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>force</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>triggerClassName</name></name> <operator>=</operator> <name>triggerClassName</name></expr>;</expr_stmt>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>triggerSource</name></name> <operator>=</operator> <name>source</name></expr>;</expr_stmt>
+        <try>try <block>{<block_content>
+            <expr_stmt><expr><call><name>load</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>DbException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><name>force</name></expr>)</condition> <block>{<block_content>
+                <throw>throw <expr><name>e</name></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></catch></try>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Call the trigger class if required. This method does nothing if the
+     * trigger is not defined for the given action. This method is called before
+     * or after any rows have been processed, once for each statement.
+     *
+     * @param session the session
+     * @param type the trigger type
+     * @param beforeAction if this method is called before applying the changes
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>fire</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>int</name></type> <name>type</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>beforeAction</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>rowBased</name> <operator>||</operator> <name>before</name> <operator>!=</operator> <name>beforeAction</name> <operator>||</operator> <operator>(</operator><name>typeMask</name> <operator>&amp;</operator> <name>type</name><operator>)</operator> <operator>==</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <return>return;</return>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name>load</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>Connection</name></type> <name>c2</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>createConnection</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>old</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><name>type</name> <operator>!=</operator> <name><name>Trigger</name><operator>.</operator><name>SELECT</name></name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>old</name> <operator>=</operator> <call><name><name>session</name><operator>.</operator><name>setCommitOrRollbackDisabled</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>Value</name></type> <name>identity</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>getLastIdentity</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <try>try <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>triggerCallback</name> <operator>instanceof</operator> <name>TriggerAdapter</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><operator>(</operator><operator>(</operator><name>TriggerAdapter</name><operator>)</operator> <name>triggerCallback</name><operator>)</operator><operator>.</operator><call><name>fire</name><argument_list>(<argument><expr><name>c2</name></expr></argument>, <argument><expr><operator>(</operator><name>ResultSet</name><operator>)</operator> <literal type="null">null</literal></expr></argument>, <argument><expr><operator>(</operator><name>ResultSet</name><operator>)</operator> <literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <expr_stmt><expr><call><name><name>triggerCallback</name><operator>.</operator><name>fire</name></name><argument_list>(<argument><expr><name>c2</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <throw>throw <expr><call><name>getErrorExecutingTrigger</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+        </block_content>}</block></catch> <finally>finally <block>{<block_content>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>setLastIdentity</name></name><argument_list>(<argument><expr><name>identity</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>type</name> <operator>!=</operator> <name><name>Trigger</name><operator>.</operator><name>SELECT</name></name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>setCommitOrRollbackDisabled</name></name><argument_list>(<argument><expr><name>old</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></finally></try>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name><name>Object</name><index>[]</index></name></type> <name>convertToObjectList</name><parameter_list>(<parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>, <parameter><decl><type><name>JdbcConnection</name></type> <name>conn</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>row</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <return>return <expr><literal type="null">null</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>int</name></type> <name>len</name> <init>= <expr><call><name><name>row</name><operator>.</operator><name>getColumnCount</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name><name>Object</name><index>[]</index></name></type> <name>list</name> <init>= <expr><operator>new</operator> <name><name>Object</name><index>[<expr><name>len</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>len</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+            <expr_stmt><expr><name><name>list</name><index>[<expr><name>i</name></expr>]</index></name> <operator>=</operator> <call><name><name>ValueToObjectConverter</name><operator>.</operator><name>valueToDefaultObject</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>getValue</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>conn</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <return>return <expr><name>list</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Call the fire method of the user-defined trigger class if required. This
+     * method does nothing if the trigger is not defined for the given action.
+     * This method is called before or after a row is processed, possibly many
+     * times for each statement.
+     *
+     * @param session the session
+     * @param table the table
+     * @param oldRow the old row
+     * @param newRow the new row
+     * @param beforeAction true if this method is called before the operation is
+     *            applied
+     * @param rollback when the operation occurred within a rollback
+     * @return true if no further action is required (for 'instead of' triggers)
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>fireRow</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>, <parameter><decl><type><name>Table</name></type> <name>table</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>oldRow</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>newRow</name></decl></parameter>,
+            <parameter><decl><type><name>boolean</name></type> <name>beforeAction</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>rollback</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>rowBased</name> <operator>||</operator> <name>before</name> <operator>!=</operator> <name>beforeAction</name></expr>)</condition> <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>rollback</name> <operator>&amp;&amp;</operator> <operator>!</operator><name>onRollback</name></expr>)</condition> <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><call><name>load</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>fire</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><name>typeMask</name> <operator>&amp;</operator> <name><name>Trigger</name><operator>.</operator><name>INSERT</name></name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>oldRow</name> <operator>==</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>newRow</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>fire</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><name>typeMask</name> <operator>&amp;</operator> <name><name>Trigger</name><operator>.</operator><name>UPDATE</name></name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>oldRow</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>newRow</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>fire</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><name>typeMask</name> <operator>&amp;</operator> <name><name>Trigger</name><operator>.</operator><name>DELETE</name></name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>oldRow</name> <operator>!=</operator> <literal type="null">null</literal> <operator>&amp;&amp;</operator> <name>newRow</name> <operator>==</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><name>fire</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>!</operator><name>fire</name></expr>)</condition> <block>{<block_content>
+            <return>return <expr><literal type="boolean">false</literal></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <decl_stmt><decl><type><name>JdbcConnection</name></type> <name>c2</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>createConnection</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>old</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>getAutoCommit</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>oldDisabled</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>setCommitOrRollbackDisabled</name></name><argument_list>(<argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <decl_stmt><decl><type><name>Value</name></type> <name>identity</name> <init>= <expr><call><name><name>session</name><operator>.</operator><name>getLastIdentity</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+        <try>try <block>{<block_content>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>setAutoCommit</name></name><argument_list>(<argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <if_stmt><if>if <condition>(<expr><name>triggerCallback</name> <operator>instanceof</operator> <name>TriggerAdapter</name></expr>)</condition> <block>{<block_content>
+                <decl_stmt><decl><type><name>JdbcResultSet</name></type> <name>oldResultSet</name> <init>= <expr><ternary><condition><expr><name>oldRow</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name>createResultSet</name><argument_list>(<argument><expr><name>c2</name></expr></argument>, <argument><expr><name>table</name></expr></argument>, <argument><expr><name>oldRow</name></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>)</argument_list></call></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name>JdbcResultSet</name></type> <name>newResultSet</name> <init>= <expr><ternary><condition><expr><name>newRow</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name>createResultSet</name><argument_list>(<argument><expr><name>c2</name></expr></argument>, <argument><expr><name>table</name></expr></argument>, <argument><expr><name>newRow</name></expr></argument>, <argument><expr><name>before</name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+                <try>try <block>{<block_content>
+                    <expr_stmt><expr><operator>(</operator><operator>(</operator><name>TriggerAdapter</name><operator>)</operator> <name>triggerCallback</name><operator>)</operator><operator>.</operator><call><name>fire</name><argument_list>(<argument><expr><name>c2</name></expr></argument>, <argument><expr><name>oldResultSet</name></expr></argument>, <argument><expr><name>newResultSet</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+                    <throw>throw <expr><call><name>getErrorExecutingTrigger</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+                </block_content>}</block></catch></try>
+                <if_stmt><if>if <condition>(<expr><name>newResultSet</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                    <decl_stmt><decl><type><name><name>Value</name><index>[]</index></name></type> <name>updatedList</name> <init>= <expr><call><name><name>newResultSet</name><operator>.</operator><name>getUpdateRow</name></name><argument_list>()</argument_list></call></expr></init></decl>;</decl_stmt>
+                    <if_stmt><if>if <condition>(<expr><name>updatedList</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                        <decl_stmt><decl><type><name>boolean</name></type> <name>modified</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+                        <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>, <decl><type ref="prev"/><name>l</name> <init>= <expr><name><name>updatedList</name><operator>.</operator><name>length</name></name></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name>l</name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+                            <decl_stmt><decl><type><name>Value</name></type> <name>v</name> <init>= <expr><name><name>updatedList</name><index>[<expr><name>i</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+                            <if_stmt><if>if <condition>(<expr><name>v</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                                <expr_stmt><expr><name>modified</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                                <expr_stmt><expr><call><name><name>newRow</name><operator>.</operator><name>setValue</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>, <argument><expr><name>v</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                            </block_content>}</block></if></if_stmt>
+                        </block_content>}</block></for>
+                        <if_stmt><if>if <condition>(<expr><name>modified</name></expr>)</condition> <block>{<block_content>
+                            <expr_stmt><expr><call><name><name>table</name><operator>.</operator><name>convertUpdateRow</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>newRow</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        </block_content>}</block></if></if_stmt>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <decl_stmt><decl><type><name><name>Object</name><index>[]</index></name></type> <name>oldList</name> <init>= <expr><call><name>convertToObjectList</name><argument_list>(<argument><expr><name>oldRow</name></expr></argument>, <argument><expr><name>c2</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name><name>Object</name><index>[]</index></name></type> <name>newList</name> <init>= <expr><call><name>convertToObjectList</name><argument_list>(<argument><expr><name>newRow</name></expr></argument>, <argument><expr><name>c2</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+                <decl_stmt><decl><type><name><name>Object</name><index>[]</index></name></type> <name>newListBackup</name> <init>= <expr><ternary><condition><expr><name>before</name> <operator>&amp;&amp;</operator> <name>newList</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><call><name><name>Arrays</name><operator>.</operator><name>copyOf</name></name><argument_list>(<argument><expr><name>newList</name></expr></argument>, <argument><expr><name><name>newList</name><operator>.</operator><name>length</name></name></expr></argument>)</argument_list></call></expr> </then><else>: <expr><literal type="null">null</literal></expr></else></ternary></expr></init></decl>;</decl_stmt>
+                <try>try <block>{<block_content>
+                    <expr_stmt><expr><call><name><name>triggerCallback</name><operator>.</operator><name>fire</name></name><argument_list>(<argument><expr><name>c2</name></expr></argument>, <argument><expr><name>oldList</name></expr></argument>, <argument><expr><name>newList</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+                    <throw>throw <expr><call><name>getErrorExecutingTrigger</name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+                </block_content>}</block></catch></try>
+                <if_stmt><if>if <condition>(<expr><name>newListBackup</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+                    <decl_stmt><decl><type><name>boolean</name></type> <name>modified</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+                    <for>for <control>(<init><decl><type><name>int</name></type> <name>i</name> <init>= <expr><literal type="number">0</literal></expr></init></decl>;</init> <condition><expr><name>i</name> <operator>&lt;</operator> <name><name>newList</name><operator>.</operator><name>length</name></name></expr>;</condition> <incr><expr><name>i</name><operator>++</operator></expr></incr>)</control> <block>{<block_content>
+                        <decl_stmt><decl><type><name>Object</name></type> <name>o</name> <init>= <expr><name><name>newList</name><index>[<expr><name>i</name></expr>]</index></name></expr></init></decl>;</decl_stmt>
+                        <if_stmt><if>if <condition>(<expr><name>o</name> <operator>!=</operator> <name><name>newListBackup</name><index>[<expr><name>i</name></expr>]</index></name></expr>)</condition> <block>{<block_content>
+                            <expr_stmt><expr><name>modified</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+                            <expr_stmt><expr><call><name><name>newRow</name><operator>.</operator><name>setValue</name></name><argument_list>(<argument><expr><name>i</name></expr></argument>, <argument><expr><call><name><name>ValueToObjectConverter</name><operator>.</operator><name>objectToValue</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>o</name></expr></argument>, <argument><expr><name><name>Value</name><operator>.</operator><name>UNKNOWN</name></name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                        </block_content>}</block></if></if_stmt>
+                    </block_content>}</block></for>
+                    <if_stmt><if>if <condition>(<expr><name>modified</name></expr>)</condition> <block>{<block_content>
+                        <expr_stmt><expr><call><name><name>table</name><operator>.</operator><name>convertUpdateRow</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><name>newRow</name></expr></argument>, <argument><expr><literal type="boolean">true</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+                    </block_content>}</block></if></if_stmt>
+                </block_content>}</block></if></if_stmt>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>Exception</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>onRollback</name></expr>)</condition> <block>{<block_content>
+                <comment type="line">// ignore</comment>
+            </block_content>}</block></if> <else>else <block>{<block_content>
+                <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>convert</name></name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></else></if_stmt>
+        </block_content>}</block></catch> <finally>finally <block>{<block_content>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>setLastIdentity</name></name><argument_list>(<argument><expr><name>identity</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>setCommitOrRollbackDisabled</name></name><argument_list>(<argument><expr><name>oldDisabled</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>session</name><operator>.</operator><name>setAutoCommit</name></name><argument_list>(<argument><expr><name>old</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></finally></try>
+        <return>return <expr><name>insteadOf</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <specifier>static</specifier> <name>JdbcResultSet</name></type> <name>createResultSet</name><parameter_list>(<parameter><decl><type><name>JdbcConnection</name></type> <name>conn</name></decl></parameter>, <parameter><decl><type><name>Table</name></type> <name>table</name></decl></parameter>, <parameter><decl><type><name>Row</name></type> <name>row</name></decl></parameter>, <parameter><decl><type><name>boolean</name></type> <name>updatable</name></decl></parameter>)</parameter_list>
+            <throws>throws <argument><expr><name>SQLException</name></expr></argument></throws> <block>{<block_content>
+        <decl_stmt><decl><type><name>SimpleResult</name></type> <name>result</name> <init>= <expr><operator>new</operator> <call><name>SimpleResult</name><argument_list>(<argument><expr><call><name><name>table</name><operator>.</operator><name>getSchema</name></name><argument_list>()</argument_list></call><operator>.</operator><call><name>getName</name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>table</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <for>for <control>(<init><decl><type><name>Column</name></type> <name>c</name> <range>: <expr><call><name><name>table</name><operator>.</operator><name>getColumns</name></name><argument_list>()</argument_list></call></expr></range></decl></init>)</control> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>result</name><operator>.</operator><name>addColumn</name></name><argument_list>(<argument><expr><call><name><name>c</name><operator>.</operator><name>getName</name></name><argument_list>()</argument_list></call></expr></argument>, <argument><expr><call><name><name>c</name><operator>.</operator><name>getType</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></for>
+        <comment type="block">/*
+         * Old implementation works with and without next() invocation, so add
+         * the row twice for compatibility.
+         */</comment>
+        <expr_stmt><expr><call><name><name>result</name><operator>.</operator><name>addRow</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>getValueList</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>result</name><operator>.</operator><name>addRow</name></name><argument_list>(<argument><expr><call><name><name>row</name><operator>.</operator><name>getValueList</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <decl_stmt><decl><type><name>JdbcResultSet</name></type> <name>resultSet</name> <init>= <expr><operator>new</operator> <call><name>JdbcResultSet</name><argument_list>(<argument><expr><name>conn</name></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><literal type="null">null</literal></expr></argument>, <argument><expr><name>result</name></expr></argument>, <argument><expr><operator>-</operator><literal type="number">1</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><literal type="boolean">false</literal></expr></argument>, <argument><expr><name>updatable</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>resultSet</name><operator>.</operator><name>next</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        <return>return <expr><name>resultSet</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>private</specifier> <name>DbException</name></type> <name>getErrorExecutingTrigger</name><parameter_list>(<parameter><decl><type><name>Throwable</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>e</name> <operator>instanceof</operator> <name>DbException</name></expr>)</condition> <block>{<block_content>
+            <return>return <expr><operator>(</operator><name>DbException</name><operator>)</operator> <name>e</name></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>e</name> <operator>instanceof</operator> <name>SQLException</name></expr>)</condition> <block>{<block_content>
+            <return>return <expr><call><name><name>DbException</name><operator>.</operator><name>convert</name></name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</return>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><call><name><name>DbException</name><operator>.</operator><name>get</name></name><argument_list>(<argument><expr><name><name>ErrorCode</name><operator>.</operator><name>ERROR_EXECUTING_TRIGGER_3</name></name></expr></argument>, <argument><expr><name>e</name></expr></argument>, <argument><expr><call><name>getName</name><argument_list>()</argument_list></call></expr></argument>,
+                <argument><expr><ternary><condition><expr><name>triggerClassName</name> <operator>!=</operator> <literal type="null">null</literal></expr> ?</condition><then> <expr><name>triggerClassName</name></expr> </then><else>: <expr><literal type="string">"..source.."</literal></expr></else></ternary></expr></argument>, <argument><expr><call><name><name>e</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Returns the trigger type.
+     *
+     * @return the trigger type
+     */</comment>
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getTypeMask</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>typeMask</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Set the trigger type.
+     *
+     * @param typeMask the type
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setTypeMask</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>typeMask</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>typeMask</name></name> <operator>=</operator> <name>typeMask</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setRowBased</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>rowBased</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>rowBased</name></name> <operator>=</operator> <name>rowBased</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isRowBased</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>rowBased</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setQueueSize</name><parameter_list>(<parameter><decl><type><name>int</name></type> <name>size</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>queueSize</name></name> <operator>=</operator> <name>size</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>int</name></type> <name>getQueueSize</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>queueSize</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setNoWait</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>noWait</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>noWait</name></name> <operator>=</operator> <name>noWait</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isNoWait</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>noWait</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>setOnRollback</name><parameter_list>(<parameter><decl><type><name>boolean</name></type> <name>onRollback</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><name><name>this</name><operator>.</operator><name>onRollback</name></name> <operator>=</operator> <name>onRollback</name></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isOnRollback</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>onRollback</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>getCreateSQLForCopy</name><parameter_list>(<parameter><decl><type><name>Table</name></type> <name>targetTable</name></decl></parameter>, <parameter><decl><type><name>String</name></type> <name>quotedName</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>StringBuilder</name></type> <name>builder</name> <init>= <expr><operator>new</operator> <call><name>StringBuilder</name><argument_list>(<argument><expr><literal type="string">"CREATE FORCE TRIGGER "</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+        <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><name>quotedName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>insteadOf</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" INSTEAD OF "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <if type="elseif">else if <condition>(<expr><name>before</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" BEFORE "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" AFTER "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <expr_stmt><expr><call><name>getTypeNameList</name><argument_list>(<argument><expr><name>builder</name></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><literal type="string">" ON "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>targetTable</name><operator>.</operator><name>getSQL</name></name><argument_list>(<argument><expr><name>builder</name></expr></argument>, <argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>rowBased</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" FOR EACH ROW"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>noWait</name></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" NOWAIT"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" QUEUE "</literal></expr></argument>)</argument_list></call><operator>.</operator><call><name>append</name><argument_list>(<argument><expr><name>queueSize</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>triggerClassName</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>StringUtils</name><operator>.</operator><name>quoteStringSQL</name></name><argument_list>(<argument><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" CALL "</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>triggerClassName</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if> <else>else <block>{<block_content>
+            <expr_stmt><expr><call><name><name>StringUtils</name><operator>.</operator><name>quoteStringSQL</name></name><argument_list>(<argument><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">" AS "</literal></expr></argument>)</argument_list></call></expr></argument>, <argument><expr><name>triggerSource</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></else></if_stmt>
+        <return>return <expr><call><name><name>builder</name><operator>.</operator><name>toString</name></name><argument_list>()</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Append the trigger types to the given string builder.
+     *
+     * @param builder the builder
+     * @return the passed string builder
+     */</comment>
+    <function><type><specifier>public</specifier> <name>StringBuilder</name></type> <name>getTypeNameList</name><parameter_list>(<parameter><decl><type><name>StringBuilder</name></type> <name>builder</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <decl_stmt><decl><type><name>boolean</name></type> <name>f</name> <init>= <expr><literal type="boolean">false</literal></expr></init></decl>;</decl_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><name>typeMask</name> <operator>&amp;</operator> <name><name>Trigger</name><operator>.</operator><name>INSERT</name></name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><name>f</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"INSERT"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><name>typeMask</name> <operator>&amp;</operator> <name><name>Trigger</name><operator>.</operator><name>UPDATE</name></name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>f</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">", "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>f</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"UPDATE"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><name>typeMask</name> <operator>&amp;</operator> <name><name>Trigger</name><operator>.</operator><name>DELETE</name></name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>f</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">", "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>f</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"DELETE"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><operator>(</operator><name>typeMask</name> <operator>&amp;</operator> <name><name>Trigger</name><operator>.</operator><name>SELECT</name></name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>f</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">", "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><name>f</name> <operator>=</operator> <literal type="boolean">true</literal></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"SELECT"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <if_stmt><if>if <condition>(<expr><name>onRollback</name></expr>)</condition> <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>f</name></expr>)</condition> <block>{<block_content>
+                <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">", "</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block></if></if_stmt>
+            <expr_stmt><expr><call><name><name>builder</name><operator>.</operator><name>append</name></name><argument_list>(<argument><expr><literal type="string">"ROLLBACK"</literal></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+        <return>return <expr><name>builder</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>String</name></type> <name>getCreateSQL</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><call><name>getCreateSQLForCopy</name><argument_list>(<argument><expr><name>table</name></expr></argument>, <argument><expr><call><name>getSQL</name><argument_list>(<argument><expr><name>DEFAULT_SQL_FLAGS</name></expr></argument>)</argument_list></call></expr></argument>)</argument_list></call></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>int</name></type> <name>getType</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name><name>DbObject</name><operator>.</operator><name>TRIGGER</name></name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><annotation>@<name>Override</name></annotation>
+    <type><specifier>public</specifier> <name>void</name></type> <name>removeChildrenAndResources</name><parameter_list>(<parameter><decl><type><name>SessionLocal</name></type> <name>session</name></decl></parameter>)</parameter_list> <block>{<block_content>
+        <expr_stmt><expr><call><name><name>table</name><operator>.</operator><name>removeTrigger</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name><name>database</name><operator>.</operator><name>removeMeta</name></name><argument_list>(<argument><expr><name>session</name></expr></argument>, <argument><expr><call><name>getId</name><argument_list>()</argument_list></call></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        <if_stmt><if>if <condition>(<expr><name>triggerCallback</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <try>try <block>{<block_content>
+                <expr_stmt><expr><call><name><name>triggerCallback</name><operator>.</operator><name>remove</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+            </block_content>}</block> <catch>catch <parameter_list>(<parameter><decl><type><name>SQLException</name></type> <name>e</name></decl></parameter>)</parameter_list> <block>{<block_content>
+                <throw>throw <expr><call><name><name>DbException</name><operator>.</operator><name>convert</name></name><argument_list>(<argument><expr><name>e</name></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></catch></try>
+        </block_content>}</block></if></if_stmt>
+        <expr_stmt><expr><name>table</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>triggerClassName</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>triggerSource</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><name>triggerCallback</name> <operator>=</operator> <literal type="null">null</literal></expr>;</expr_stmt>
+        <expr_stmt><expr><call><name>invalidate</name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the table of this trigger.
+     *
+     * @return the table
+     */</comment>
+    <function><type><specifier>public</specifier> <name>Table</name></type> <name>getTable</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>table</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check if this is a before trigger.
+     *
+     * @return true if it is
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isBefore</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>before</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Get the trigger class name.
+     *
+     * @return the class name
+     */</comment>
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getTriggerClassName</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>triggerClassName</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <function><type><specifier>public</specifier> <name>String</name></type> <name>getTriggerSource</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><name>triggerSource</name></expr>;</return>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Close the trigger.
+     * @throws SQLException on failure
+     */</comment>
+    <function><type><specifier>public</specifier> <name>void</name></type> <name>close</name><parameter_list>()</parameter_list> <throws>throws <argument><expr><name>SQLException</name></expr></argument></throws> <block>{<block_content>
+        <if_stmt><if>if <condition>(<expr><name>triggerCallback</name> <operator>!=</operator> <literal type="null">null</literal></expr>)</condition> <block>{<block_content>
+            <expr_stmt><expr><call><name><name>triggerCallback</name><operator>.</operator><name>close</name></name><argument_list>()</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></if></if_stmt>
+    </block_content>}</block></function>
+
+    <comment type="block" format="javadoc">/**
+     * Check whether this is a select trigger.
+     *
+     * @return true if it is
+     */</comment>
+    <function><type><specifier>public</specifier> <name>boolean</name></type> <name>isSelectTrigger</name><parameter_list>()</parameter_list> <block>{<block_content>
+        <return>return <expr><operator>(</operator><name>typeMask</name> <operator>&amp;</operator> <name><name>Trigger</name><operator>.</operator><name>SELECT</name></name><operator>)</operator> <operator>!=</operator> <literal type="number">0</literal></expr>;</return>
+    </block_content>}</block></function>
+
+}</block></class>
+</unit>

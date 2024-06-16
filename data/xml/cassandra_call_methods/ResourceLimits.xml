@@ -1,0 +1,293 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<unit xmlns="http://www.srcML.org/srcML/src" revision="1.0.0" language="Java" filename="/Users/wang/Documents/project/configuration_code_understanding/code3/data/system/cassandra/src/java/org/apache/cassandra/net/ResourceLimits.java"><comment type="block">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</comment>
+<package>package <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>net</name></name>;</package>
+
+<import>import <name><name>org</name><operator>.</operator><name>apache</name><operator>.</operator><name>cassandra</name><operator>.</operator><name>exceptions</name><operator>.</operator><name>UnrecoverableIllegalStateException</name></name>;</import>
+
+<import>import <name><name>java</name><operator>.</operator><name>util</name><operator>.</operator><name>concurrent</name><operator>.</operator><name>atomic</name><operator>.</operator><name>AtomicLongFieldUpdater</name></name>;</import>
+
+<class><specifier>public</specifier> <specifier>abstract</specifier> class <name>ResourceLimits</name>
+<block>{
+    <comment type="block" format="javadoc">/**
+     * Represents permits to utilise a resource and ways to allocate and release them.
+     *
+     * Two implementations are currently provided:
+     * 1. {@link Concurrent}, for shared limits, which is thread-safe;
+     * 2. {@link Basic}, for limits that are not shared between threads, is not thread-safe.
+     */</comment>
+    <interface><specifier>public</specifier> interface <name>Limit</name>
+    <block>{
+        <comment type="block" format="javadoc">/**
+         * @return total amount of permits represented by this {@link Limit} - the capacity
+         */</comment>
+        <function_decl><type><name>long</name></type> <name>limit</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * Sets the total amount of permits represented by this {@link Limit} - the capacity
+         *
+         * If the old limit has been reached and the new limit is large enough to allow for more
+         * permits to be aqcuired, subsequent calls to {@link #allocate(long)} or {@link #tryAllocate(long)}
+         * will succeed.
+         *
+         * If the new limit is lower than the current amount of allocated permits then subsequent calls
+         * to {@link #allocate(long)} or {@link #tryAllocate(long)} will block or fail respectively.
+         *
+         * @return the old limit
+         */</comment>
+        <function_decl><type><name>long</name></type> <name>setLimit</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>newLimit</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * @return remaining, unallocated permit amount
+         */</comment>
+        <function_decl><type><name>long</name></type> <name>remaining</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * @return amount of permits currently in use
+         */</comment>
+        <function_decl><type><name>long</name></type> <name>using</name><parameter_list>()</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * Attempts to allocate an amount of permits from this limit. If allocated, &lt;em&gt;MUST&lt;/em&gt; eventually
+         * be released back with {@link #release(long)}.
+         *
+         * @return {@code true} if the allocation was successful, {@code false} otherwise
+         */</comment>
+        <function_decl><type><name>boolean</name></type> <name>tryAllocate</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>amount</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * Allocates an amount independent of permits available from this limit. &lt;em&gt;MUST&lt;/em&gt; eventually
+         * be released back with {@link #release(long)}.
+         *
+         */</comment>
+        <function_decl><type><name>void</name></type> <name>allocate</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>amount</name></decl></parameter>)</parameter_list>;</function_decl>
+
+        <comment type="block" format="javadoc">/**
+         * @param amount return the amount of permits back to this limit
+         * @return {@code ABOVE_LIMIT} if there aren't enough permits available even after the release, or
+         *         {@code BELOW_LIMIT} if there are enough permits available after the releaese.
+         */</comment>
+        <function_decl><type><name>Outcome</name></type> <name>release</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>amount</name></decl></parameter>)</parameter_list>;</function_decl>
+    }</block></interface>
+
+    <comment type="block" format="javadoc">/**
+     * A thread-safe permit container.
+     */</comment>
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>Concurrent</name> <super_list><implements>implements <super><name>Limit</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>long</name></type> <name>limit</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicLongFieldUpdater</name><argument_list type="generic">&lt;<argument><name>Concurrent</name></argument>&gt;</argument_list></name></type> <name>limitUpdater</name> <init>=
+            <expr><call><name><name>AtomicLongFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>Concurrent</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"limit"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>volatile</specifier> <name>long</name></type> <name>using</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <specifier>static</specifier> <specifier>final</specifier> <name><name>AtomicLongFieldUpdater</name><argument_list type="generic">&lt;<argument><name>Concurrent</name></argument>&gt;</argument_list></name></type> <name>usingUpdater</name> <init>=
+            <expr><call><name><name>AtomicLongFieldUpdater</name><operator>.</operator><name>newUpdater</name></name><argument_list>(<argument><expr><name><name>Concurrent</name><operator>.</operator><name>class</name></name></expr></argument>, <argument><expr><literal type="string">"using"</literal></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>Concurrent</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>limit</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>limit</name></name> <operator>=</operator> <name>limit</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>limit</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>limit</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>setLimit</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>newLimit</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>oldLimit</name></decl>;</decl_stmt>
+            <do>do <block>{<block_content>
+                <expr_stmt><expr><name>oldLimit</name> <operator>=</operator> <name>limit</name></expr>;</expr_stmt>
+            </block_content>}</block> while <condition>(<expr><operator>!</operator><call><name><name>limitUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>oldLimit</name></expr></argument>, <argument><expr><name>newLimit</name></expr></argument>)</argument_list></call></expr>)</condition>;</do>
+
+            <return>return <expr><name>oldLimit</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>remaining</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>limit</name> <operator>-</operator> <name>using</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>using</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>using</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>tryAllocate</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>amount</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>current</name></decl>, <decl><type ref="prev"/><name>next</name></decl>;</decl_stmt>
+            <do>do
+            <block>{<block_content>
+                <expr_stmt><expr><name>current</name> <operator>=</operator> <name>using</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name>next</name> <operator>=</operator> <name>current</name> <operator>+</operator> <name>amount</name></expr>;</expr_stmt>
+
+                <if_stmt><if>if <condition>(<expr><name>next</name> <operator>&gt;</operator> <name>limit</name></expr>)</condition><block type="pseudo"><block_content>
+                    <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+            </block_content>}</block>
+            while <condition>(<expr><operator>!</operator><call><name><name>usingUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>current</name></expr></argument>, <argument><expr><name>next</name></expr></argument>)</argument_list></call></expr>)</condition>;</do>
+
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>allocate</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>amount</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>current</name></decl>, <decl><type ref="prev"/><name>next</name></decl>;</decl_stmt>
+            <do>do
+            <block>{<block_content>
+                <expr_stmt><expr><name>current</name> <operator>=</operator> <name>using</name></expr>;</expr_stmt>
+                <expr_stmt><expr><name>next</name> <operator>=</operator> <name>current</name> <operator>+</operator> <name>amount</name></expr>;</expr_stmt>
+            </block_content>}</block> while <condition>(<expr><operator>!</operator><call><name><name>usingUpdater</name><operator>.</operator><name>compareAndSet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><name>current</name></expr></argument>, <argument><expr><name>next</name></expr></argument>)</argument_list></call></expr>)</condition>;</do>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Outcome</name></type> <name>release</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>amount</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><name>amount</name> <operator>&gt;=</operator> <literal type="number">0</literal></expr>;</assert>
+            <decl_stmt><decl><type><name>long</name></type> <name>using</name> <init>= <expr><call><name><name>usingUpdater</name><operator>.</operator><name>addAndGet</name></name><argument_list>(<argument><expr><name>this</name></expr></argument>, <argument><expr><operator>-</operator><name>amount</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <if_stmt><if>if <condition>(<expr><name>using</name> <operator>&lt;</operator> <literal type="number">0L</literal></expr>)</condition>
+            <block>{<block_content>
+                <comment type="line">// Should never be able to release more than was allocated.  While recovery is</comment>
+                <comment type="line">// possible it would require synchronizing the closing of all outbound connections</comment>
+                <comment type="line">// and reinitializing the Concurrent limit before reopening.  For such an unlikely path</comment>
+                <comment type="line">// (previously this was an assert), it is safer to terminate the JVM and have something external</comment>
+                <comment type="line">// restart and get back to a known good state rather than intermittendly crashing on any of</comment>
+                <comment type="line">// the connections sharing this limit.</comment>
+                <throw>throw <expr><operator>new</operator> <call><name>UnrecoverableIllegalStateException</name><argument_list>(
+                    <argument><expr><literal type="string">"Internode messaging byte limits that are shared between connections is invalid (using="</literal><operator>+</operator><name>using</name><operator>+</operator><literal type="string">")"</literal></expr></argument>)</argument_list></call></expr>;</throw>
+            </block_content>}</block></if></if_stmt>
+            <return>return <expr><ternary><condition><expr><name>using</name> <operator>&gt;=</operator> <name>limit</name></expr> ?</condition><then> <expr><name><name>Outcome</name><operator>.</operator><name>ABOVE_LIMIT</name></name></expr> </then><else>: <expr><name><name>Outcome</name><operator>.</operator><name>BELOW_LIMIT</name></name></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * A cheaper, thread-unsafe permit container to be used for unshared limits.
+     */</comment>
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>Basic</name> <super_list><implements>implements <super><name>Limit</name></super></implements></super_list>
+    <block>{
+        <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>limit</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>private</specifier> <name>long</name></type> <name>using</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>Basic</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>limit</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>limit</name></name> <operator>=</operator> <name>limit</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>limit</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>limit</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>setLimit</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>newLimit</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>long</name></type> <name>oldLimit</name> <init>= <expr><name>limit</name></expr></init></decl>;</decl_stmt>
+            <expr_stmt><expr><name>limit</name> <operator>=</operator> <name>newLimit</name></expr>;</expr_stmt>
+
+            <return>return <expr><name>oldLimit</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>remaining</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>limit</name> <operator>-</operator> <name>using</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>long</name></type> <name>using</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>using</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>boolean</name></type> <name>tryAllocate</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>amount</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><name>using</name> <operator>+</operator> <name>amount</name> <operator>&gt;</operator> <name>limit</name></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><literal type="boolean">false</literal></expr>;</return></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><name>using</name> <operator>+=</operator> <name>amount</name></expr>;</expr_stmt>
+            <return>return <expr><literal type="boolean">true</literal></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>allocate</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>amount</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name>using</name> <operator>+=</operator> <name>amount</name></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Outcome</name></type> <name>release</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>amount</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <assert>assert <expr><name>amount</name> <operator>&gt;=</operator> <literal type="number">0</literal> <operator>&amp;&amp;</operator> <name>amount</name> <operator>&lt;=</operator> <name>using</name></expr>;</assert>
+            <expr_stmt><expr><name>using</name> <operator>-=</operator> <name>amount</name></expr>;</expr_stmt>
+            <return>return <expr><ternary><condition><expr><name>using</name> <operator>&gt;=</operator> <name>limit</name></expr> ?</condition><then> <expr><name><name>Outcome</name><operator>.</operator><name>ABOVE_LIMIT</name></name></expr> </then><else>: <expr><name><name>Outcome</name><operator>.</operator><name>BELOW_LIMIT</name></name></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <comment type="block" format="javadoc">/**
+     * A convenience class that groups a per-endpoint limit with the global one
+     * to allow allocating/releasing permits from/to both limits as one logical operation.
+     */</comment>
+    <class><specifier>public</specifier> <specifier>static</specifier> class <name>EndpointAndGlobal</name>
+    <block>{
+        <decl_stmt><decl><type><specifier>final</specifier> <name>Limit</name></type> <name>endpoint</name></decl>;</decl_stmt>
+        <decl_stmt><decl><type><specifier>final</specifier> <name>Limit</name></type> <name>global</name></decl>;</decl_stmt>
+
+        <constructor><specifier>public</specifier> <name>EndpointAndGlobal</name><parameter_list>(<parameter><decl><type><name>Limit</name></type> <name>endpoint</name></decl></parameter>, <parameter><decl><type><name>Limit</name></type> <name>global</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>endpoint</name></name> <operator>=</operator> <name>endpoint</name></expr>;</expr_stmt>
+            <expr_stmt><expr><name><name>this</name><operator>.</operator><name>global</name></name> <operator>=</operator> <name>global</name></expr>;</expr_stmt>
+        </block_content>}</block></constructor>
+
+        <function><type><specifier>public</specifier> <name>Limit</name></type> <name>endpoint</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>endpoint</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Limit</name></type> <name>global</name><parameter_list>()</parameter_list>
+        <block>{<block_content>
+            <return>return <expr><name>global</name></expr>;</return>
+        </block_content>}</block></function>
+
+        <comment type="block" format="javadoc">/**
+         * @return {@code INSUFFICIENT_GLOBAL} if there weren't enough permits in the global limit, or
+         *         {@code INSUFFICIENT_ENDPOINT} if there weren't enough permits in the per-endpoint limit, or
+         *         {@code SUCCESS} if there were enough permits to take from both.
+         */</comment>
+        <function><type><specifier>public</specifier> <name>Outcome</name></type> <name>tryAllocate</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>amount</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <if_stmt><if>if <condition>(<expr><operator>!</operator><call><name><name>global</name><operator>.</operator><name>tryAllocate</name></name><argument_list>(<argument><expr><name>amount</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name><name>Outcome</name><operator>.</operator><name>INSUFFICIENT_GLOBAL</name></name></expr>;</return></block_content></block></if></if_stmt>
+
+            <if_stmt><if>if <condition>(<expr><call><name><name>endpoint</name><operator>.</operator><name>tryAllocate</name></name><argument_list>(<argument><expr><name>amount</name></expr></argument>)</argument_list></call></expr>)</condition><block type="pseudo"><block_content>
+                <return>return <expr><name><name>Outcome</name><operator>.</operator><name>SUCCESS</name></name></expr>;</return></block_content></block></if></if_stmt>
+
+            <expr_stmt><expr><call><name><name>global</name><operator>.</operator><name>release</name></name><argument_list>(<argument><expr><name>amount</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <return>return <expr><name><name>Outcome</name><operator>.</operator><name>INSUFFICIENT_ENDPOINT</name></name></expr>;</return>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>void</name></type> <name>allocate</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>amount</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <expr_stmt><expr><call><name><name>global</name><operator>.</operator><name>allocate</name></name><argument_list>(<argument><expr><name>amount</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+            <expr_stmt><expr><call><name><name>endpoint</name><operator>.</operator><name>allocate</name></name><argument_list>(<argument><expr><name>amount</name></expr></argument>)</argument_list></call></expr>;</expr_stmt>
+        </block_content>}</block></function>
+
+        <function><type><specifier>public</specifier> <name>Outcome</name></type> <name>release</name><parameter_list>(<parameter><decl><type><name>long</name></type> <name>amount</name></decl></parameter>)</parameter_list>
+        <block>{<block_content>
+            <decl_stmt><decl><type><name>Outcome</name></type> <name>endpointReleaseOutcome</name> <init>= <expr><call><name><name>endpoint</name><operator>.</operator><name>release</name></name><argument_list>(<argument><expr><name>amount</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <decl_stmt><decl><type><name>Outcome</name></type> <name>globalReleaseOutcome</name> <init>= <expr><call><name><name>global</name><operator>.</operator><name>release</name></name><argument_list>(<argument><expr><name>amount</name></expr></argument>)</argument_list></call></expr></init></decl>;</decl_stmt>
+            <return>return <expr><ternary><condition><expr><operator>(</operator><name>endpointReleaseOutcome</name> <operator>==</operator> <name><name>Outcome</name><operator>.</operator><name>ABOVE_LIMIT</name></name> <operator>||</operator> <name>globalReleaseOutcome</name> <operator>==</operator> <name><name>Outcome</name><operator>.</operator><name>ABOVE_LIMIT</name></name><operator>)</operator></expr>
+                   ?</condition><then> <expr><name><name>Outcome</name><operator>.</operator><name>ABOVE_LIMIT</name></name></expr> </then><else>: <expr><name><name>Outcome</name><operator>.</operator><name>BELOW_LIMIT</name></name></expr></else></ternary></expr>;</return>
+        </block_content>}</block></function>
+    }</block></class>
+
+    <enum><specifier>public</specifier> enum <name>Outcome</name> <block>{ <decl><name>SUCCESS</name></decl>, <decl><name>INSUFFICIENT_ENDPOINT</name></decl>, <decl><name>INSUFFICIENT_GLOBAL</name></decl>, <decl><name>BELOW_LIMIT</name></decl>, <decl><name>ABOVE_LIMIT</name></decl> }</block></enum>
+}</block></class>
+</unit>
